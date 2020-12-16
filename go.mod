@@ -15,7 +15,7 @@ require (
 	github.com/ghodss/yaml v1.0.0
 	github.com/go-errors/errors v1.0.2-0.20180813162953-d98b870cc4e0
 	github.com/go-kit/kit v0.10.0
-	github.com/go-logr/logr v0.1.0
+	github.com/go-logr/logr v0.2.0
 	github.com/go-logr/zapr v0.1.0
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang-migrate/migrate/v4 v4.8.0
@@ -24,8 +24,8 @@ require (
 	github.com/gruntwork-io/terratest v0.27.5
 	github.com/hoisie/mustache v0.0.0-20160804235033-6375acf62c69
 	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/kumahq/kuma/api v0.0.0-00010101000000-000000000000
-	github.com/kumahq/kuma/pkg/plugins/resources/k8s/native v0.0.0-00010101000000-000000000000
+	github.com/kumahq/kuma/api v0.0.0-00010101000000-000000000000 // indirect
+	github.com/kumahq/kuma/pkg/plugins/resources/k8s/native v0.0.0-00010101000000-000000000000 // indirect
 	github.com/lib/pq v1.7.0
 	github.com/miekg/dns v1.1.29
 	github.com/onsi/ginkgo v1.14.2
@@ -35,7 +35,7 @@ require (
 	github.com/prometheus/client_golang v1.7.1
 	github.com/prometheus/client_model v0.2.0
 	github.com/prometheus/common v0.10.0
-	github.com/prometheus/prometheus v0.0.0-00010101000000-000000000000
+	github.com/prometheus/prometheus v0.0.0-00010101000000-000000000000 // indirect
 	github.com/sethvargo/go-retry v0.1.0
 	github.com/shurcooL/httpfs v0.0.0-20190707220628-8d4bc4ba7749
 	github.com/slok/go-http-metrics v0.9.0
@@ -51,8 +51,8 @@ require (
 	google.golang.org/protobuf v1.25.0
 	gopkg.in/yaml.v2 v2.3.0
 	helm.sh/helm/v3 v3.3.4
-	k8s.io/api v0.18.9
-	k8s.io/apimachinery v0.18.9
+	k8s.io/api v0.20.0
+	k8s.io/apimachinery v0.20.0
 	k8s.io/client-go v10.0.0+incompatible
 	// migrating to v0.6.2 fails integration tests with:
 	// failed to convert core list model of type SampleTrafficRoute into k8s counterpart
