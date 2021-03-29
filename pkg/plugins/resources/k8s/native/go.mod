@@ -4,7 +4,7 @@ go 1.15
 
 require (
 	github.com/go-logr/logr v0.1.0
-	github.com/golang/protobuf v1.4.3
+	github.com/golang/protobuf v1.5.1
 	github.com/kumahq/kuma/api v0.0.0-00010101000000-000000000000
 	github.com/onsi/ginkgo v1.15.2
 	github.com/onsi/gomega v1.11.0
@@ -13,7 +13,6 @@ require (
 	k8s.io/apimachinery v0.18.14
 	k8s.io/client-go v0.18.14
 	sigs.k8s.io/controller-runtime v0.6.4
-	sigs.k8s.io/controller-tools v0.3.0 // indirect
 )
 
 replace github.com/kumahq/kuma/api => ../../../../../api
