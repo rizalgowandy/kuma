@@ -3,7 +3,7 @@ module github.com/kumahq/kuma/pkg/plugins/resources/k8s/native
 go 1.16
 
 require (
-	github.com/go-logr/logr v0.1.0
+	github.com/go-logr/logr v0.4.0
 	github.com/golang/protobuf v1.5.2
 	github.com/kumahq/kuma/api v0.0.0-00010101000000-000000000000
 	github.com/onsi/ginkgo v1.16.2
