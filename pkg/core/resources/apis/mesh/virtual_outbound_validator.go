@@ -18,30 +18,32 @@ func (t *VirtualOutboundResource) Validate() error {
 func (t *VirtualOutboundResource) validateSelectors() validators.ValidationError {
 	return ValidateSelectors(validators.RootedAt("selectors"), t.Spec.GetSelectors(), ValidateSelectorsOpts{
 		RequireAtLeastOneSelector: true,
-		ValidateSelectorOpts: ValidateSelectorOpts{
+		ValidateTagsOpts: ValidateTagsOpts{
 			RequireAtLeastOneTag: true,
 		},
 	})
 }
 
-func (t *VirtualOutboundResource) ValidateConf() (err validators.ValidationError) {
+func (t *VirtualOutboundResource) ValidateConf() validators.ValidationError {
+	var err validators.ValidationError
 	root := validators.RootedAt("conf")
 	// host, port, parameters
 	conf := t.Spec.GetConf()
 
 	if conf == nil {
 		err.AddViolationAt(root, HasToBeDefinedViolation)
-		return
+		return err
 	}
 	err.Add(t.validateParameters(root.Field("parameters")))
 	err.Add(t.validateHost(root.Field("host")))
 	err.Add(t.validatePort(root.Field("port")))
-	return
+	return err
 }
 
 var parameterKeyName = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
-func (t *VirtualOutboundResource) validateParameters(path validators.PathBuilder) (err validators.ValidationError) {
+func (t *VirtualOutboundResource) validateParameters(path validators.PathBuilder) validators.ValidationError {
+	var err validators.ValidationError
 	hasService := false
 	keys := map[string]bool{}
 	for k, v := range t.Spec.Conf.Parameters {
@@ -65,14 +67,15 @@ func (t *VirtualOutboundResource) validateParameters(path validators.PathBuilder
 	if !hasService {
 		err.AddViolationAt(path, fmt.Sprintf(`must contain a parameter with %s as a tagKey`, mesh_proto.ServiceTag))
 	}
-	return
+	return err
 }
 
-func (t *VirtualOutboundResource) validateHost(path validators.PathBuilder) (err validators.ValidationError) {
+func (t *VirtualOutboundResource) validateHost(path validators.PathBuilder) validators.ValidationError {
+	var err validators.ValidationError
 	h := t.Spec.Conf.Host
 	if h == "" {
 		err.AddViolationAt(path, HasToBeDefinedViolation)
-		return
+		return err
 	}
 	fakeTags := map[string]string{}
 	for _, v := range t.Spec.Conf.Parameters {
@@ -80,16 +83,17 @@ func (t *VirtualOutboundResource) validateHost(path validators.PathBuilder) (err
 	}
 	_, lerr := t.EvalHost(fakeTags)
 	if lerr != nil {
-		err.AddViolationAt(path, fmt.Sprintf("template pre evaluation failed with error='%s'", lerr.Error()))
+		err.AddViolationAt(path, fmt.Sprintf("template pre evaluation failed with error=%q", lerr.Error()))
 	}
-	return
+	return err
 }
 
-func (t *VirtualOutboundResource) validatePort(path validators.PathBuilder) (err validators.ValidationError) {
+func (t *VirtualOutboundResource) validatePort(path validators.PathBuilder) validators.ValidationError {
+	var err validators.ValidationError
 	h := t.Spec.Conf.Port
 	if h == "" {
 		err.AddViolationAt(path, HasToBeDefinedViolation)
-		return
+		return err
 	}
 	fakeTags := map[string]string{}
 	for _, v := range t.Spec.Conf.Parameters {
@@ -97,7 +101,7 @@ func (t *VirtualOutboundResource) validatePort(path validators.PathBuilder) (err
 	}
 	_, lerr := t.EvalPort(fakeTags)
 	if lerr != nil {
-		err.AddViolationAt(path, fmt.Sprintf("template pre evaluation failed with error='%s'", lerr.Error()))
+		err.AddViolationAt(path, fmt.Sprintf("template pre evaluation failed with error=%q", lerr.Error()))
 	}
-	return
+	return err
 }

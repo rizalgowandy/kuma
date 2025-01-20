@@ -2,13 +2,18 @@ package proto
 
 import (
 	"bytes"
-	"encoding/json"
+	"fmt"
 
-	"github.com/ghodss/yaml"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
+	"github.com/golang/protobuf/jsonpb" // nolint: depguard
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/protoadapt"
 	"google.golang.org/protobuf/types/known/structpb"
+	"sigs.k8s.io/yaml"
 )
+
+// Note: we continue to use github.com/golang/protobuf/jsonpb because it
+// unmarshals types the way we expect in go.
+// See https://github.com/golang/protobuf/issues/1374
 
 func FromYAML(content []byte, pb proto.Message) error {
 	json, err := yaml.YAMLToJSON(content)
@@ -20,7 +25,7 @@ func FromYAML(content []byte, pb proto.Message) error {
 
 func ToYAML(pb proto.Message) ([]byte, error) {
 	marshaler := &jsonpb.Marshaler{}
-	json, err := marshaler.MarshalToString(pb)
+	json, err := marshaler.MarshalToString(protoadapt.MessageV1Of(pb))
 	if err != nil {
 		return nil, err
 	}
@@ -30,35 +35,24 @@ func ToYAML(pb proto.Message) ([]byte, error) {
 func ToJSON(pb proto.Message) ([]byte, error) {
 	var buf bytes.Buffer
 	marshaler := &jsonpb.Marshaler{}
-	if err := marshaler.Marshal(&buf, pb); err != nil {
+	if err := marshaler.Marshal(&buf, protoadapt.MessageV1Of(pb)); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
+func MustMarshalJSON(in proto.Message) []byte {
+	content, err := ToJSON(in)
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal %T: %s", in, err))
+	}
+
+	return content
+}
+
 func FromJSON(content []byte, out proto.Message) error {
 	unmarshaler := &jsonpb.Unmarshaler{AllowUnknownFields: true}
-	return unmarshaler.Unmarshal(bytes.NewReader(content), out)
-}
-
-func ToMap(pb proto.Message) (map[string]interface{}, error) {
-	content, err := ToJSON(pb)
-	if err != nil {
-		return nil, err
-	}
-	obj := make(map[string]interface{})
-	if err := json.Unmarshal(content, &obj); err != nil {
-		return nil, err
-	}
-	return obj, nil
-}
-
-func FromMap(in map[string]interface{}, out proto.Message) error {
-	content, err := json.Marshal(in)
-	if err != nil {
-		return err
-	}
-	return FromJSON(content, out)
+	return unmarshaler.Unmarshal(bytes.NewReader(content), protoadapt.MessageV1Of(out))
 }
 
 // Converts loosely typed Struct to strongly typed Message

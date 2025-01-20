@@ -1,8 +1,9 @@
 package route
 
 import (
+	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
-	"github.com/kumahq/kuma/pkg/xds/envoy"
+	"github.com/kumahq/kuma/pkg/xds/envoy/tags"
 )
 
 // Table stores a collection of routing Entries, aka. a routing table.
@@ -25,6 +26,8 @@ type Table struct {
 // and dispatched according to the Action. Other optional field specify
 // additional processing.
 type Entry struct {
+	Route  string
+	Name   string
 	Match  Match
 	Action Action
 
@@ -34,6 +37,12 @@ type Entry struct {
 	// RequestHeaders specifies transformations on the HTTP
 	// request headers.
 	RequestHeaders *Headers
+
+	// ResponseHeaders specifies transformations on the HTTP
+	// response headers.
+	ResponseHeaders *Headers
+
+	Rewrite *Rewrite
 }
 
 // KeyValue is a generic pairing of key and value strings. Route table
@@ -60,11 +69,22 @@ type Match struct {
 
 	Method string
 
-	ExactHeader []KeyValue // name -> value
-	RegexHeader []KeyValue // name -> regex
+	ExactHeader   []KeyValue // name -> value
+	RegexHeader   []KeyValue // name -> regex
+	AbsentHeader  []string
+	PresentHeader []string
+	PrefixHeader  []KeyValue
 
 	ExactQuery []KeyValue // param -> value
 	RegexQuery []KeyValue // param -> regex
+}
+
+func (m Match) numHeaderMatches() int {
+	return len(m.ExactHeader) + len(m.RegexHeader) + len(m.AbsentHeader) + len(m.PresentHeader)
+}
+
+func (m Match) numQueryParamMatches() int {
+	return len(m.ExactQuery) + len(m.RegexQuery)
 }
 
 // Action describes how a HTTP request should be dispatched.
@@ -77,19 +97,22 @@ type Action struct {
 // Redirection is an action that responds to a HTTP request with a HTTP
 // redirect response.
 type Redirection struct {
-	Status uint32 // HTTP status code.
-	Scheme string // URL scheme (optional).
-	Host   string // URL host (optional).
-	Port   uint32 // URL port (optional).
-	Path   string // URL path (optional).
+	Status      uint32 // HTTP status code.
+	Scheme      string // URL scheme (optional).
+	Host        string // URL host (optional).
+	Port        uint32 // URL port (optional).
+	PathRewrite *Rewrite
 
 	StripQuery bool // Whether to strip the query string.
 }
 
 // Destination is a forwarding target (aka Cluster).
 type Destination struct {
-	Destination envoy.Tags
-	Weight      uint32
+	Destination tags.Tags
+	BackendRef  *model.ResolvedBackendRef
+
+	Weight        uint32
+	RouteProtocol core_mesh.Protocol
 
 	// Name is the globally unique name for this destination instance.
 	// It takes into account not only the service that it targets, but
@@ -110,6 +133,19 @@ type Headers struct {
 	Replace []KeyValue
 	// Delete deletes a HTTP header field.
 	Delete []string
+}
+
+type Rewrite struct {
+	ReplaceFullPath *string
+
+	ReplacePrefixMatch *string
+
+	// HostToBackendHostname indicates that during forwarding, the host header
+	// should be swapped with the hostname of the upstream host chosen by the
+	// Envoy's cluster manager.
+	HostToBackendHostname bool
+
+	ReplaceHostname *string
 }
 
 // Mirror specifies a traffic mirroring operation.

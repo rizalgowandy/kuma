@@ -1,20 +1,25 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
-	"fmt"
+	"math"
 
+	"github.com/exaring/otelpgx"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/attribute"
 
 	config "github.com/kumahq/kuma/pkg/config/plugins/resources/postgres"
+	pgx_config "github.com/kumahq/kuma/pkg/plugins/resources/postgres/config"
 )
 
 func ConnectToDb(cfg config.PostgresStoreConfig) (*sql.DB, error) {
-	connStr, err := connectionString(cfg)
+	connStr, err := cfg.ConnectionString()
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("postgres", connStr)
+	db, err := sql.Open(cfg.DriverName, connStr)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create connection to DB")
 	}
@@ -30,26 +35,38 @@ func ConnectToDb(cfg config.PostgresStoreConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-func connectionString(cfg config.PostgresStoreConfig) (string, error) {
-	mode, err := postgresMode(cfg.TLS.Mode)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s connect_timeout=%d sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DbName, cfg.ConnectionTimeout, mode, cfg.TLS.CertPath, cfg.TLS.KeyPath, cfg.TLS.CAPath), nil
-}
+// This attribute is necessary for tracing integrations like Datadog, to have
+// full insights into sql queries connected with traces.
+// ref. https://github.com/DataDog/dd-trace-go/blob/3d97fcec9f8b21fdd821af526d27d4335b26da66/contrib/database/sql/conn.go#L290
+var spanTypeSQLAttribute = attribute.String("span.type", "sql")
 
-func postgresMode(mode config.TLSMode) (string, error) {
-	switch mode {
-	case config.Disable:
-		return "disable", nil
-	case config.VerifyNone:
-		return "require", nil
-	case config.VerifyCa:
-		return "verify-ca", nil
-	case config.VerifyFull:
-		return "verify-full", nil
-	default:
-		return "", errors.Errorf("could not translate mode %q to postgres mode", mode)
+func ConnectToDbPgx(postgresStoreConfig config.PostgresStoreConfig, customizers ...pgx_config.PgxConfigCustomization) (*pgxpool.Pool, error) {
+	connectionString, err := postgresStoreConfig.ConnectionString()
+	if err != nil {
+		return nil, err
 	}
+	pgxConfig, err := pgxpool.ParseConfig(connectionString)
+
+	if postgresStoreConfig.MaxOpenConnections == 0 {
+		// pgx MaxCons must be > 0, see https://github.com/jackc/puddle/blob/c5402ce53663d3c6481ea83c2912c339aeb94adc/pool.go#L160
+		// so unlimited is just max int
+		pgxConfig.MaxConns = math.MaxInt32
+	} else {
+		pgxConfig.MaxConns = int32(postgresStoreConfig.MaxOpenConnections)
+	}
+	pgxConfig.MaxConnIdleTime = postgresStoreConfig.MaxConnectionIdleTime.Duration
+	pgxConfig.MinConns = int32(postgresStoreConfig.MinOpenConnections)
+	pgxConfig.MaxConnLifetime = postgresStoreConfig.MaxConnectionLifetime.Duration
+	pgxConfig.MaxConnLifetimeJitter = postgresStoreConfig.MaxConnectionLifetimeJitter.Duration
+	pgxConfig.HealthCheckPeriod = postgresStoreConfig.HealthCheckInterval.Duration
+	pgxConfig.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithAttributes(spanTypeSQLAttribute))
+	for _, customizer := range customizers {
+		customizer.Customize(pgxConfig)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return pgxpool.NewWithConfig(context.Background(), pgxConfig)
 }

@@ -5,18 +5,14 @@ import (
 	"io"
 	"text/template"
 
-	"github.com/Masterminds/sprig"
+	"github.com/Masterminds/sprig/v3"
 	"github.com/pkg/errors"
 
-	"github.com/kumahq/kuma/app/kumactl/pkg/install/data"
+	"github.com/kumahq/kuma/pkg/util/data"
 )
 
 type templateFilter interface {
 	Filter(name string) bool
-}
-
-func renderFiles(templates []data.File, args interface{}, newRenderer func(data.File) (templateRenderer, error)) ([]data.File, error) {
-	return renderFilesWithFilter(templates, args, newRenderer, NoneFilter{})
 }
 
 func renderFilesWithFilter(templates []data.File, args interface{}, newRenderer func(data.File) (templateRenderer, error), filter templateFilter) ([]data.File, error) {
@@ -66,8 +62,7 @@ func (f ExcludePrefixesFilter) Filter(name string) bool {
 	return true
 }
 
-type NoneFilter struct {
-}
+type NoneFilter struct{}
 
 func (f NoneFilter) Filter(name string) bool {
 	return true

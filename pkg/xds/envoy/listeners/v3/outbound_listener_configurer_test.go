@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
@@ -12,7 +11,6 @@ import (
 )
 
 var _ = Describe("OutboundListenerConfigurer", func() {
-
 	type testCase struct {
 		listenerName     string
 		listenerAddress  string
@@ -24,8 +22,8 @@ var _ = Describe("OutboundListenerConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy.APIV3).
-				Configure(OutboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
+			listener, err := NewOutboundListenerBuilder(envoy.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				WithOverwriteName(given.listenerName).
 				Build()
 			// then
 			Expect(err).ToNot(HaveOccurred())

@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -13,7 +12,6 @@ import (
 )
 
 var _ = Describe("HttpOutboundRouteConfigurer", func() {
-
 	type testCase struct {
 		listenerName     string
 		listenerAddress  string
@@ -29,9 +27,9 @@ var _ = Describe("HttpOutboundRouteConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(OutboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
+			listener, err := NewOutboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				WithOverwriteName(given.listenerName).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
 					Configure(HttpConnectionManager(given.statsName, false)).
 					Configure(HttpOutboundRoute(given.service, given.routes, given.dpTags)))).
 				Build()
@@ -84,6 +82,8 @@ var _ = Describe("HttpOutboundRouteConfigurer", func() {
                   '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                   httpFilters:
                   - name: envoy.filters.http.router
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                   routeConfig:
                     name: outbound:backend
                     validateClusters: false
@@ -99,13 +99,13 @@ var _ = Describe("HttpOutboundRouteConfigurer", func() {
                       - match:
                           prefix: /
                         route:
+                          timeout: 0s
                           weightedClusters:
                             clusters:
                             - name: backend-0
                               weight: 20
                             - name: backend-1
                               weight: 80
-                            totalWeight: 100
                   statPrefix: "127_0_0_1_18080"
             name: outbound:127.0.0.1:18080
             trafficDirection: OUTBOUND`,
@@ -214,6 +214,8 @@ var _ = Describe("HttpOutboundRouteConfigurer", func() {
                   '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                   httpFilters:
                   - name: envoy.filters.http.router
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                   routeConfig:
                     name: outbound:backend
                     requestHeadersToAdd:
@@ -230,24 +232,25 @@ var _ = Describe("HttpOutboundRouteConfigurer", func() {
                           headers:
                           - name: x-custom-header-a
                             prefixMatch: prefix
-                          - exactMatch: exact
+                          - stringMatch:
+                              exact: exact
                             name: x-custom-header-b
                           - name: x-custom-header-c
                             safeRegexMatch:
-                              googleRe2: {}
                               regex: ^regex$
-                          - exactMatch: GET
+                          - stringMatch:
+                              exact: GET
                             name: :method
                           prefix: /asd
                         requestHeadersToAdd:
-                        - append: false
+                        - appendAction: OVERWRITE_IF_EXISTS_OR_ADD
                           header:
                             key: test-add
                             value: abc
                         requestHeadersToRemove:
                         - test-remove
                         responseHeadersToAdd:
-                        - append: false
+                        - appendAction: OVERWRITE_IF_EXISTS_OR_ADD
                           header:
                             key: test-add
                             value: abc
@@ -257,6 +260,7 @@ var _ = Describe("HttpOutboundRouteConfigurer", func() {
                           cluster: backend-0
                           hostRewriteLiteral: test
                           prefixRewrite: /another
+                          timeout: 0s
                   statPrefix: "127_0_0_1_18080"
             name: outbound:127.0.0.1:18080
             trafficDirection: OUTBOUND`,

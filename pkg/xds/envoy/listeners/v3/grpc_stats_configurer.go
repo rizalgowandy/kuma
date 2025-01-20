@@ -8,17 +8,13 @@ import (
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
-type GrpcStatsConfigurer struct {
-}
+type GrpcStatsConfigurer struct{}
 
 var _ FilterChainConfigurer = &GrpcStatsConfigurer{}
 
 func (g *GrpcStatsConfigurer) Configure(filterChain *envoy_listener.FilterChain) error {
 	config := &envoy_grpc_stats.FilterConfig{
 		EmitFilterState: true,
-		PerMethodStatSpecifier: &envoy_grpc_stats.FilterConfig_StatsForAllMethods{
-			StatsForAllMethods: util_proto.Bool(true),
-		},
 	}
 	pbst, err := util_proto.MarshalAnyDeterministic(config)
 	if err != nil {

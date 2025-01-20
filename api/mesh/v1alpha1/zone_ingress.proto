@@ -4,7 +4,8 @@ package kuma.mesh.v1alpha1;
 
 option go_package = "github.com/kumahq/kuma/api/mesh/v1alpha1";
 
-import "mesh/options.proto";
+import "api/mesh/options.proto";
+import "api/mesh/v1alpha1/envoy_admin.proto";
 
 // ZoneIngress allows us to configure dataplane in the Ingress mode. In this
 // mode, dataplane has only inbound interfaces. Every inbound interface matches
@@ -19,6 +20,14 @@ message ZoneIngress {
   option (kuma.mesh.resource).kds.send_to_zone = true;
   option (kuma.mesh.resource).ws.name = "zone-ingress";
   option (kuma.mesh.resource).ws.plural = "zone-ingresses";
+  option (kuma.mesh.resource).scope_namespace = true;
+  option (kuma.mesh.resource).has_insights = true;
+  option (kuma.mesh.resource).short_name = "zi";
+  option (kuma.mesh.resource).is_proxy = true;
+  option (kuma.mesh.resource).additional_printer_columns =
+      "description=\"Zone name\""
+      ",JSONPath=`.spec.zone`"
+      ",name=\"zone\",type=string";
 
   // Zone field contains Zone name where ingress is serving, field will be
   // automatically set by Global Kuma CP
@@ -38,6 +47,9 @@ message ZoneIngress {
     // AdvertisedPort defines port on which ZoneIngress is accessible to other
     // Kuma clusters.
     uint32 advertisedPort = 4;
+
+    // Admin contains configuration related to Envoy Admin API
+    EnvoyAdmin admin = 5;
   }
 
   // Networking defines the address and port of the Ingress to listen on.
@@ -51,6 +63,8 @@ message ZoneIngress {
     uint32 instances = 2;
     // mesh of the instances available for given tags
     string mesh = 3;
+    // instance of external service available from the zone
+    bool externalService = 4;
   }
 
   // AvailableService contains tags that represent unique subset of

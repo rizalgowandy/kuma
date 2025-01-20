@@ -2,6 +2,7 @@ package v3
 
 import (
 	net_url "net/url"
+	"strings"
 
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	envoy_trace "github.com/envoyproxy/go-control-plane/envoy/config/trace/v3"
@@ -9,9 +10,11 @@ import (
 	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/util/proto"
+	envoy_common "github.com/kumahq/kuma/pkg/xds/envoy"
 	"github.com/kumahq/kuma/pkg/xds/envoy/names"
 )
 
@@ -20,7 +23,11 @@ type TracingConfigurer struct {
 
 	// Opaque string which envoy will assign to tracer collector cluster, on those
 	// which support association of named "service" tags on traces. Consumed by datadog.
-	Service string
+	Service          string
+	TrafficDirection envoy_common.TrafficDirection
+	Destination      string
+
+	SpawnUpstreamSpan bool
 }
 
 var _ FilterChainConfigurer = &TracingConfigurer{}
@@ -31,7 +38,9 @@ func (c *TracingConfigurer) Configure(filterChain *envoy_listener.FilterChain) e
 	}
 
 	return UpdateHTTPConnectionManager(filterChain, func(hcm *envoy_hcm.HttpConnectionManager) error {
-		hcm.Tracing = &envoy_hcm.HttpConnectionManager_Tracing{}
+		hcm.Tracing = &envoy_hcm.HttpConnectionManager_Tracing{
+			SpawnUpstreamSpan: wrapperspb.Bool(c.SpawnUpstreamSpan),
+		}
 		if c.Backend.Sampling != nil {
 			hcm.Tracing.OverallSampling = &envoy_type.Percent{
 				Value: c.Backend.Sampling.Value,
@@ -45,7 +54,7 @@ func (c *TracingConfigurer) Configure(filterChain *envoy_listener.FilterChain) e
 			}
 			hcm.Tracing.Provider = tracing
 		case mesh_proto.TracingDatadogType:
-			tracing, err := datadogConfig(c.Backend.Conf, c.Backend.Name, c.Service)
+			tracing, err := datadogConfig(c.Backend.Conf, c.Backend.Name, c.Service, c.TrafficDirection, c.Destination)
 			if err != nil {
 				return err
 			}
@@ -55,7 +64,7 @@ func (c *TracingConfigurer) Configure(filterChain *envoy_listener.FilterChain) e
 	})
 }
 
-func datadogConfig(cfgStr *structpb.Struct, backendName string, serviceName string) (*envoy_trace.Tracing_Http, error) {
+func datadogConfig(cfgStr *structpb.Struct, backendName string, serviceName string, direction envoy_common.TrafficDirection, destination string) (*envoy_trace.Tracing_Http, error) {
 	cfg := mesh_proto.DatadogTracingBackendConfig{}
 	if err := proto.ToTyped(cfgStr, &cfg); err != nil {
 		return nil, errors.Wrap(err, "could not convert backend")
@@ -63,14 +72,14 @@ func datadogConfig(cfgStr *structpb.Struct, backendName string, serviceName stri
 
 	datadogConfig := envoy_trace.DatadogConfig{
 		CollectorCluster: names.GetTracingClusterName(backendName),
-		ServiceName:      serviceName,
+		ServiceName:      createDatadogServiceName(&cfg, serviceName, direction, destination),
 	}
 	datadogConfigAny, err := proto.MarshalAnyDeterministic(&datadogConfig)
 	if err != nil {
 		return nil, err
 	}
 	tracingConfig := &envoy_trace.Tracing_Http{
-		Name: "envoy.datadog",
+		Name: "envoy.tracers.datadog",
 		ConfigType: &envoy_trace.Tracing_Http_TypedConfig{
 			TypedConfig: datadogConfigAny,
 		},
@@ -101,7 +110,7 @@ func zipkinConfig(cfgStr *structpb.Struct, backendName string) (*envoy_trace.Tra
 		return nil, err
 	}
 	tracingConfig := &envoy_trace.Tracing_Http{
-		Name: "envoy.zipkin",
+		Name: "envoy.tracers.zipkin",
 		ConfigType: &envoy_trace.Tracing_Http_TypedConfig{
 			TypedConfig: zipkinConfigAny,
 		},
@@ -123,4 +132,21 @@ func apiVersion(zipkin *mesh_proto.ZipkinTracingBackendConfig, url *net_url.URL)
 		}
 	}
 	return envoy_trace.ZipkinConfig_HTTP_JSON
+}
+
+func createDatadogServiceName(datadog *mesh_proto.DatadogTracingBackendConfig, serviceName string, direction envoy_common.TrafficDirection, destination string) string {
+	if datadog.SplitService {
+		var datadogServiceName []string
+		switch direction {
+		case envoy_common.TrafficDirectionInbound:
+			datadogServiceName = []string{serviceName, string(direction)}
+		case envoy_common.TrafficDirectionOutbound:
+			datadogServiceName = []string{serviceName, string(direction), destination}
+		default:
+			return serviceName
+		}
+		return strings.Join(datadogServiceName, "_")
+	} else {
+		return serviceName
+	}
 }

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful/v3"
 
 	"github.com/kumahq/kuma/pkg/core"
 	"github.com/kumahq/kuma/pkg/core/rest/errors"
@@ -41,7 +41,7 @@ func (d *userTokenWebService) createWs() *restful.WebService {
 
 func (d *userTokenWebService) handleIdentityRequest(request *restful.Request, response *restful.Response) {
 	if err := d.access.ValidateGenerate(user.FromCtx(request.Request.Context())); err != nil {
-		errors.HandleError(response, err, "Could not issue a token")
+		errors.HandleError(request.Request.Context(), response, err, "Could not issue a token")
 		return
 	}
 
@@ -59,26 +59,29 @@ func (d *userTokenWebService) handleIdentityRequest(request *restful.Request, re
 
 	var validFor time.Duration
 	if idReq.ValidFor == "" {
-		verr.AddViolation("name", "cannot be empty")
+		verr.AddViolation("validFor", "cannot be empty")
 	} else {
 		dur, err := time.ParseDuration(idReq.ValidFor)
 		if err != nil {
 			verr.AddViolation("validFor", "is invalid: "+err.Error())
 		}
 		validFor = dur
+		if validFor == 0 {
+			verr.AddViolation("validFor", "cannot be empty or nil")
+		}
 	}
 
 	if verr.HasViolations() {
-		errors.HandleError(response, verr.OrNil(), "Invalid request")
+		errors.HandleError(request.Request.Context(), response, verr.OrNil(), "Invalid request")
 		return
 	}
 
-	token, err := d.issuer.Generate(user.User{
+	token, err := d.issuer.Generate(request.Request.Context(), user.User{
 		Name:   idReq.Name,
 		Groups: idReq.Groups,
 	}, validFor)
 	if err != nil {
-		errors.HandleError(response, err, "Could not issue a token")
+		errors.HandleError(request.Request.Context(), response, err, "Could not issue a token")
 		return
 	}
 

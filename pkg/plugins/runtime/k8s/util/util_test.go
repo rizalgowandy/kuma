@@ -3,12 +3,14 @@ package util_test
 import (
 	"time"
 
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	"github.com/go-logr/logr"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	kube_core "k8s.io/api/core/v1"
 	kube_meta "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kube_intstr "k8s.io/apimachinery/pkg/util/intstr"
+	kube_client "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	"github.com/kumahq/kuma/pkg/plugins/runtime/k8s/util"
 )
@@ -35,7 +37,7 @@ var _ = Describe("Util", func() {
 			}
 
 			// when
-			predicate := util.MatchServiceThatSelectsPod(pod)
+			predicate := util.MatchServiceThatSelectsPod(pod, nil)
 			// then
 			Expect(predicate(svc)).To(BeTrue())
 		})
@@ -60,25 +62,51 @@ var _ = Describe("Util", func() {
 			}
 
 			// when
-			predicate := util.MatchServiceThatSelectsPod(pod)
+			predicate := util.MatchServiceThatSelectsPod(pod, nil)
 			// then
 			Expect(predicate(svc)).To(BeFalse())
 		})
+
+		It("should match with ignored labels", func() {
+			// given
+			pod := &kube_core.Pod{
+				ObjectMeta: kube_meta.ObjectMeta{
+					Labels: map[string]string{
+						"app":               "demo-app",
+						"pod-template-hash": "7cbbd658d5",
+					},
+				},
+			}
+			// and
+			svc := &kube_core.Service{
+				Spec: kube_core.ServiceSpec{
+					Selector: map[string]string{
+						"app":               "demo-app",
+						"pod-template-hash": "xxxxxx",
+					},
+				},
+			}
+
+			// when
+			predicate := util.MatchServiceThatSelectsPod(pod, []string{"pod-template-hash"})
+			// then
+			Expect(predicate(svc)).To(BeTrue())
+		})
 	})
 
-	exampleTime := time.Date(2020, 01, 01, 01, 12, 00, 00, time.UTC)
-	DescribeTable("FindServices",
+	exampleTime := time.Date(2020, 0o1, 0o1, 0o1, 12, 0o0, 0o0, time.UTC)
+	DescribeTable("MatchService",
 		func(pod *kube_core.Pod, svcs *kube_core.ServiceList, matchSvcNames []string) {
 			// when
-			matchingServices := util.FindServices(svcs, util.AnySelector(), util.MatchServiceThatSelectsPod(pod))
-			// then
-			Expect(matchingServices).To(WithTransform(func(svcs []*kube_core.Service) []string {
-				var res []string
-				for i := range svcs {
-					res = append(res, svcs[i].Name)
+			var svcNames []string
+			for _, svc := range svcs.Items {
+				s := svc
+				if util.MatchService(&s, util.AnySelector(), util.MatchServiceThatSelectsPod(pod, nil)) {
+					svcNames = append(svcNames, svc.Name)
 				}
-				return res
-			}, Equal(matchSvcNames)))
+			}
+			// then
+			Expect(svcNames).To(ConsistOf(matchSvcNames))
 		},
 		Entry("should match services by a predicate",
 			&kube_core.Pod{
@@ -182,10 +210,10 @@ var _ = Describe("Util", func() {
 		),
 	)
 
-	Describe("MeshFor(..)", func() {
-
+	Describe("MeshOf(..)", func() {
 		type testCase struct {
 			podAnnotations map[string]string
+			nsAnnotations  map[string]string
 			expected       string
 		}
 
@@ -197,9 +225,14 @@ var _ = Describe("Util", func() {
 						Annotations: given.podAnnotations,
 					},
 				}
+				ns := &kube_core.Namespace{
+					ObjectMeta: kube_meta.ObjectMeta{
+						Annotations: given.nsAnnotations,
+					},
+				}
 
 				// then
-				Expect(util.MeshFor(pod)).To(Equal(given.expected))
+				Expect(util.MeshOfByLabelOrAnnotation(logr.Discard(), pod, ns)).To(Equal(given.expected))
 			},
 			Entry("Pod without annotations", testCase{
 				podAnnotations: nil,
@@ -213,6 +246,85 @@ var _ = Describe("Util", func() {
 			}),
 			Entry("Pod with non-empty `kuma.io/mesh` annotation", testCase{
 				podAnnotations: map[string]string{
+					"kuma.io/mesh": "demo",
+				},
+				expected: "demo",
+			}),
+			Entry("Pod with empty `kuma.io/mesh` annotation, Namespace with annotation", testCase{
+				podAnnotations: map[string]string{
+					"kuma.io/mesh": "",
+				},
+				nsAnnotations: map[string]string{
+					"kuma.io/mesh": "demo",
+				},
+				expected: "demo",
+			}),
+		)
+	})
+	Describe("MeshOfByLabelOrAnnotation(..)", func() {
+		type testCase struct {
+			podLabels      map[string]string
+			podAnnotations map[string]string
+			nsLabels       map[string]string
+			nsAnnotations  map[string]string
+			expected       string
+		}
+
+		DescribeTable("should use value of `kuma.io/mesh` annotation on a Pod or fallback to the `default` Mesh",
+			func(given testCase) {
+				// given
+				pod := &kube_core.Pod{
+					ObjectMeta: kube_meta.ObjectMeta{
+						Annotations: given.podAnnotations,
+						Labels:      given.podLabels,
+					},
+				}
+				ns := &kube_core.Namespace{
+					ObjectMeta: kube_meta.ObjectMeta{
+						Annotations: given.nsAnnotations,
+						Labels:      given.nsLabels,
+					},
+				}
+
+				// then
+				Expect(util.MeshOfByLabelOrAnnotation(logr.Discard(), pod, ns)).To(Equal(given.expected))
+			},
+			Entry("Pod without annotations", testCase{
+				podAnnotations: nil,
+				expected:       "default",
+			}),
+			Entry("Pod with empty `kuma.io/mesh` annotation", testCase{
+				podAnnotations: map[string]string{
+					"kuma.io/mesh": "",
+				},
+				expected: "default",
+			}),
+			Entry("Pod with non-empty `kuma.io/mesh` label", testCase{
+				podLabels: map[string]string{
+					"kuma.io/mesh": "demo",
+				},
+				expected: "demo",
+			}),
+			Entry("Pod with non-empty `kuma.io/mesh` annotation", testCase{
+				podAnnotations: map[string]string{
+					"kuma.io/mesh": "demo",
+				},
+				expected: "demo",
+			}),
+			Entry("Pod with empty `kuma.io/mesh` annotation, Namespace with label", testCase{
+				podAnnotations: map[string]string{
+					"kuma.io/mesh": "",
+				},
+				nsLabels: map[string]string{
+					"kuma.io/mesh": "demo",
+				},
+				expected: "demo",
+			}),
+			Entry("Pod with empty `kuma.io/mesh` annotation, Namespace with annotation", testCase{
+				podAnnotations: map[string]string{
+					"kuma.io/mesh": "",
+				},
+				nsAnnotations: map[string]string{
 					"kuma.io/mesh": "demo",
 				},
 				expected: "demo",
@@ -556,6 +668,32 @@ var _ = Describe("Util", func() {
 					expectedErr: `no suitable port for manifest: 8648e081-576d-4a23-861b-8f2d94d28d34`,
 				}),
 			)
+		})
+	})
+	Describe("ServiceTagFor", func() {
+		It("should use Service FQDN", func() {
+			// given
+			svc := &kube_core.Service{
+				ObjectMeta: kube_meta.ObjectMeta{
+					Namespace: "demo",
+					Name:      "example",
+				},
+				Spec: kube_core.ServiceSpec{
+					Ports: []kube_core.ServicePort{
+						{
+							Name: "http",
+							Port: 80,
+							TargetPort: kube_intstr.IntOrString{
+								Type:   kube_intstr.Int,
+								IntVal: 8080,
+							},
+						},
+					},
+				},
+			}
+
+			// then
+			Expect(util.ServiceTag(kube_client.ObjectKeyFromObject(svc), &svc.Spec.Ports[0].Port)).To(Equal("example_demo_svc_80"))
 		})
 	})
 })

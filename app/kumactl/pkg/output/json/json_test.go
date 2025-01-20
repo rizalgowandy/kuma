@@ -2,23 +2,22 @@ package json_test
 
 import (
 	"bytes"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/app/kumactl/pkg/output"
 	"github.com/kumahq/kuma/app/kumactl/pkg/output/json"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
-	core_rest "github.com/kumahq/kuma/pkg/core/resources/model/rest"
+	"github.com/kumahq/kuma/pkg/core/resources/model/rest/unversioned"
+	rest_v1alpha1 "github.com/kumahq/kuma/pkg/core/resources/model/rest/v1alpha1"
 )
 
 var _ = Describe("printer", func() {
-
 	var printer output.Printer
 	var buf *bytes.Buffer
 	t1, _ := time.Parse(time.RFC3339, "2018-07-17T16:05:36.995+00:00")
@@ -41,7 +40,7 @@ var _ = Describe("printer", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			expected, err := ioutil.ReadFile(filepath.Join("testdata", given.goldenFile))
+			expected, err := os.ReadFile(filepath.Join("testdata", given.goldenFile))
 			// then
 			Expect(err).ToNot(HaveOccurred())
 
@@ -53,8 +52,8 @@ var _ = Describe("printer", func() {
 			goldenFile: "nil.golden.json",
 		}),
 		Entry("format response from Kuma REST API", testCase{
-			obj: &core_rest.Resource{
-				Meta: core_rest.ResourceMeta{
+			obj: &unversioned.Resource{
+				Meta: rest_v1alpha1.ResourceMeta{
 					Type:             string(core_mesh.MeshType),
 					Name:             "demo",
 					CreationTime:     t1,

@@ -2,14 +2,12 @@ package metrics_test
 
 import (
 	"context"
-	"sync"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 
-	"github.com/kumahq/kuma/pkg/core"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
@@ -21,6 +19,7 @@ import (
 	test_insights "github.com/kumahq/kuma/pkg/insights/test"
 	core_metrics "github.com/kumahq/kuma/pkg/metrics"
 	metrics_store "github.com/kumahq/kuma/pkg/metrics/store"
+	"github.com/kumahq/kuma/pkg/multitenant"
 	store_memory "github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	"github.com/kumahq/kuma/pkg/test/kds/samples"
 	test_metrics "github.com/kumahq/kuma/pkg/test/metrics"
@@ -34,27 +33,17 @@ var _ = Describe("Counter", func() {
 	var eventCh chan events.Event
 	var stop chan struct{}
 
-	nowMtx := &sync.RWMutex{}
-	var now time.Time
-
-	tickMtx := &sync.RWMutex{}
+	start := time.Now()
 	var tickCh chan time.Time
-
-	core.Now = func() time.Time {
-		nowMtx.RLock()
-		defer nowMtx.RUnlock()
-		return now
-	}
 
 	BeforeEach(func() {
 		var err error
 
-		now = time.Now()
 		eventCh = make(chan events.Event)
 		stop = make(chan struct{})
 		tickCh = make(chan time.Time)
 
-		metrics, err = core_metrics.NewMetrics("Standalone")
+		metrics, err = core_metrics.NewMetrics("Zone")
 		Expect(err).ToNot(HaveOccurred())
 
 		memoryStore := store_memory.NewStore()
@@ -64,20 +53,23 @@ var _ = Describe("Counter", func() {
 		resManager = manager.NewResourceManager(store)
 
 		counterTicker := time.NewTicker(500 * time.Millisecond)
-		counter, err := metrics_store.NewStoreCounter(resManager, metrics)
+		counter, err := metrics_store.NewStoreCounter(resManager, metrics, multitenant.SingleTenant)
 		Expect(err).ToNot(HaveOccurred())
 
 		resyncer := insights.NewResyncer(&insights.Config{
-			MinResyncTimeout:   5 * time.Second,
-			MaxResyncTimeout:   1 * time.Minute,
+			MinResyncInterval:  5 * time.Second,
+			FullResyncInterval: 5 * time.Second,
 			ResourceManager:    resManager,
 			EventReaderFactory: &test_insights.TestEventReaderFactory{Reader: &test_insights.TestEventReader{Ch: eventCh}},
-			Tick: func(d time.Duration) (rv <-chan time.Time) {
-				tickMtx.RLock()
-				defer tickMtx.RUnlock()
+			Tick: func(d time.Duration) <-chan time.Time {
 				return tickCh
 			},
-			Registry: registry.Global(),
+			Registry:            registry.Global(),
+			TenantFn:            multitenant.SingleTenant,
+			EventBufferCapacity: 10,
+			EventProcessors:     1,
+			Metrics:             metrics,
+			Extensions:          context.Background(),
 		})
 
 		go func() {
@@ -133,17 +125,14 @@ var _ = Describe("Counter", func() {
 
 		// when
 		// trigger the resyncer
-		nowMtx.Lock()
-		now = now.Add(1 * time.Minute)
-		nowMtx.Unlock()
-		tickCh <- now
+		tickCh <- start.Add(time.Minute)
 		// wait for the counter
-		time.Sleep(1 * time.Second)
-
-		// then
-		Expect(findGauge("Zone").GetValue()).To(Equal(float64(1)))
-		Expect(findGauge("Mesh").GetValue()).To(Equal(float64(2)))
-		Expect(findGauge("Dataplane").GetValue()).To(Equal(float64(1)))
-		Expect(findGauge("TrafficPermission").GetValue()).To(Equal(float64(2)))
+		Eventually(func(g Gomega) {
+			// then
+			g.Expect(findGauge("Zone").GetValue()).To(Equal(float64(1)))
+			g.Expect(findGauge("Mesh").GetValue()).To(Equal(float64(2)))
+			g.Expect(findGauge("Dataplane").GetValue()).To(Equal(float64(1)))
+			g.Expect(findGauge("TrafficPermission").GetValue()).To(Equal(float64(2)))
+		}).Should(Succeed())
 	})
 })

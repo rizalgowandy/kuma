@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	gomega_types "github.com/onsi/gomega/types"
 	"github.com/spf13/cobra"
@@ -16,9 +14,9 @@ import (
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/app/kumactl/cmd"
 	"github.com/kumahq/kuma/app/kumactl/pkg/resources"
+	test_kumactl "github.com/kumahq/kuma/app/kumactl/pkg/test"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
-	test_kumactl "github.com/kumahq/kuma/pkg/test/kumactl"
 	"github.com/kumahq/kuma/pkg/test/matchers"
 	test_model "github.com/kumahq/kuma/pkg/test/resources/model"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
@@ -42,15 +40,13 @@ func (c *testZoneIngressOverviewClient) List(_ context.Context) (*core_mesh.Zone
 var _ resources.ZoneIngressOverviewClient = &testZoneIngressOverviewClient{}
 
 var _ = Describe("kumactl inspect zone-ingresses", func() {
-
 	var now, t1, t2 time.Time
 	var sampleZoneIngressOverview []*core_mesh.ZoneIngressOverviewResource
 
 	BeforeEach(func() {
-		now, _ = time.Parse(time.RFC3339, "2019-07-17T18:08:41+00:00")
-		t1, _ = time.Parse(time.RFC3339, "2018-07-17T16:05:36.995+00:00")
-		t2, _ = time.Parse(time.RFC3339, "2019-07-17T16:05:36.995+00:00")
-		time.Local = time.UTC
+		now, _ = time.ParseInLocation(time.RFC3339, "2019-07-17T18:08:41+00:00", time.UTC)
+		t1, _ = time.ParseInLocation(time.RFC3339, "2018-07-17T16:05:36.995+00:00", time.UTC)
+		t2, _ = time.ParseInLocation(time.RFC3339, "2019-07-17T16:05:36.995+00:00", time.UTC)
 
 		sampleZoneIngressOverview = []*core_mesh.ZoneIngressOverviewResource{
 			{
@@ -239,7 +235,6 @@ var _ = Describe("kumactl inspect zone-ingresses", func() {
 	})
 
 	Describe("InspectZoneIngressesCmd", func() {
-
 		var rootCmd *cobra.Command
 		var buf *bytes.Buffer
 
@@ -266,7 +261,7 @@ var _ = Describe("kumactl inspect zone-ingresses", func() {
 		type testCase struct {
 			outputFormat string
 			goldenFile   string
-			matcher      func(interface{}) gomega_types.GomegaMatcher
+			matcher      func(path ...string) gomega_types.GomegaMatcher
 		}
 
 		DescribeTable("kumactl inspect zone-ingresses -o table|json|yaml",
@@ -274,37 +269,34 @@ var _ = Describe("kumactl inspect zone-ingresses", func() {
 				// given
 				rootCmd.SetArgs(append([]string{
 					"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-					"inspect", "zone-ingresses"}, given.outputFormat))
+					"inspect", "zone-ingresses",
+				}, given.outputFormat))
 
 				// when
 				err := rootCmd.Execute()
 				// then
 				Expect(err).ToNot(HaveOccurred())
-				Expect(buf.String()).To(matchers.MatchGoldenEqual(filepath.Join("testdata", given.goldenFile)))
+				Expect(buf.String()).To(matchers.MatchGoldenEqual("testdata", given.goldenFile))
 			},
 			Entry("should support Table output by default", testCase{
 				outputFormat: "",
 				goldenFile:   "inspect-zone-ingresses.golden.txt",
-				matcher: func(expected interface{}) gomega_types.GomegaMatcher {
-					return WithTransform(strings.TrimSpace, Equal(strings.TrimSpace(string(expected.([]byte)))))
-				},
+				matcher:      matchers.MatchGoldenEqual,
 			}),
 			Entry("should support Table output explicitly", testCase{
 				outputFormat: "-otable",
 				goldenFile:   "inspect-zone-ingresses.golden.txt",
-				matcher: func(expected interface{}) gomega_types.GomegaMatcher {
-					return WithTransform(strings.TrimSpace, Equal(strings.TrimSpace(string(expected.([]byte)))))
-				},
+				matcher:      matchers.MatchGoldenEqual,
 			}),
 			Entry("should support JSON output", testCase{
 				outputFormat: "-ojson",
 				goldenFile:   "inspect-zone-ingresses.golden.json",
-				matcher:      MatchJSON,
+				matcher:      matchers.MatchGoldenJSON,
 			}),
 			Entry("should support YAML output", testCase{
 				outputFormat: "-oyaml",
 				goldenFile:   "inspect-zone-ingress.golden.yaml",
-				matcher:      MatchYAML,
+				matcher:      matchers.MatchGoldenYAML,
 			}),
 		)
 	})

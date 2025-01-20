@@ -3,7 +3,7 @@ resources:
   resource:
     '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     altStatName: kuma_metrics_hijacker
-    connectTimeout: 10s
+    connectTimeout: 5s
     loadAssignment:
       clusterName: kuma:metrics:hijacker
       endpoints:
@@ -21,6 +21,7 @@ resources:
       socketAddress:
         address: 192.168.0.1
         portValue: 1234
+    enableReusePort: false
     filterChains:
     - filterChainMatch:
         sourcePrefixRanges:
@@ -32,6 +33,8 @@ resources:
           '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           httpFilters:
           - name: envoy.filters.http.router
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           routeConfig:
             validateClusters: false
             virtualHosts:
@@ -46,16 +49,13 @@ resources:
                   prefixRewrite: /
           statPrefix: kuma_metrics_prometheus
     - filters:
-      - name: envoy.filters.network.rbac
-        typedConfig:
-          '@type': type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC
-          rules: {}
-          statPrefix: kuma_metrics_prometheus.
       - name: envoy.filters.network.http_connection_manager
         typedConfig:
           '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           httpFilters:
           - name: envoy.filters.http.router
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           routeConfig:
             validateClusters: false
             virtualHosts:
@@ -76,15 +76,17 @@ resources:
           commonTlsContext:
             combinedValidationContext:
               defaultValidationContext:
-                matchSubjectAltNames:
-                - prefix: spiffe://demo/
+                matchTypedSubjectAltNames:
+                - matcher:
+                    prefix: spiffe://demo/
+                  sanType: URI
               validationContextSdsSecretConfig:
-                name: mesh_ca
+                name: mesh_ca:secret:demo
                 sdsConfig:
                   ads: {}
                   resourceApiVersion: V3
             tlsCertificateSdsSecretConfigs:
-            - name: identity_cert
+            - name: identity_cert:secret:demo
               sdsConfig:
                 ads: {}
                 resourceApiVersion: V3

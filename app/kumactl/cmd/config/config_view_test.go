@@ -1,28 +1,25 @@
 package config_test
 
 import (
-	"bytes"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/kumahq/kuma/pkg/util/test"
+	"github.com/kumahq/kuma/app/kumactl/pkg/test"
 )
 
 var _ = Describe("kumactl config view", func() {
-
 	It("should display configuration from a given file", func() {
 		// setup
-		rootCmd := test.DefaultTestingRootCmd()
-		buf := &bytes.Buffer{}
-		rootCmd.SetOut(buf)
+		buf, _, rootCmd := test.DefaultTestingRootCmd()
 
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("testdata", "config-view.config.yaml"),
-			"config", "view"})
+			"config", "view",
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -30,7 +27,7 @@ var _ = Describe("kumactl config view", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
-		expected, err := ioutil.ReadFile(filepath.Join("testdata", "config-view.golden.yaml"))
+		expected, err := os.ReadFile(filepath.Join("testdata", "config-view.golden.yaml"))
 		// then
 		Expect(err).ToNot(HaveOccurred())
 		// and

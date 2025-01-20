@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/core/xds"
@@ -12,9 +11,7 @@ import (
 )
 
 var _ = Describe("HttpConnectionManagerConfigurer", func() {
-
 	type testCase struct {
-		listenerName     string
 		listenerProtocol xds.SocketAddressProtocol
 		listenerAddress  string
 		listenerPort     uint32
@@ -25,9 +22,8 @@ var _ = Describe("HttpConnectionManagerConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy.APIV3).
-				Configure(InboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy.APIV3).
+			listener, err := NewInboundListenerBuilder(envoy.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				Configure(FilterChain(NewFilterChainBuilder(envoy.APIV3, envoy.AnonymousResource).
 					Configure(HttpConnectionManager(given.statsName, true)))).
 				Build()
 			// then
@@ -40,7 +36,6 @@ var _ = Describe("HttpConnectionManagerConfigurer", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("basic http_connection_manager", testCase{
-			listenerName:    "inbound:192.168.0.1:8080",
 			listenerAddress: "192.168.0.1",
 			listenerPort:    8080,
 			statsName:       "localhost:8080",
@@ -51,6 +46,7 @@ var _ = Describe("HttpConnectionManagerConfigurer", func() {
               socketAddress:
                 address: 192.168.0.1
                 portValue: 8080
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.http_connection_manager
@@ -62,6 +58,8 @@ var _ = Describe("HttpConnectionManagerConfigurer", func() {
                   statPrefix: localhost_8080
                   httpFilters:
                   - name: envoy.filters.http.router
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 `,
 		}),
 	)

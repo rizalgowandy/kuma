@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"math"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/dns/vips"
 )
 
 var _ = Describe("global view", func() {
-
 	It("should fail when no more ips", func() {
 		// given
 		gv, err := vips.NewGlobalView("192.168.0.1/32")

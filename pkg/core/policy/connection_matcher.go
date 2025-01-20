@@ -20,17 +20,18 @@ func (f ServiceIteratorFunc) Next() (core_xds.ServiceName, bool) {
 
 func ToOutboundServicesOf(dataplane *core_mesh.DataplaneResource) ServiceIterator {
 	idx := 0
+	outbounds := dataplane.Spec.Networking.GetOutbounds(mesh_proto.NonBackendRefFilter)
 	return ServiceIteratorFunc(func() (core_xds.ServiceName, bool) {
-		if len(dataplane.Spec.Networking.GetOutbound()) < idx {
+		if len(outbounds) < idx {
 			return "", false
 		}
-		if len(dataplane.Spec.Networking.GetOutbound()) == idx { // add additional implicit pass through service
+		if len(outbounds) == idx { // add additional implicit pass through service
 			idx++
 			return core_mesh.PassThroughService, true
 		}
-		oface := dataplane.Spec.Networking.GetOutbound()[idx]
+		oface := outbounds[idx]
 		idx++
-		return oface.GetTagsIncludingLegacy()[mesh_proto.ServiceTag], true
+		return oface.GetService(), true
 	})
 }
 
@@ -154,7 +155,7 @@ func SelectInboundConnectionPolicies(dataplane *core_mesh.DataplaneResource, inb
 	return policiesMap
 }
 
-// SelectInboundConnectionAllPolicies picks all matching policies for each inbound interface of a given Dataplane.
+// SelectInboundConnectionMatchingPolicies picks all matching policies for each inbound interface of a given Dataplane.
 func SelectInboundConnectionMatchingPolicies(dataplane *core_mesh.DataplaneResource, inbounds []*mesh_proto.Dataplane_Networking_Inbound, policies []ConnectionPolicy) InboundConnectionPoliciesMap {
 	sort.Stable(ConnectionPolicyByName(policies)) // sort to avoid flakiness
 	policiesMap := make(InboundConnectionPoliciesMap)

@@ -43,13 +43,13 @@ func (m *rateLimitManager) List(ctx context.Context, list core_model.ResourceLis
 	return m.store.List(ctx, rateLimits, fs...)
 }
 
-func (m *rateLimitManager) Create(ctx context.Context, resource core_model.Resource, fs ...core_store.CreateOptionsFunc) (errs error) {
+func (m *rateLimitManager) Create(ctx context.Context, resource core_model.Resource, fs ...core_store.CreateOptionsFunc) error {
 	opts := core_store.NewCreateOptions(fs...)
 	rateLimit, err := m.rateLimit(resource)
 	if err != nil {
 		return err
 	}
-	if err := resource.Validate(); err != nil {
+	if err := core_model.Validate(resource); err != nil {
 		return err
 	}
 	if err := m.rateLimitValidator.ValidateCreate(ctx, opts.Mesh, rateLimit); err != nil {
@@ -90,7 +90,7 @@ func (m *rateLimitManager) Update(ctx context.Context, resource core_model.Resou
 	if err != nil {
 		return err
 	}
-	if err := resource.Validate(); err != nil {
+	if err := core_model.Validate(resource); err != nil {
 		return err
 	}
 

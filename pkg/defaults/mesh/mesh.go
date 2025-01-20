@@ -1,12 +1,20 @@
 package mesh
 
 import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/pkg/errors"
 
 	"github.com/kumahq/kuma/pkg/core"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
+	"github.com/kumahq/kuma/pkg/core/resources/model"
+	"github.com/kumahq/kuma/pkg/core/resources/store"
+	"github.com/kumahq/kuma/pkg/core/tokens"
+	kuma_log "github.com/kumahq/kuma/pkg/log"
 	"github.com/kumahq/kuma/pkg/tokens/builtin/issuer"
 )
 
@@ -19,79 +27,92 @@ var log = core.Log.WithName("defaults").WithName("mesh")
 // 2 invocation can check that TrafficPermission is absent, but it was just created, so it tries to created it which results in error
 var ensureMux = sync.Mutex{}
 
-func EnsureDefaultMeshResources(resManager manager.ResourceManager, meshName string) error {
+func EnsureDefaultMeshResources(
+	ctx context.Context,
+	resManager manager.ResourceManager,
+	mesh model.Resource,
+	skippedPolicies []string,
+	extensions context.Context,
+	createMeshDefaultRoutingResources bool,
+	k8sStore bool,
+	systemNamespace string,
+) error {
 	ensureMux.Lock()
 	defer ensureMux.Unlock()
-	log.Info("ensuring default resources for Mesh exist", "mesh", meshName)
 
-	err, created := ensureDefaultTrafficPermission(resManager, meshName)
-	if err != nil {
-		return errors.Wrap(err, "could not create default TrafficPermission")
-	}
-	if created {
-		log.Info("default TrafficPermission created", "mesh", meshName, "name", defaultTrafficPermissionKey(meshName).Name)
-	} else {
-		log.Info("default TrafficPermission already exist", "mesh", meshName, "name", defaultTrafficPermissionKey(meshName).Name)
-	}
+	meshName := mesh.GetMeta().GetName()
+	logger := kuma_log.AddFieldsFromCtx(log, ctx, extensions).WithValues("mesh", meshName)
 
-	err, created = ensureDefaultTrafficRoute(resManager, meshName)
-	if err != nil {
-		return errors.Wrap(err, "could not create default TrafficRoute")
-	}
-	if created {
-		log.Info("default TrafficRoute created", "mesh", meshName, "name", defaultTrafficRouteKey(meshName).Name)
-	} else {
-		log.Info("default TrafficRoute already exist", "mesh", meshName, "name", defaultTrafficRouteKey(meshName).Name)
-	}
+	logger.Info("ensuring default resources for Mesh exist")
 
-	err, created = ensureDefaultTimeout(resManager, meshName)
-	if err != nil {
-		return errors.Wrap(err, "could not create default Timeout")
-	}
-	if created {
-		log.Info("default Timeout created", "mesh", meshName, "name", defaultTimeoutKey(meshName).Name)
-	} else {
-		log.Info("default Timeout already exist", "mesh", meshName, "name", defaultTimeoutKey(meshName).Name)
-	}
-
-	err, created = ensureDefaultCircuitBreaker(resManager, meshName)
-	if err != nil {
-		return errors.Wrap(err, "could not create default CircuitBreaker")
-	}
-	if created {
-		log.Info("default CircuitBreaker created", "mesh", meshName, "name", defaultCircuitBreakerKey(meshName).Name)
-	} else {
-		log.Info("default CircuitBreaker already exist", "mesh", meshName, "name", defaultCircuitBreakerKey(meshName).Name)
-	}
-
-	err, created = ensureDefaultRetry(resManager, meshName)
-	if err != nil {
-		return errors.Wrap(err, "could not create default Retry")
-	}
-	if created {
-		log.Info("default Retry created", "mesh", meshName, "name", defaultRetryKey(meshName).Name)
-	} else {
-		log.Info("default Retry already exist", "mesh", meshName, "name", defaultRetryKey(meshName).Name)
-	}
-
-	created, err = ensureDataplaneTokenSigningKey(resManager, meshName)
+	created, err := ensureDataplaneTokenSigningKey(ctx, resManager, mesh)
 	if err != nil {
 		return errors.Wrap(err, "could not create default Dataplane Token Signing Key")
 	}
 	if created {
-		log.Info("default Signing Key created", "mesh", meshName, "name", issuer.SigningKeyResourceKey(issuer.DataplaneTokenPrefix, meshName).Name)
+		resKey := tokens.SigningKeyResourceKey(issuer.DataplaneTokenSigningKeyPrefix(meshName), tokens.DefaultKeyID, meshName)
+		logger.Info("default Dataplane Token Signing Key created", "name", resKey.Name)
 	} else {
-		log.Info("default Signing Key already exist", "mesh", meshName, "name", issuer.SigningKeyResourceKey(issuer.DataplaneTokenPrefix, meshName).Name)
+		logger.Info("Dataplane Token Signing Key already exists")
+	}
+	if slices.Contains(skippedPolicies, "*") {
+		logger.Info("skipping all default policy creation")
+		return nil
 	}
 
-	created, err = ensureEnvoyAdminClientSigningKey(resManager, meshName)
-	if err != nil {
-		return errors.Wrap(err, "could not create default Envoy Admin Client Token Signing Key")
+	defaultResourceBuilders := map[string]func() model.Resource{
+		"mesh-gateways-timeout-all": defaulMeshGatewaysTimeoutResource,
+		"mesh-timeout-all":          defaultMeshTimeoutResource,
+		"mesh-circuit-breaker-all":  defaultMeshCircuitBreakerResource,
+		"mesh-retry-all":            defaultMeshRetryResource,
 	}
-	if created {
-		log.Info("default Signing Key created", "mesh", meshName, "name", issuer.SigningKeyResourceKey(issuer.EnvoyAdminClientTokenPrefix, meshName).Name)
-	} else {
-		log.Info("default Signing Key already exist", "mesh", meshName, "name", issuer.SigningKeyResourceKey(issuer.EnvoyAdminClientTokenPrefix, meshName).Name)
+	if createMeshDefaultRoutingResources {
+		defaultResourceBuilders["allow-all"] = defaultTrafficPermissionResource
+		defaultResourceBuilders["route-all"] = defaultTrafficRouteResource
+	}
+	for prefix, resourceBuilder := range defaultResourceBuilders {
+		resourceName := fmt.Sprintf("%s-%s", prefix, meshName)
+		// new policies are created in a kuma system namespace
+		if k8sStore && strings.HasPrefix(prefix, "mesh-") {
+			resourceName = fmt.Sprintf("%s.%s", resourceName, systemNamespace)
+		}
+		key := model.ResourceKey{
+			Mesh: meshName,
+			Name: resourceName,
+		}
+
+		resource := resourceBuilder()
+
+		var msg string
+		if !slices.Contains(skippedPolicies, string(resource.Descriptor().Name)) {
+			err, created := ensureDefaultResource(ctx, resManager, resource, key)
+			if err != nil {
+				return errors.Wrapf(err, "could not create default %s %q", resource.Descriptor().Name, key.Name)
+			}
+
+			msg = fmt.Sprintf("default %s already exists", resource.Descriptor().Name)
+			if created {
+				msg = fmt.Sprintf("default %s created", resource.Descriptor().Name)
+			}
+		} else {
+			msg = fmt.Sprintf("skipping default %s creation", resource.Descriptor().Name)
+		}
+
+		logger.Info(msg, "name", key.Name)
 	}
 	return nil
+}
+
+func ensureDefaultResource(ctx context.Context, resManager manager.ResourceManager, res model.Resource, resourceKey model.ResourceKey) (error, bool) {
+	err := resManager.Get(ctx, res, store.GetBy(resourceKey), store.GetConsistent())
+	if err == nil {
+		return nil, false
+	}
+	if !store.IsResourceNotFound(err) {
+		return errors.Wrap(err, "could not retrieve a resource"), false
+	}
+	if err := resManager.Create(ctx, res, store.CreateBy(resourceKey)); err != nil {
+		return errors.Wrap(err, "could not create a resource"), false
+	}
+	return nil, true
 }

@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/validators"
-	accesslog "github.com/kumahq/kuma/pkg/envoy/accesslog/v3"
 	"github.com/kumahq/kuma/pkg/util/proto"
 )
 
@@ -21,7 +21,43 @@ func (m *MeshResource) Validate() error {
 	verr.AddError("logging", validateLogging(m.Spec.Logging))
 	verr.AddError("tracing", validateTracing(m.Spec.Tracing))
 	verr.AddError("metrics", validateMetrics(m.Spec.Metrics))
+	verr.AddError("constraints", validateConstraints(m.Spec.Constraints))
+	verr.AddError("", validateZoneEgress(m.Spec.Routing, m.Spec.Mtls))
 	return verr.OrNil()
+}
+
+func validateConstraints(constraints *mesh_proto.Mesh_Constraints) validators.ValidationError {
+	var verr validators.ValidationError
+	if constraints == nil {
+		return verr
+	}
+	verr.AddError("dataplaneProxy", validateDppConstraints(constraints.DataplaneProxy))
+	return verr
+}
+
+func validateDppConstraints(constraints *mesh_proto.Mesh_DataplaneProxyConstraints) validators.ValidationError {
+	var verr validators.ValidationError
+	if constraints == nil {
+		return verr
+	}
+
+	for i, requirement := range constraints.GetRequirements() {
+		verr.Add(ValidateSelector(
+			validators.RootedAt("requirements").Index(i).Field("tags"),
+			requirement.Tags,
+			ValidateTagsOpts{RequireAtLeastOneTag: true},
+		))
+	}
+
+	for i, requirement := range constraints.GetRestrictions() {
+		verr.Add(ValidateSelector(
+			validators.RootedAt("restrictions").Index(i).Field("tags"),
+			requirement.Tags,
+			ValidateTagsOpts{RequireAtLeastOneTag: true},
+		))
+	}
+
+	return verr
 }
 
 func validateMtls(mtls *mesh_proto.Mesh_Mtls) validators.ValidationError {
@@ -77,9 +113,6 @@ func validateLoggingBackend(backend *mesh_proto.LoggingBackend) validators.Valid
 	var verr validators.ValidationError
 	if backend.Name == "" {
 		verr.AddViolation("name", "cannot be empty")
-	}
-	if err := accesslog.ValidateFormat(backend.Format); err != nil {
-		verr.AddViolation("format", err.Error())
 	}
 	switch backend.GetType() {
 	case mesh_proto.LoggingFileType:
@@ -210,6 +243,8 @@ func validateMetrics(metrics *mesh_proto.Metrics) validators.ValidationError {
 		}
 		if backend.GetType() != mesh_proto.MetricsPrometheusType {
 			verr.AddViolationAt(validators.RootedAt("backends").Index(i).Field("type"), fmt.Sprintf("unknown backend type. Available backends: %q", mesh_proto.MetricsPrometheusType))
+		} else {
+			verr.AddErrorAt(validators.RootedAt("backends").Index(i).Field("conf"), validatePrometheusConfig(backend.GetConf()))
 		}
 		usedNames[backend.Name] = true
 	}
@@ -217,4 +252,48 @@ func validateMetrics(metrics *mesh_proto.Metrics) validators.ValidationError {
 		verr.AddViolation("enabledBackend", "has to be set to one of the backends in the mesh")
 	}
 	return verr
+}
+
+func validatePrometheusConfig(cfgStr *structpb.Struct) validators.ValidationError {
+	var verr validators.ValidationError
+	cfg := mesh_proto.PrometheusMetricsBackendConfig{}
+	if err := proto.ToTyped(cfgStr, &cfg); err != nil {
+		verr.AddViolation("", fmt.Sprintf("could not parse config: %s", err.Error()))
+		return verr
+	}
+	if cfg.SkipMTLS != nil && cfg.Tls != nil && !hasEqualConfiguration(&cfg) {
+		verr.AddViolation("", "skipMTLS and tls configuration cannot be defined together")
+		return verr
+	}
+	if _, err := regexp.Compile(cfg.GetEnvoy().GetFilterRegex()); err != nil {
+		verr.AddViolationAt(validators.RootedAt("envoy").Field("filterRegex"), fmt.Sprintf("provided regexp isn't correct: %s", err.Error()))
+		return verr
+	}
+	usedName := make(map[string]bool)
+	for i, config := range cfg.GetAggregate() {
+		if _, ok := usedName[config.GetName()]; ok {
+			verr.AddViolationAt(validators.RootedAt("aggregate").Index(i).Field("name"), fmt.Sprintf("duplicate entry: %s, values have to be unique", config.GetName()))
+			continue
+		}
+		usedName[config.GetName()] = true
+	}
+	return verr
+}
+
+func validateZoneEgress(routing *mesh_proto.Routing, mtls *mesh_proto.Mesh_Mtls) validators.ValidationError {
+	var verr validators.ValidationError
+	if routing == nil {
+		return verr
+	}
+	if routing.ZoneEgress {
+		if mtls.GetEnabledBackend() == "" {
+			verr.AddViolation("mtls", "has to be set when zoneEgress enabled")
+		}
+	}
+	return verr
+}
+
+func hasEqualConfiguration(cfg *mesh_proto.PrometheusMetricsBackendConfig) bool {
+	return (!cfg.SkipMTLS.GetValue() && cfg.Tls.GetMode() == mesh_proto.PrometheusTlsConfig_activeMTLSBackend) ||
+		(cfg.SkipMTLS.GetValue() && cfg.Tls.GetMode() == mesh_proto.PrometheusTlsConfig_disabled)
 }

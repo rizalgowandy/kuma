@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -12,7 +11,6 @@ import (
 )
 
 var _ = Describe("Miscellaneous Listener configurers", func() {
-
 	type testCase struct {
 		opt      ListenerBuilderOpt
 		expected string
@@ -21,7 +19,7 @@ var _ = Describe("Miscellaneous Listener configurers", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener := NewListenerBuilder(envoy.APIV3)
+			listener := NewListenerBuilder(envoy.APIV3, "test_listener")
 
 			listener.Configure(given.opt)
 
@@ -37,32 +35,46 @@ var _ = Describe("Miscellaneous Listener configurers", func() {
 		},
 		Entry("noop 1", testCase{
 			opt:      AddListenerConfigurer(v3.ListenerConfigureFunc(nil)),
-			expected: "{}",
+			expected: "name: test_listener",
 		}),
 		Entry("noop 2", testCase{
 			opt:      AddListenerConfigurer(v3.ListenerMustConfigureFunc(nil)),
-			expected: "{}",
+			expected: "name: test_listener",
 		}),
 		Entry("connection buffer limit", testCase{
-			opt:      ConnectionBufferLimit(123),
-			expected: "perConnectionBufferLimitBytes: 123",
+			opt: ConnectionBufferLimit(123),
+			expected: `
+name: test_listener
+perConnectionBufferLimitBytes: 123
+`,
 		}),
-		Entry("reuse port enabled", testCase{
-			opt:      EnableReusePort(true),
-			expected: "reusePort: true",
+		Entry("enable reuse port enabled", testCase{
+			opt: EnableReusePort(true),
+			expected: `
+enableReusePort: true
+name: test_listener
+`,
 		}),
-		Entry("reuse port disabled", testCase{
-			opt:      EnableReusePort(false),
-			expected: "{}",
+		Entry("enable reuse port disabled", testCase{
+			opt: EnableReusePort(false),
+			expected: `
+enableReusePort: false
+name: test_listener
+`,
 		}),
 		Entry("enable freebind", testCase{
-			opt:      EnableFreebind(true),
-			expected: "freebind: true",
+			opt: EnableFreebind(true),
+			expected: `
+freebind: true
+name: test_listener
+`,
 		}),
 		Entry("disable freebind", testCase{
-			opt:      EnableFreebind(false),
-			expected: "freebind: false",
+			opt: EnableFreebind(false),
+			expected: `
+freebind: false
+name: test_listener
+`,
 		}),
 	)
-
 })

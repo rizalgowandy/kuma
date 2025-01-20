@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -17,7 +16,7 @@ var _ = Describe("gRPCStatsConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			filterChain, err := NewFilterChainBuilder(envoy.APIV3).
+			filterChain, err := NewFilterChainBuilder(envoy.APIV3, envoy.AnonymousResource).
 				Configure(HttpConnectionManager("stats", false)).
 				Configure(GrpcStats()).
 				Build()
@@ -40,8 +39,9 @@ var _ = Describe("gRPCStatsConfigurer", func() {
                   typedConfig:
                     '@type': type.googleapis.com/envoy.extensions.filters.http.grpc_stats.v3.FilterConfig
                     emitFilterState: true
-                    statsForAllMethods: true
                 - name: envoy.filters.http.router
+                  typedConfig:
+                    '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                 statPrefix: stats`,
 		}),
 	)

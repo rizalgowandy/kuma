@@ -27,9 +27,7 @@ func NewDeleteCmd(pctx *kumactl_cmd.RootContext) *cobra.Command {
 		Long:  `Delete Kuma resources.`,
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := pctx.CheckServerVersionCompatibility(); err != nil {
-				cmd.PrintErrln(err)
-			}
+			_ = kumactl_cmd.CheckCompatibility(pctx.FetchServerVersion, cmd.ErrOrStderr())
 
 			resourceTypeArg := args[0]
 			name := args[1]
@@ -60,7 +58,7 @@ func NewDeleteCmd(pctx *kumactl_cmd.RootContext) *cobra.Command {
 			return nil
 		},
 	}
-
+	cmd.PersistentFlags().StringVarP(&pctx.Args.Mesh, "mesh", "m", "default", "mesh to use")
 	return cmd
 }
 

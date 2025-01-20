@@ -1,15 +1,13 @@
 package names_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/xds/envoy/names"
 )
 
 var _ = Describe("ListenerFilterChainConfigurer", func() {
-
 	type testCase struct {
 		address  string
 		port     uint32
@@ -53,5 +51,4 @@ var _ = Describe("ListenerFilterChainConfigurer", func() {
 			expected: "outbound:[fd00::1]:8080",
 		}),
 	)
-
 })

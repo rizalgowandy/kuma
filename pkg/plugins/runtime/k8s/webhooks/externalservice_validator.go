@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"k8s.io/api/admission/v1"
+	v1 "k8s.io/api/admission/v1"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	externalservice_managers "github.com/kumahq/kuma/pkg/core/managers/apis/external_service"
@@ -24,12 +24,11 @@ func NewExternalServiceValidatorWebhook(validator externalservice_managers.Exter
 type ExternalServiceValidator struct {
 	validator externalservice_managers.ExternalServiceValidator
 	converter k8s_common.Converter
-	decoder   *admission.Decoder
+	decoder   admission.Decoder
 }
 
-func (h *ExternalServiceValidator) InjectDecoder(d *admission.Decoder) error {
+func (h *ExternalServiceValidator) InjectDecoder(d admission.Decoder) {
 	h.decoder = d
-	return nil
 }
 
 func (h *ExternalServiceValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
@@ -62,7 +61,7 @@ func (h *ExternalServiceValidator) ValidateCreate(ctx context.Context, req admis
 	}
 	if err := h.validator.ValidateCreate(ctx, k8sRes.Mesh, coreRes); err != nil {
 		if kumaErr, ok := err.(*validators.ValidationError); ok {
-			return convertSpecValidationError(kumaErr, k8sRes)
+			return convertSpecValidationError(kumaErr, false, k8sRes)
 		}
 		return admission.Denied(err.Error())
 	}
@@ -90,7 +89,7 @@ func (h *ExternalServiceValidator) ValidateUpdate(ctx context.Context, req admis
 
 	if err := h.validator.ValidateUpdate(ctx, oldCoreRes, coreRes); err != nil {
 		if kumaErr, ok := err.(*validators.ValidationError); ok {
-			return convertSpecValidationError(kumaErr, k8sRes)
+			return convertSpecValidationError(kumaErr, false, k8sRes)
 		}
 		return admission.Denied(err.Error())
 	}

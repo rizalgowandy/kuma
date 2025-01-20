@@ -1,10 +1,9 @@
 package mesh_test
 
 import (
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	. "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -166,6 +165,27 @@ var _ = Describe("Retry", func() {
                   message: field cannot be empty
 `,
 			}),
+			Entry("invalid conf.http retries not specified", testCase{
+				retry: `
+                sources:
+                - match:
+                    kuma.io/service: web
+                    region: eu
+                destinations:
+                - match:
+                    kuma.io/service: backend
+                conf:
+                    http:
+                        retryOn:
+                        - all_5xx
+                        - retriable_status_codes
+`,
+				expected: `
+                violations:
+                - field: conf.http.retryOn[1]
+                  message: retriableStatusCodes cannot be empty when this option is specified
+`,
+			}),
 			Entry("empty conf.grpc", testCase{
 				retry: `
                 sources:
@@ -299,7 +319,7 @@ var _ = Describe("Retry", func() {
 				verr := retry.Validate()
 
 				// then
-				Expect(verr).To(BeNil())
+				Expect(verr).ToNot(HaveOccurred())
 			},
 			Entry("all protocols configuration provided", testCaseWithNoErrors{
 				retry: `

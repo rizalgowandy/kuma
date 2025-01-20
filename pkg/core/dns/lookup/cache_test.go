@@ -4,7 +4,7 @@ import (
 	"net"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/core"
@@ -14,7 +14,7 @@ import (
 var _ = Describe("DNS with cache", func() {
 	var counter int
 	var table map[string][]net.IP
-	lookupFunc := func(host string) ([]net.IP, error) {
+	var lookupFunc lookup.LookupIPFunc = func(host string) ([]net.IP, error) {
 		counter++
 		return table[host], nil
 	}

@@ -3,7 +3,7 @@ package callbacks_test
 import (
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_sd "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -13,7 +13,6 @@ import (
 )
 
 var _ = Describe("Dataplane Metadata Tracker", func() {
-
 	tracker := NewDataplaneMetadataTracker()
 	callbacks := util_xds_v3.AdaptCallbacks(DataplaneCallbacksToXdsCallbacks(tracker))
 
@@ -21,19 +20,20 @@ var _ = Describe("Dataplane Metadata Tracker", func() {
 		Mesh: "default",
 		Name: "example",
 	}
-	req := envoy_sd.DiscoveryRequest{
-		Node: &envoy_core.Node{
-			Id: "default.example",
-			Metadata: &structpb.Struct{
-				Fields: map[string]*structpb.Value{
-					"dataplane.token": {
-						Kind: &structpb.Value_StringValue{
-							StringValue: "token",
-						},
+	node := &envoy_core.Node{
+		Id: "default.example",
+		Metadata: &structpb.Struct{
+			Fields: map[string]*structpb.Value{
+				"dataplane.dns.port": {
+					Kind: &structpb.Value_StringValue{
+						StringValue: "9090",
 					},
 				},
 			},
 		},
+	}
+	req := envoy_sd.DiscoveryRequest{
+		Node: node,
 	}
 	const streamId = 123
 
@@ -48,10 +48,10 @@ var _ = Describe("Dataplane Metadata Tracker", func() {
 		metadata := tracker.Metadata(dpKey)
 
 		// then
-		Expect(metadata.GetDataplaneToken()).To(Equal("token"))
+		Expect(metadata.GetDNSPort()).To(Equal(uint32(9090)))
 
 		// when
-		callbacks.OnStreamClosed(streamId)
+		callbacks.OnStreamClosed(streamId, node)
 
 		// then metadata should be deleted
 		metadata = tracker.Metadata(dpKey)
@@ -75,6 +75,6 @@ var _ = Describe("Dataplane Metadata Tracker", func() {
 		metadata := tracker.Metadata(dpKey)
 
 		// then
-		Expect(metadata.GetDataplaneToken()).To(Equal("token"))
+		Expect(metadata.GetDNSPort()).To(Equal(uint32(9090)))
 	})
 })

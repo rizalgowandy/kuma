@@ -1,96 +1,59 @@
 package version
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/pkg/errors"
+
+	"github.com/kumahq/kuma/pkg/core"
 )
 
-type DataplaneCompatibility struct {
-	Envoy string `json:"envoy"`
+var log = core.Log.WithName("version").WithName("compatibility")
+
+var PreviewVersionPrefix = "preview"
+
+func IsPreviewVersion(version string) bool {
+	return strings.Contains(version, PreviewVersionPrefix)
 }
 
-type Compatibility struct {
-	KumaDP map[string]DataplaneCompatibility `json:"kumaDp"`
-}
+// DeploymentVersionCompatible returns true if the given component version
+// is compatible with the installed version of Kuma CP.
+// For all binaries which share a common version (Kuma DP, CP, Zone CP...), we
+// support backwards compatibility of at most two prior minor versions.
+func DeploymentVersionCompatible(kumaVersionStr, componentVersionStr string) bool {
+	if IsPreviewVersion(kumaVersionStr) || IsPreviewVersion(componentVersionStr) {
+		return true
+	}
 
-var CompatibilityMatrix = Compatibility{
-	KumaDP: map[string]DataplaneCompatibility{
-		"1.0.0": {
-			Envoy: "1.16.0",
-		},
-		"1.0.1": {
-			Envoy: "1.16.0",
-		},
-		"1.0.2": {
-			Envoy: "1.16.1",
-		},
-		"1.0.3": {
-			Envoy: "1.16.1",
-		},
-		"1.0.4": {
-			Envoy: "1.16.1",
-		},
-		"1.0.5": {
-			Envoy: "1.16.2",
-		},
-		"1.0.6": {
-			Envoy: "1.16.2",
-		},
-		"1.0.7": {
-			Envoy: "1.16.2",
-		},
-		"1.0.8": {
-			Envoy: "1.16.2",
-		},
-		"~1.1.0": {
-			Envoy: "~1.17.0",
-		},
-		"~1.2.0": {
-			Envoy: "~1.18.0",
-		},
-		"~1.3.0": {
-			Envoy: "~1.18.4",
-		},
-	},
-}
-
-// DataplaneConstraints returns which Envoy should be used with given version of Kuma.
-// This information is later used in the GUI as a warning.
-// Kuma ships with given Envoy version, but user can use their own Envoy version (especially on Universal)
-// therefore we need to inform them that they are not using compatible version.
-func (c Compatibility) DataplaneConstraints(version string) (*DataplaneCompatibility, error) {
-	v, err := semver.NewVersion(version)
+	kumaVersion, err := semver.NewVersion(kumaVersionStr)
 	if err != nil {
-		return nil, errors.Wrapf(err, "could not build a constraint %s", version)
+		// Assume some kind of dev version
+		log.Info("cannot parse semantic version", "version", kumaVersionStr)
+		return true
 	}
 
-	var matchedCompat []DataplaneCompatibility
-	for constraintRaw, dpCompat := range c.KumaDP {
-		constraint, err := semver.NewConstraint(constraintRaw)
-		if err != nil {
-			return nil, errors.Wrapf(err, "could not build a constraint %s", constraintRaw)
-		}
-		if constraint.Check(v) {
-			matchedCompat = append(matchedCompat, dpCompat)
-		}
+	componentVersion, err := semver.NewVersion(componentVersionStr)
+	if err != nil {
+		// Assume some kind of dev version
+		log.Info("cannot parse semantic version", "version", componentVersionStr)
+		return true
 	}
 
-	if len(matchedCompat) == 0 {
-		return nil, errors.Errorf("no constraints for version: %s found", version)
+	minMinor := int64(kumaVersion.Minor()) - 2
+	if minMinor < 0 {
+		minMinor = 0
 	}
 
-	if len(matchedCompat) > 1 {
-		var matched []string
-		for _, c := range matchedCompat {
-			matched = append(matched, c.Envoy)
-		}
-		return nil, errors.Errorf(
-			"more than one constraint for version %s: %s",
-			version,
-			strings.Join(matched, ", "),
-		)
+	maxMinor := kumaVersion.Minor() + 2
+
+	constraint, err := semver.NewConstraint(
+		fmt.Sprintf(">= %d.%d, <= %d.%d", kumaVersion.Major(), minMinor, kumaVersion.Major(), maxMinor),
+	)
+	if err != nil {
+		// Programmer error
+		panic(err)
 	}
-	return &matchedCompat[0], nil
+
+	return constraint.Check(componentVersion)
 }

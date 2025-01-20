@@ -1,13 +1,12 @@
 package bootstrap_test
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/config"
@@ -18,6 +17,9 @@ var _ = Describe("BootstrappServerConfig", func() {
 	It("should be loadable from configuration file", func() {
 		// given
 		cfg := BootstrapServerConfig{}
+		//nolint:gosec
+		fileError := os.WriteFile("/tmp/corefile", []byte("abc"), 0o600)
+		Expect(fileError).ToNot(HaveOccurred())
 
 		// when
 		err := config.Load(filepath.Join("testdata", "valid-config.input.yaml"), &cfg)
@@ -31,11 +33,11 @@ var _ = Describe("BootstrappServerConfig", func() {
 		Expect(cfg.Params.AdminAccessLogPath).To(Equal("/var/log"))
 		Expect(cfg.Params.XdsHost).To(Equal("kuma-control-plane.internal"))
 		Expect(cfg.Params.XdsPort).To(Equal(uint32(10101)))
-		Expect(cfg.Params.XdsConnectTimeout).To(Equal(2 * time.Second))
+		Expect(cfg.Params.XdsConnectTimeout.Duration).To(Equal(2 * time.Second))
+		Expect(cfg.Params.CorefileTemplatePath).To(Equal("/tmp/corefile"))
 	})
 
 	Context("with modified environment variables", func() {
-
 		var backupEnvVars []string
 
 		BeforeEach(func() {
@@ -80,7 +82,7 @@ var _ = Describe("BootstrappServerConfig", func() {
 			Expect(cfg.Params.AdminAccessLogPath).To(Equal("/var/log"))
 			Expect(cfg.Params.XdsHost).To(Equal("kuma-control-plane.internal"))
 			Expect(cfg.Params.XdsPort).To(Equal(uint32(10101)))
-			Expect(cfg.Params.XdsConnectTimeout).To(Equal(2 * time.Second))
+			Expect(cfg.Params.XdsConnectTimeout.Duration).To(Equal(2 * time.Second))
 		})
 	})
 
@@ -94,7 +96,7 @@ var _ = Describe("BootstrappServerConfig", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
-		expected, err := ioutil.ReadFile(filepath.Join("testdata", "default-config.golden.yaml"))
+		expected, err := os.ReadFile(filepath.Join("testdata", "default-config.golden.yaml"))
 		// then
 		Expect(err).ToNot(HaveOccurred())
 		// and

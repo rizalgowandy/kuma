@@ -27,10 +27,10 @@ func (e EndpointsByService) Services() []string {
 func endpointsByService(dataplanes []*core_mesh.DataplaneResource) EndpointsByService {
 	result := EndpointsByService{}
 	for _, other := range dataplanes {
-		if other.Spec.IsIngress() {
-			continue
-		}
 		for _, inbound := range other.Spec.Networking.GetInbound() {
+			if inbound.State == mesh_proto.Dataplane_Networking_Inbound_Ignored {
+				continue
+			}
 			svc, ok := inbound.GetTags()[mesh_proto.ServiceTag]
 			if !ok {
 				continue

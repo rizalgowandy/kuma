@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ .Namespace }}
-  annotations:
+  labels:
     kuma.io/sidecar-injection: enabled
 ---
 apiVersion: apps/v1
@@ -27,6 +27,9 @@ spec:
             - name: tcp
               containerPort: 6379
           lifecycle:
+            preStop: # delay shutdown to support graceful mesh leave
+              exec:
+                command: ["/bin/sleep", "30"]
             postStart:
               exec:
                 command: ["/usr/local/bin/redis-cli", "set", "zone", "{{ .Zone }}"]
@@ -36,6 +39,8 @@ kind: Service
 metadata:
   name: redis
   namespace: {{ .Namespace }}
+  labels:
+    app: redis
 spec:
   selector:
     app: redis
@@ -60,10 +65,10 @@ spec:
     spec:
       containers:
         - name: demo-app
-          image: "thefosk/kuma-demo"
+          image: "kumahq/kuma-demo"
           env:
             - name: REDIS_HOST
-              value: "redis.kuma-demo.svc.cluster.local"
+              value: "redis.{{ .Namespace }}.svc.cluster.local"
             - name: REDIS_PORT
               value: "6379"
             - name: APP_VERSION
@@ -79,11 +84,12 @@ kind: Service
 metadata:
   name: demo-app
   namespace: {{ .Namespace }}
-  annotations:
-    5000.service.kuma.io/protocol: http
+  labels:
+    app: demo-app
 spec:
   selector:
     app: demo-app
   ports:
   - protocol: TCP
+    appProtocol: http
     port: 5000

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -17,12 +17,10 @@ import (
 )
 
 var _ = Describe("ZoneIngressInsight Manager", func() {
-
 	It("should limit the number of subscription", func() {
 		// setup
 		s := memory.NewStore()
 		cfg := &kuma_cp.DataplaneMetrics{
-			Enabled:           true,
 			SubscriptionLimit: 3,
 		}
 		manager := zoneingressinsight.NewZoneIngressInsightManager(s, cfg)
@@ -52,11 +50,11 @@ var _ = Describe("ZoneIngressInsight Manager", func() {
 		Expect(actual.Spec.Subscriptions[2].Id).To(Equal("9"))
 	})
 
-	It("should cleanup subscriptions if disabled", func() {
+	It("should cleanup subscriptions if limit is 0", func() {
 		// setup
 		s := memory.NewStore()
 		cfg := &kuma_cp.DataplaneMetrics{
-			Enabled: false,
+			SubscriptionLimit: 0,
 		}
 		manager := zoneingressinsight.NewZoneIngressInsightManager(s, cfg)
 
@@ -79,7 +77,7 @@ var _ = Describe("ZoneIngressInsight Manager", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// then
-		Expect(actual.Spec.Subscriptions).To(HaveLen(0))
+		Expect(actual.Spec.Subscriptions).To(BeEmpty())
 		Expect(actual.Spec.Subscriptions).To(BeNil())
 	})
 })

@@ -3,13 +3,13 @@ package resources
 import (
 	"bufio"
 	"context"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -27,8 +27,8 @@ var _ = Describe("httpDataplaneOverviewClient", func() {
 				Client: &http.Client{
 					Transport: RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 						Expect(req.URL.String()).To(Or(
-							Equal("/meshes/default/dataplanes+insights?tag=service%3Amobile&tag=version%3Av1"),
-							Equal("/meshes/default/dataplanes+insights?tag=version%3Av1&tag=service%3Amobile"),
+							Equal("/meshes/default/dataplanes/_overview?tag=service%3Amobile&tag=version%3Av1"),
+							Equal("/meshes/default/dataplanes/_overview?tag=version%3Av1&tag=service%3Amobile"),
 						))
 
 						file, err := os.Open(filepath.Join("testdata", "list-dataplane-overviews.json"))
@@ -37,7 +37,7 @@ var _ = Describe("httpDataplaneOverviewClient", func() {
 						}
 						return &http.Response{
 							StatusCode: http.StatusOK,
-							Body:       ioutil.NopCloser(bufio.NewReader(file)),
+							Body:       io.NopCloser(bufio.NewReader(file)),
 						}, nil
 					}),
 				},
@@ -62,7 +62,7 @@ var _ = Describe("httpDataplaneOverviewClient", func() {
 				Client: &http.Client{
 					Transport: RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 						Expect(req.URL.String()).To(Or(
-							Equal("/meshes/default/dataplanes+insights?gateway=true"),
+							Equal("/meshes/default/dataplanes/_overview?gateway=true"),
 						))
 
 						file, err := os.Open(filepath.Join("testdata", "list-gateway-dataplane-overviews.json"))
@@ -71,7 +71,7 @@ var _ = Describe("httpDataplaneOverviewClient", func() {
 						}
 						return &http.Response{
 							StatusCode: http.StatusOK,
-							Body:       ioutil.NopCloser(bufio.NewReader(file)),
+							Body:       io.NopCloser(bufio.NewReader(file)),
 						}, nil
 					}),
 				},
@@ -95,7 +95,7 @@ var _ = Describe("httpDataplaneOverviewClient", func() {
 					Transport: RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 						return &http.Response{
 							StatusCode: http.StatusBadRequest,
-							Body:       ioutil.NopCloser(strings.NewReader("some error from server")),
+							Body:       io.NopCloser(strings.NewReader("some error from server")),
 						}, nil
 					}),
 				},

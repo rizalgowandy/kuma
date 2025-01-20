@@ -158,15 +158,6 @@ data:
         target_label: kubernetes_node
       scrape_interval: 5m
       scrape_timeout: 30s
-    - honor_labels: true
-      job_name: prometheus-pushgateway
-      kubernetes_sd_configs:
-      - role: service
-      relabel_configs:
-      - action: keep
-        regex: pushgateway
-        source_labels:
-        - __meta_kubernetes_service_annotation_prometheus_io_probe
     - job_name: kubernetes-services
       kubernetes_sd_configs:
       - role: service
@@ -261,14 +252,6 @@ data:
       scrape_interval: "5s"
       relabel_configs:
       - source_labels:
-        - k8s_kuma_io_name
-        regex: "(.*)"
-        target_label: pod
-      - source_labels:
-        - k8s_kuma_io_namespace
-        regex: "(.*)"
-        target_label: namespace
-      - source_labels:
         - __meta_kuma_mesh
         regex: "(.*)"
         target_label: mesh
@@ -276,12 +259,16 @@ data:
         - __meta_kuma_dataplane
         regex: "(.*)"
         target_label: dataplane
-      - source_labels:
-        - __meta_kuma_service
-        regex: "(.*)"
-        target_label: service
       - action: labelmap
         regex: __meta_kuma_label_(.+)
+      - source_labels:
+        - k8s_kuma_io_name
+        regex: "(.*)"
+        target_label: pod
+      - source_labels:
+        - k8s_kuma_io_namespace
+        regex: "(.*)"
+        target_label: namespace
       kuma_sd_configs:
       - server: {{ .KumaCpAddress }}
     alerting:
@@ -395,6 +382,7 @@ metadata:
   labels:
     component: "server"
     app: prometheus
+    kuma.io/mesh: {{ .Mesh }}
   name: prometheus-server
   namespace: {{ .Namespace }}
 spec:
@@ -428,13 +416,14 @@ spec:
       labels:
         component: "server"
         app: prometheus
+        kuma.io/sidecar-injection: enabled
       annotations:
         kuma.io/direct-access-services: "*"
     spec:
       serviceAccountName: prometheus-server
       containers:
         - name: prometheus-server-configmap-reload
-          image: "jimmidyson/configmap-reload:v0.5.0"
+          image: "jimmidyson/configmap-reload:v0.6.1"
           imagePullPolicy: "IfNotPresent"
           args:
             - --volume-dir=/etc/config
@@ -446,7 +435,7 @@ spec:
               mountPath: /etc/config
               readOnly: true
         - name: prometheus-server
-          image: "prom/prometheus:v2.29.1"
+          image: "prom/prometheus:v2.35.0"
           imagePullPolicy: "IfNotPresent"
           args:
             - --storage.tsdb.retention.time=15d
@@ -455,6 +444,7 @@ spec:
             - --web.console.libraries=/etc/prometheus/console_libraries
             - --web.console.templates=/etc/prometheus/consoles
             - --web.enable-lifecycle
+            - --storage.tsdb.retention.size=7GB
           ports:
             - containerPort: 9090
           resources:

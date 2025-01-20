@@ -1,8 +1,7 @@
 package generator_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -17,9 +16,7 @@ import (
 )
 
 var _ = Describe("MonitoringAssignmentsGenerator", func() {
-
 	Describe("Generate()", func() {
-
 		type testCase struct {
 			meshes     []*core_mesh.MeshResource
 			dataplanes []*core_mesh.DataplaneResource
@@ -104,6 +101,72 @@ var _ = Describe("MonitoringAssignmentsGenerator", func() {
 					},
 				},
 				expected: []*core_xds.Resource{},
+			}),
+			Entry("Dataplane inside a Mesh with delegated TLS for Prometheus", testCase{
+				meshes: []*core_mesh.MeshResource{
+					{
+						Meta: &test_model.ResourceMeta{
+							Name: "demo",
+						},
+						Spec: &mesh_proto.Mesh{
+							Metrics: &mesh_proto.Metrics{
+								EnabledBackend: "prometheus-1",
+								Backends: []*mesh_proto.MetricsBackend{
+									{
+										Name: "prometheus-1",
+										Type: mesh_proto.MetricsPrometheusType,
+										Conf: proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+											Port: 1234,
+											Path: "/metrics",
+											Tls: &mesh_proto.PrometheusTlsConfig{
+												Mode: mesh_proto.PrometheusTlsConfig_providedTLS,
+											},
+										}),
+									},
+								},
+							},
+						},
+					},
+				},
+				dataplanes: []*core_mesh.DataplaneResource{
+					{
+						Meta: &test_model.ResourceMeta{
+							Name: "backend-01",
+							Mesh: "demo",
+						},
+						Spec: &mesh_proto.Dataplane{
+							Networking: &mesh_proto.Dataplane_Networking{
+								Address: "192.168.0.1",
+								Inbound: []*mesh_proto.Dataplane_Networking_Inbound{{
+									Port:        80,
+									ServicePort: 8080,
+									Tags: map[string]string{
+										"kuma.io/service": "backend",
+									},
+								}},
+							},
+						},
+					},
+				},
+				expected: []*core_xds.Resource{
+					{
+						Name: "/meshes/demo/dataplanes/backend-01",
+						Resource: &observability_v1.MonitoringAssignment{
+							Service: "backend",
+							Mesh:    "demo",
+							Targets: []*observability_v1.MonitoringAssignment_Target{{
+								Name:        "backend-01",
+								Address:     "192.168.0.1:1234",
+								Scheme:      "https",
+								MetricsPath: "/metrics",
+								Labels: map[string]string{
+									"kuma_io_service":  "backend",
+									"kuma_io_services": ",backend,",
+								},
+							}},
+						},
+					},
+				},
 			}),
 			Entry("Dataplane without inbound interfaces", testCase{
 				meshes: []*core_mesh.MeshResource{

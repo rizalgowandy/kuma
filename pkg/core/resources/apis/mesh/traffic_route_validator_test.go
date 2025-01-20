@@ -1,10 +1,9 @@
 package mesh_test
 
 import (
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	. "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -645,6 +644,25 @@ var _ = Describe("TrafficRoute", func() {
                   message: host header and HTTP/2 pseudo-headers are not allowed to be modified
                 - field: conf.http[0].modify.responseHeaders.remove[0].name
                   message: host header and HTTP/2 pseudo-headers are not allowed to be modified`,
+			}),
+			Entry("loadBalancer - not allowed choice count less than 2", testCase{
+				route: `
+                sources:
+                - match:
+                    kuma.io/service: web
+                destinations:
+                - match:
+                    kuma.io/service: backend
+                conf:
+                  loadBalancer:
+                    leastRequest:
+                      choiceCount: 1
+                  destination:
+                    kuma.io/service: backend`,
+				expected: `
+                violations:
+                - field: conf.loadBalancer.leastRequest.choiceCount
+                  message: value must be greater than or equal to 2`,
 			}),
 		)
 	})

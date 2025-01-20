@@ -3,143 +3,90 @@ package sync
 import (
 	"context"
 
+	"github.com/pkg/errors"
+
 	"github.com/kumahq/kuma/pkg/core/dns/lookup"
+	core_plugins "github.com/kumahq/kuma/pkg/core/plugins"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
-	"github.com/kumahq/kuma/pkg/core/xds"
-	"github.com/kumahq/kuma/pkg/xds/envoy"
-	"github.com/kumahq/kuma/pkg/xds/ingress"
+	core_xds "github.com/kumahq/kuma/pkg/core/xds"
+	xds_context "github.com/kumahq/kuma/pkg/xds/context"
 	xds_topology "github.com/kumahq/kuma/pkg/xds/topology"
 )
 
 type IngressProxyBuilder struct {
-	ResManager         manager.ResourceManager
-	ReadOnlyResManager manager.ReadOnlyResourceManager
-	LookupIP           lookup.LookupIPFunc
-	MetadataTracker    DataplaneMetadataTracker
+	ResManager manager.ResourceManager
+	LookupIP   lookup.LookupIPFunc
 
-	apiVersion envoy.APIVersion
+	apiVersion        core_xds.APIVersion
+	zone              string
+	ingressTagFilters []string
 }
 
-func (p *IngressProxyBuilder) build(key core_model.ResourceKey) (*xds.Proxy, error) {
-	ctx := context.Background()
-
-	zoneIngress, err := p.getZoneIngress(key)
+func (p *IngressProxyBuilder) Build(
+	ctx context.Context,
+	key core_model.ResourceKey,
+	aggregatedMeshCtxs xds_context.AggregatedMeshContexts,
+) (*core_xds.Proxy, error) {
+	zoneIngress, err := p.getZoneIngress(ctx, key)
 	if err != nil {
 		return nil, err
 	}
+
 	zoneIngress, err = xds_topology.ResolveZoneIngressPublicAddress(p.LookupIP, zoneIngress)
 	if err != nil {
 		return nil, err
 	}
 
-	allMeshDataplanes := &core_mesh.DataplaneResourceList{}
-	if err := p.ReadOnlyResManager.List(ctx, allMeshDataplanes); err != nil {
-		return nil, err
+	proxy := &core_xds.Proxy{
+		Id:               core_xds.FromResourceKey(key),
+		APIVersion:       p.apiVersion,
+		Zone:             p.zone,
+		ZoneIngressProxy: p.buildZoneIngressProxy(zoneIngress, aggregatedMeshCtxs),
 	}
-	allMeshDataplanes.Items = xds_topology.ResolveAddresses(syncLog, p.LookupIP, allMeshDataplanes.Items)
-
-	routing, err := p.resolveRouting(ctx, zoneIngress, allMeshDataplanes)
-	if err != nil {
-		return nil, err
-	}
-
-	proxy := &xds.Proxy{
-		Id:          xds.FromResourceKey(key),
-		APIVersion:  p.apiVersion,
-		ZoneIngress: zoneIngress,
-		Metadata:    p.MetadataTracker.Metadata(key),
-		Routing:     *routing,
+	for k, pl := range core_plugins.Plugins().ProxyPlugins() {
+		err := pl.Apply(ctx, xds_context.MeshContext{}, proxy) // No mesh context for zone proxies
+		if err != nil {
+			return nil, errors.Wrapf(err, "Failed applying proxy plugin: %s", k)
+		}
 	}
 	return proxy, nil
 }
 
-func (p *IngressProxyBuilder) getZoneIngress(key core_model.ResourceKey) (*core_mesh.ZoneIngressResource, error) {
-	ctx := context.Background()
+func (p *IngressProxyBuilder) buildZoneIngressProxy(
+	zoneIngress *core_mesh.ZoneIngressResource,
+	aggregatedMeshCtxs xds_context.AggregatedMeshContexts,
+) *core_xds.ZoneIngressProxy {
+	var meshResourceList []*core_xds.MeshIngressResources
 
-	zoneIngress := core_mesh.NewZoneIngressResource()
-	err := p.ReadOnlyResManager.Get(ctx, zoneIngress, core_store.GetBy(key))
-	if err == nil {
-		// Update Ingress' Available Services
-		// This was placed as an operation of DataplaneWatchdog out of the convenience.
-		// Consider moving to the outside of this component (follow the pattern of updating VIP outbounds)
-		if err := p.updateIngress(zoneIngress); err != nil {
-			return nil, err
+	for _, mesh := range aggregatedMeshCtxs.Meshes {
+		meshName := mesh.GetMeta().GetName()
+		meshCtx := aggregatedMeshCtxs.MustGetMeshContext(meshName)
+
+		meshResources := &core_xds.MeshIngressResources{
+			Mesh:        mesh,
+			EndpointMap: meshCtx.IngressEndpointMap,
+			Resources:   meshCtx.Resources.MeshLocalResources,
 		}
-		return zoneIngress, nil
-	}
-	if !core_store.IsResourceNotFound(err) {
-		return nil, err
+
+		meshResourceList = append(meshResourceList, meshResources)
 	}
 
-	// for backward compatibility with dataplane-based ingresses
-	oldTypeIngress, err := p.resolveDataplane(ctx, key)
-	if err != nil {
-		return nil, err
+	return &core_xds.ZoneIngressProxy{
+		ZoneIngressResource: zoneIngress,
+		MeshResourceList:    meshResourceList,
 	}
-	// Update Ingress' Available Services
-	// This was placed as an operation of DataplaneWatchdog out of the convenience.
-	// Consider moving to the outside of this component (follow the pattern of updating VIP outbounds)
-	if err := p.updateIngressCompat(oldTypeIngress); err != nil {
-		return nil, err
-	}
-	return core_mesh.NewZoneIngressResourceFromDataplane(oldTypeIngress)
 }
 
-func (p *IngressProxyBuilder) resolveDataplane(ctx context.Context, key core_model.ResourceKey) (*core_mesh.DataplaneResource, error) {
-	dataplane := core_mesh.NewDataplaneResource()
-
-	if err := p.ReadOnlyResManager.Get(ctx, dataplane, core_store.GetBy(key)); err != nil {
+func (p *IngressProxyBuilder) getZoneIngress(
+	ctx context.Context,
+	key core_model.ResourceKey,
+) (*core_mesh.ZoneIngressResource, error) {
+	zoneIngress := core_mesh.NewZoneIngressResource()
+	if err := p.ResManager.Get(ctx, zoneIngress, core_store.GetBy(key)); err != nil {
 		return nil, err
 	}
-
-	// Envoy requires IPs instead of Hostname therefore we need to resolve an address. Consider moving this outside of this component.
-	resolvedDp, err := xds_topology.ResolveAddress(p.LookupIP, dataplane)
-	if err != nil {
-		return nil, err
-	}
-	return resolvedDp, nil
-}
-
-func (p *IngressProxyBuilder) resolveRouting(ctx context.Context, zoneIngress *core_mesh.ZoneIngressResource, dataplanes *core_mesh.DataplaneResourceList) (*xds.Routing, error) {
-	destinations := ingress.BuildDestinationMap(zoneIngress)
-	endpoints := ingress.BuildEndpointMap(destinations, dataplanes.Items)
-	routes := &core_mesh.TrafficRouteResourceList{}
-	if err := p.ReadOnlyResManager.List(ctx, routes); err != nil {
-		return nil, err
-	}
-
-	routing := &xds.Routing{
-		OutboundTargets:  endpoints,
-		TrafficRouteList: routes,
-	}
-	return routing, nil
-}
-
-func (p *IngressProxyBuilder) updateIngressCompat(dpIngress *core_mesh.DataplaneResource) error {
-	ctx := context.Background()
-
-	allMeshDataplanes := &core_mesh.DataplaneResourceList{}
-	if err := p.ReadOnlyResManager.List(ctx, allMeshDataplanes); err != nil {
-		return err
-	}
-	allMeshDataplanes.Items = xds_topology.ResolveAddresses(syncLog, p.LookupIP, allMeshDataplanes.Items)
-	return ingress.UpdateAvailableServicesCompat(ctx, p.ResManager, dpIngress, allMeshDataplanes.Items)
-}
-
-func (p *IngressProxyBuilder) updateIngress(zoneIngress *core_mesh.ZoneIngressResource) error {
-	ctx := context.Background()
-
-	allMeshDataplanes := &core_mesh.DataplaneResourceList{}
-	if err := p.ReadOnlyResManager.List(ctx, allMeshDataplanes); err != nil {
-		return err
-	}
-	allMeshDataplanes.Items = xds_topology.ResolveAddresses(syncLog, p.LookupIP, allMeshDataplanes.Items)
-
-	// Update Ingress' Available Services
-	// This was placed as an operation of DataplaneWatchdog out of the convenience.
-	// Consider moving to the outside of this component (follow the pattern of updating VIP outbounds)
-	return ingress.UpdateAvailableServices(ctx, p.ResManager, zoneIngress, allMeshDataplanes.Items)
+	return zoneIngress, nil
 }

@@ -1,75 +1,33 @@
 package install
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"log"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/pkg/errors"
-	"gopkg.in/yaml.v2"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	kube_runtime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 
-	"github.com/kumahq/kuma/app/kumactl/pkg/install/data"
+	"github.com/kumahq/kuma/pkg/util/data"
 )
-
-func unregisteredCRD(scheme *kube_runtime.Scheme, chartFile *data.File) bool {
-	types := scheme.AllKnownTypes()
-
-	if !strings.HasPrefix(chartFile.FullPath, "crds/") {
-		return false
-	}
-
-	var crdRes apiextensionsv1.CustomResourceDefinition
-
-	if err := yaml.Unmarshal(chartFile.Data, &crdRes); err != nil {
-		return false
-	}
-
-	for _, v := range crdRes.Spec.Versions {
-		gvk := schema.GroupVersionKind{
-			Group:   crdRes.Spec.Group,
-			Version: v.Name,
-			Kind:    crdRes.Spec.Names.Kind,
-		}
-		if _, ok := types[gvk]; ok {
-			return false
-		}
-	}
-
-	return true
-}
-
-func filterHelmTemplates(scheme *kube_runtime.Scheme, files data.FileList) data.FileList {
-	var filteredFiles data.FileList
-
-	for _, file := range files {
-		if unregisteredCRD(scheme, &file) {
-			continue
-		}
-
-		filteredFiles = append(filteredFiles, file)
-	}
-
-	return filteredFiles
-}
 
 func labelRegex(label string) *regexp.Regexp {
 	return regexp.MustCompile("(?m)[\r\n]+^.*" + label + ".*$")
 }
 
 var stripLabelsRegexps = []*regexp.Regexp{
-	labelRegex("app.kubernetes.io/managed-by"),
-	labelRegex("helm.sh/chart"),
-	labelRegex("app.kubernetes.io/version"),
+	labelRegex("app\\.kubernetes\\.io/managed-by"),
+	labelRegex("helm\\.sh/chart"),
+	labelRegex("app\\.kubernetes\\.io/version"),
 }
 
 var kumaSystemNamespace = func(namespace string) string {
@@ -83,27 +41,41 @@ metadata:
 `, namespace)
 }
 
+type onlyWriteWarnings struct {
+	writer io.Writer
+}
+
+func (w onlyWriteWarnings) Write(p []byte) (int, error) {
+	if bytes.HasPrefix(p, []byte("Warning:")) {
+		return w.writer.Write(p)
+	}
+	return io.Discard.Write(p)
+}
+
 func renderHelmFiles(
 	templates []data.File,
-	args interface{},
 	namespace string,
-	helmValuesPrefix string,
+	overrideValues chartutil.Values,
 	kubeClientConfig *rest.Config,
+	capabilities chartutil.Capabilities,
 ) ([]data.File, error) {
 	kumaChart, err := loadCharts(templates)
 	if err != nil {
 		return nil, errors.Errorf("Failed to load charts: %s", err)
 	}
 
-	overrideValues := generateOverrideValues(args, helmValuesPrefix)
-
+	// This is necessary because ProcessDependencies can output warnings as well
+	// as trash
+	writer := log.Writer()
+	log.SetOutput(onlyWriteWarnings{writer: writer})
 	if err := chartutil.ProcessDependencies(kumaChart, overrideValues); err != nil {
 		return nil, errors.Errorf("Failed to process dependencies: %s", err)
 	}
+	log.SetOutput(writer)
 
 	options := generateReleaseOptions(kumaChart.Metadata.Name, namespace)
 
-	valuesToRender, err := chartutil.ToRenderValues(kumaChart, overrideValues, options, nil)
+	valuesToRender, err := chartutil.ToRenderValues(kumaChart, overrideValues, options, &capabilities)
 	if err != nil {
 		return nil, errors.Errorf("Failed to render values: %s", err)
 	}
@@ -150,23 +122,37 @@ func generateOverrideValues(args interface{}, helmValuesPrefix string) map[strin
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		name := t.Field(i).Name
-		value := v.FieldByName(name).Interface()
+		value := v.FieldByName(name)
 		tag := t.Field(i).Tag.Get("helm")
 
-		splitTag := strings.Split(tag, ".")
-		tagCount := len(splitTag)
+		splitTag := strings.Split(tag, ",")
+		if len(splitTag) == 0 {
+			continue
+		}
+
+		var omitEmpty bool
+		for _, tagSplit := range splitTag[0:] {
+			omitEmpty = omitEmpty || tagSplit == "omitempty"
+		}
+
+		if omitEmpty && value.IsZero() {
+			continue
+		}
+
+		valuePath := strings.Split(splitTag[0], ".")
+		tagCount := len(valuePath)
 
 		root := overrideValues
 
 		for i := 0; i < tagCount-1; i++ {
-			n := splitTag[i]
+			n := valuePath[i]
 
 			if _, ok := root[n]; !ok {
 				root[n] = map[string]interface{}{}
 			}
 			root = root[n].(map[string]interface{})
 		}
-		root[splitTag[tagCount-1]] = adjustType(value)
+		root[valuePath[tagCount-1]] = adjustType(value.Interface())
 	}
 
 	if helmValuesPrefix != "" {

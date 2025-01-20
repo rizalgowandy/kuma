@@ -12,6 +12,7 @@ type CreateOptions struct {
 	Mesh         string
 	CreationTime time.Time
 	Owner        core_model.Resource
+	Labels       map[string]string
 }
 
 type CreateOptionsFunc func(*CreateOptions)
@@ -47,13 +48,28 @@ func CreateWithOwner(owner core_model.Resource) CreateOptionsFunc {
 	}
 }
 
+func CreateWithLabels(labels map[string]string) CreateOptionsFunc {
+	return func(opts *CreateOptions) {
+		opts.Labels = labels
+	}
+}
+
 type UpdateOptions struct {
 	ModificationTime time.Time
+	Labels           map[string]string
+	ModifyLabels     bool
 }
 
 func ModifiedAt(modificationTime time.Time) UpdateOptionsFunc {
 	return func(opts *UpdateOptions) {
 		opts.ModificationTime = modificationTime
+	}
+}
+
+func UpdateWithLabels(labels map[string]string) UpdateOptionsFunc {
+	return func(opts *UpdateOptions) {
+		opts.Labels = labels
+		opts.ModifyLabels = true
 	}
 }
 
@@ -114,9 +130,10 @@ func NewDeleteAllOptions(fs ...DeleteAllOptionsFunc) *DeleteAllOptions {
 }
 
 type GetOptions struct {
-	Name    string
-	Mesh    string
-	Version string
+	Name       string
+	Mesh       string
+	Version    string
+	Consistent bool
 }
 
 type GetOptionsFunc func(*GetOptions)
@@ -146,17 +163,29 @@ func GetByVersion(version string) GetOptionsFunc {
 	}
 }
 
+// GetConsistent forces consistency if storage provides eventual consistency like read replica for Postgres.
+func GetConsistent() GetOptionsFunc {
+	return func(opts *GetOptions) {
+		opts.Consistent = true
+	}
+}
+
 func (g *GetOptions) HashCode() string {
 	return fmt.Sprintf("%s:%s", g.Name, g.Mesh)
 }
 
-type ListFilterFunc func(rs core_model.Resource) bool
+type (
+	ListFilterFunc func(rs core_model.Resource) bool
+)
 
 type ListOptions struct {
-	Mesh       string
-	PageSize   int
-	PageOffset string
-	FilterFunc ListFilterFunc
+	Mesh         string
+	PageSize     int
+	PageOffset   string
+	FilterFunc   ListFilterFunc
+	NameContains string
+	Ordered      bool
+	ResourceKeys map[core_model.ResourceKey]struct{}
 }
 
 type ListOptionsFunc func(*ListOptions)
@@ -178,6 +207,12 @@ func (l *ListOptions) Filter(rs core_model.Resource) bool {
 	return l.FilterFunc(rs)
 }
 
+func ListByNameContains(name string) ListOptionsFunc {
+	return func(opts *ListOptions) {
+		opts.NameContains = name
+	}
+}
+
 func ListByMesh(mesh string) ListOptionsFunc {
 	return func(opts *ListOptions) {
 		opts.Mesh = mesh
@@ -191,6 +226,32 @@ func ListByPage(size int, offset string) ListOptionsFunc {
 	}
 }
 
+func ListByFilterFunc(filterFunc ListFilterFunc) ListOptionsFunc {
+	return func(opts *ListOptions) {
+		opts.FilterFunc = filterFunc
+	}
+}
+
+func ListOrdered() ListOptionsFunc {
+	return func(opts *ListOptions) {
+		opts.Ordered = true
+	}
+}
+
+func ListByResourceKeys(rk []core_model.ResourceKey) ListOptionsFunc {
+	return func(opts *ListOptions) {
+		resourcesKeys := map[core_model.ResourceKey]struct{}{}
+		for _, val := range rk {
+			resourcesKeys[val] = struct{}{}
+		}
+		opts.ResourceKeys = resourcesKeys
+	}
+}
+
+func (l *ListOptions) IsCacheable() bool {
+	return l.FilterFunc == nil
+}
+
 func (l *ListOptions) HashCode() string {
-	return l.Mesh
+	return fmt.Sprintf("%s:%t:%s:%d:%s", l.Mesh, l.Ordered, l.NameContains, l.PageSize, l.PageOffset)
 }

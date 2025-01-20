@@ -2,64 +2,31 @@ package get_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"path/filepath"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
 	"github.com/kumahq/kuma/app/kumactl/cmd"
-	kumactl_cmd "github.com/kumahq/kuma/app/kumactl/pkg/cmd"
-	"github.com/kumahq/kuma/app/kumactl/pkg/resources"
-	"github.com/kumahq/kuma/pkg/api-server/types"
-	config_proto "github.com/kumahq/kuma/pkg/config/app/kumactl/v1alpha1"
+	test_kumactl "github.com/kumahq/kuma/app/kumactl/pkg/test"
 	"github.com/kumahq/kuma/pkg/core/resources/registry"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	memory_resources "github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	. "github.com/kumahq/kuma/pkg/test/matchers"
-	util_http "github.com/kumahq/kuma/pkg/util/http"
-	kuma_version "github.com/kumahq/kuma/pkg/version"
 )
-
-type testApiServerClient struct {
-}
-
-func (c *testApiServerClient) GetVersion(_ context.Context) (*types.IndexResponse, error) {
-	return &types.IndexResponse{
-		Version: kuma_version.Build.Version,
-		Tagline: kuma_version.Product,
-	}, nil
-}
 
 var _ = Describe("kumactl get [resource] NAME", func() {
 	var rootCmd *cobra.Command
 	var outbuf *bytes.Buffer
 	var store core_store.ResourceStore
-	var testClient *testApiServerClient
 	rootTime, _ := time.Parse(time.RFC3339, "2008-04-01T16:05:36.995Z")
-	var _ resources.ApiServerClient = &testApiServerClient{}
 	BeforeEach(func() {
-		rootCtx := &kumactl_cmd.RootContext{
-			Runtime: kumactl_cmd.RootRuntime{
-				Registry: registry.Global(),
-				Now:      func() time.Time { return rootTime },
-				NewBaseAPIServerClient: func(server *config_proto.ControlPlaneCoordinates_ApiServer) (util_http.Client, error) {
-					return nil, nil
-				},
-				NewResourceStore: func(util_http.Client) core_store.ResourceStore {
-					return store
-				},
-				NewAPIServerClient: func(util_http.Client) resources.ApiServerClient {
-					return testClient
-				},
-			},
-		}
-
 		store = core_store.NewPaginationStore(memory_resources.NewStore())
+		rootCtx, _ := test_kumactl.MakeRootContext(rootTime, store)
+		rootCtx.Runtime.Registry = registry.Global()
 		rootCmd = cmd.NewRootCmd(rootCtx)
 
 		// Different versions of cobra might emit errors to stdout
@@ -87,13 +54,15 @@ var _ = Describe("kumactl get [resource] NAME", func() {
 		Entry("secret", "secret"),
 		Entry("global-secret", "global-secret"),
 		Entry("retry", "retry"),
+		Entry("meshtimeout", "meshtimeout"),
 	}
 
 	DescribeTable("should throw an error in case of no args",
 		func(resource string) {
 			// given
 			rootCmd.SetArgs([]string{
-				"get", resource})
+				"get", resource,
+			})
 
 			// when
 			err := rootCmd.Execute()
@@ -103,14 +72,15 @@ var _ = Describe("kumactl get [resource] NAME", func() {
 			Expect(err.Error()).To(Equal("accepts 1 arg(s), received 0"))
 			Expect(outbuf.String()).To(MatchRegexp(`Error: accepts 1 arg\(s\), received 0`))
 		},
-		entries...,
+		entries,
 	)
 
 	DescribeTable("should return error message if doesn't exist",
 		func(resource string) {
 			// given
 			rootCmd.SetArgs([]string{
-				"get", resource, "unknown-resource"})
+				"get", resource, "unknown-resource",
+			})
 
 			// when
 			err := rootCmd.Execute()
@@ -124,14 +94,14 @@ var _ = Describe("kumactl get [resource] NAME", func() {
 				Expect(outbuf.String()).To(Equal("Error: No resources found in default mesh\n"))
 			}
 		},
-		entries...,
+		entries,
 	)
 
 	DescribeTable("kumactl get [resource] [name] -otable",
 		func(resource string) {
 			// setup - add resource to store
 			resourceYAML := fmt.Sprintf("get-%s.golden.yaml", resource)
-			rootCmd.SetArgs([]string{"apply", "-f", filepath.Join("testdata", resourceYAML)})
+			rootCmd.SetArgs([]string{"apply", "-f", filepath.Join("testdata/get", resourceYAML)})
 			Expect(rootCmd.Execute()).To(Succeed())
 
 			// given
@@ -145,16 +115,16 @@ var _ = Describe("kumactl get [resource] NAME", func() {
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
-			Expect(outbuf.String()).To(MatchGoldenEqual(filepath.Join("testdata", resourceTable)))
+			Expect(outbuf.String()).To(MatchGoldenEqual("testdata/get", resourceTable))
 		},
-		entries...,
+		entries,
 	)
 
 	DescribeTable("kumactl get [resource] [name] -ojson",
 		func(resource string) {
 			// setup - add resource to store
 			resourceYAML := fmt.Sprintf("get-%s.golden.yaml", resource)
-			rootCmd.SetArgs([]string{"apply", "-f", filepath.Join("testdata", resourceYAML)})
+			rootCmd.SetArgs([]string{"apply", "-f", filepath.Join("testdata/get", resourceYAML)})
 			Expect(rootCmd.Execute()).To(Succeed())
 
 			// given
@@ -168,16 +138,16 @@ var _ = Describe("kumactl get [resource] NAME", func() {
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
-			Expect(outbuf.String()).To(MatchGoldenEqual(filepath.Join("testdata", resourceJSON)))
+			Expect(outbuf.String()).To(MatchGoldenEqual("testdata/get", resourceJSON))
 		},
-		entries...,
+		entries,
 	)
 
 	DescribeTable("kumactl get [resource] [name] -oyaml",
 		func(resource string) {
 			// setup - add resource to store
 			resourceYAML := fmt.Sprintf("get-%s.golden.yaml", resource)
-			rootCmd.SetArgs([]string{"apply", "-f", filepath.Join("testdata", resourceYAML)})
+			rootCmd.SetArgs([]string{"apply", "-f", filepath.Join("testdata/get", resourceYAML)})
 			Expect(rootCmd.Execute()).To(Succeed())
 
 			// when
@@ -188,8 +158,8 @@ var _ = Describe("kumactl get [resource] NAME", func() {
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
-			Expect(outbuf.String()).To(MatchGoldenEqual(filepath.Join("testdata", resourceYAML)))
+			Expect(outbuf.String()).To(MatchGoldenEqual("testdata/get", resourceYAML))
 		},
-		entries...,
+		entries,
 	)
-})
+}, Ordered)

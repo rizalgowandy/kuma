@@ -1,8 +1,7 @@
 package clusters_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -13,7 +12,6 @@ import (
 )
 
 var _ = Describe("CircuitBreakerConfigurer", func() {
-
 	type testCase struct {
 		clusterName    string
 		circuitBreaker *core_mesh.CircuitBreakerResource
@@ -23,10 +21,10 @@ var _ = Describe("CircuitBreakerConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			cluster, err := clusters.NewClusterBuilder(envoy.APIV3).
-				Configure(clusters.EdsCluster(given.clusterName)).
+			cluster, err := clusters.NewClusterBuilder(envoy.APIV3, given.clusterName).
+				Configure(clusters.EdsCluster()).
 				Configure(clusters.CircuitBreaker(given.circuitBreaker)).
-				Configure(clusters.Timeout(core_mesh.ProtocolTCP, DefaultTimeout())).
+				Configure(clusters.Timeout(DefaultTimeout(), core_mesh.ProtocolTCP)).
 				Build()
 
 			// then
@@ -37,6 +35,7 @@ var _ = Describe("CircuitBreakerConfigurer", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("CircuitBreaker with thresholds", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -61,6 +60,7 @@ var _ = Describe("CircuitBreakerConfigurer", func() {
           edsConfig:
             ads: {}
             resourceApiVersion: V3
+        name: backend
         type: EDS`,
 		}),
 	)

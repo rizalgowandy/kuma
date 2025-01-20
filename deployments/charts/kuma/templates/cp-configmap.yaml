@@ -1,10 +1,10 @@
+{{ $kumaCpLabels := include "kuma.cpLabels" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "kuma.name" . }}-control-plane-config
   namespace: {{ .Release.Namespace }}
-  labels:
-  {{- include "kuma.labels" . | nindent 4 }}
+  labels: {{ $kumaCpLabels | nindent 4 }}
 data:
   config.yaml: |
     # use this file to override default configuration of `kuma-cp`
@@ -13,3 +13,36 @@ data:
     {{ if .Values.controlPlane.config }}
     {{ .Values.controlPlane.config | nindent 4 }}
     {{ end }}
+
+{{- $releaseNamespace := .Release.Namespace}}
+{{- range $extraConfigMap := .Values.controlPlane.extraConfigMaps }}
+{{- if $extraConfigMap.values }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $extraConfigMap.name }}
+  namespace: {{ $releaseNamespace }}
+  labels: {{ $kumaCpLabels | nindent 4 }}
+data:
+  {{- range $fileName, $fileContents := $extraConfigMap.values }}
+  {{- $fileName | nindent 2 }}: |
+  {{- $fileContents | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.transparentProxy.configMap.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kuma.transparentProxyConfigMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $kumaCpLabels | nindent 4 }}
+data:
+  config.yaml: |
+    {{- if .Values.transparentProxy.configMap.config }}
+    {{- .Values.transparentProxy.configMap.config | toYaml | nindent 4 }}
+    {{- end }}
+{{- end }}

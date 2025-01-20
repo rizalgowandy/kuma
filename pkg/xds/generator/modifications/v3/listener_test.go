@@ -2,8 +2,7 @@ package v3_test
 
 import (
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,7 +13,6 @@ import (
 )
 
 var _ = Describe("Listener modifications", func() {
-
 	type testCase struct {
 		listeners     []string
 		modifications []string
@@ -56,7 +54,8 @@ var _ = Describe("Listener modifications", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("should add listener", testCase{
-			modifications: []string{`
+			modifications: []string{
+				`
                 listener:
                    operation: add
                    value: |
@@ -227,6 +226,89 @@ var _ = Describe("Listener modifications", func() {
                     portValue: 8080
                 name: inbound:192.168.0.1:8080
                 tcpFastOpenQueueLength: 32
+                trafficDirection: INBOUND`,
+		}),
+		Entry("should patch listener matching metadata", testCase{
+			listeners: []string{
+				`
+                name: inbound:192.168.0.1:8080
+                trafficDirection: INBOUND
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend`,
+			},
+			modifications: []string{
+				`
+                listener:
+                   operation: patch
+                   match:
+                     name: inbound:192.168.0.1:8080
+                     tags:
+                       kuma.io/service: backend
+                   value: |
+                     tcpFastOpenQueueLength: 32`,
+			},
+			expected: `
+            resources:
+            - name: inbound:192.168.0.1:8080
+              resource:
+                '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                name: inbound:192.168.0.1:8080
+                tcpFastOpenQueueLength: 32
+                trafficDirection: INBOUND`,
+		}),
+		Entry("should not patch listener with non-matching metadata", testCase{
+			listeners: []string{
+				`
+                name: inbound:192.168.0.1:8080
+                trafficDirection: INBOUND
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend`,
+			},
+			modifications: []string{
+				`
+                listener:
+                   operation: patch
+                   match:
+                     name: inbound:192.168.0.1:8080
+                     tags:
+                       kuma.io/service: web
+                   value: |
+                     tcpFastOpenQueueLength: 32`,
+			},
+			expected: `
+            resources:
+            - name: inbound:192.168.0.1:8080
+              resource:
+                '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                name: inbound:192.168.0.1:8080
                 trafficDirection: INBOUND`,
 		}),
 	)

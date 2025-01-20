@@ -2,8 +2,7 @@ package v3_test
 
 import (
 	envoy_cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,7 +13,6 @@ import (
 )
 
 var _ = Describe("Cluster modifications", func() {
-
 	type testCase struct {
 		clusters      []string
 		modifications []string
@@ -56,7 +54,8 @@ var _ = Describe("Cluster modifications", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("should add cluster", testCase{
-			modifications: []string{`
+			modifications: []string{
+				`
                 cluster:
                    operation: add
                    value: |

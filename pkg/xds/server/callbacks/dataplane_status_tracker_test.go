@@ -6,32 +6,31 @@ import (
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_sd "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	envoy_server "github.com/envoyproxy/go-control-plane/pkg/server/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
-	status "google.golang.org/genproto/googleapis/rpc/status"
+	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
+	"github.com/kumahq/kuma/pkg/config/core"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
+	core_runtime "github.com/kumahq/kuma/pkg/core/runtime"
 	. "github.com/kumahq/kuma/pkg/test/matchers"
-	test_runtime "github.com/kumahq/kuma/pkg/test/runtime"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	v3 "github.com/kumahq/kuma/pkg/util/xds/v3"
 	. "github.com/kumahq/kuma/pkg/xds/server/callbacks"
 )
 
 var _ = Describe("DataplaneStatusTracker", func() {
-
 	var tracker DataplaneStatusTracker
 	var callbacks envoy_server.Callbacks
 
-	var runtimeInfo = test_runtime.TestRuntimeInfo{InstanceId: "test"}
+	runtimeInfo := core_runtime.NewRuntimeInfo("test", core.Zone)
 	var ctx context.Context
 
 	BeforeEach(func() {
-		tracker = NewDataplaneStatusTracker(&runtimeInfo, func(dataplaneType core_model.ResourceType, accessor SubscriptionStatusAccessor) DataplaneInsightSink {
+		tracker = NewDataplaneStatusTracker(runtimeInfo, func(dataplaneType core_model.ResourceType, accessor SubscriptionStatusAccessor) DataplaneInsightSink {
 			return DataplaneInsightSinkFunc(func(<-chan struct{}) {})
 		})
 		callbacks = v3.AdaptCallbacks(tracker)
@@ -41,6 +40,7 @@ var _ = Describe("DataplaneStatusTracker", func() {
 	It("should properly handle ADS connection open/close", func() {
 		// given
 		streamID := int64(1)
+		n := &envoy_core.Node{Id: "my-node"}
 
 		By("simulating start of ADS subscription")
 		// when
@@ -63,7 +63,7 @@ var _ = Describe("DataplaneStatusTracker", func() {
 
 		By("simulating end of ADS subscription")
 		// when
-		callbacks.OnStreamClosed(streamID)
+		callbacks.OnStreamClosed(streamID, n)
 
 		By("ensuring ADS subscription final state")
 		// when
@@ -72,14 +72,6 @@ var _ = Describe("DataplaneStatusTracker", func() {
 		Expect(key).To(Equal(core_model.ResourceKey{}))
 		Expect(subscription.DisconnectTime.AsTime().UnixNano()).To(BeNumerically(">=", subscription.ConnectTime.AsTime().UnixNano()))
 	})
-
-	zeroStatus := mesh_proto.DiscoverySubscriptionStatus{
-		Total: &mesh_proto.DiscoveryServiceStats{},
-		Cds:   &mesh_proto.DiscoveryServiceStats{},
-		Eds:   &mesh_proto.DiscoveryServiceStats{},
-		Lds:   &mesh_proto.DiscoveryServiceStats{},
-		Rds:   &mesh_proto.DiscoveryServiceStats{},
-	}
 
 	It("should tolerate xDS requests with empty Node", func() {
 		// given
@@ -110,7 +102,14 @@ var _ = Describe("DataplaneStatusTracker", func() {
 		key, subscription := accessor.GetStatus()
 		// then
 		Expect(key).To(Equal(core_model.ResourceKey{}))
-		Expect(subscription.Status).To(MatchProto(&zeroStatus))
+		Expect(subscription.Status).To(MatchProto(&mesh_proto.DiscoverySubscriptionStatus{
+			Total:          &mesh_proto.DiscoveryServiceStats{},
+			Cds:            &mesh_proto.DiscoveryServiceStats{},
+			Eds:            &mesh_proto.DiscoveryServiceStats{},
+			LastUpdateTime: subscription.GetStatus().GetLastUpdateTime(),
+			Lds:            &mesh_proto.DiscoveryServiceStats{},
+			Rds:            &mesh_proto.DiscoveryServiceStats{},
+		}))
 	})
 
 	type testCase struct {
@@ -175,14 +174,35 @@ var _ = Describe("DataplaneStatusTracker", func() {
 			By("ensuring that initial xDS request does not increment stats")
 			// when
 			key, subscription := accessor.GetStatus()
+
 			// then
 			Expect(key).To(Equal(core_model.ResourceKey{
 				Mesh: "default",
 				Name: "example-001",
 			}))
-			Expect(subscription.Status).To(MatchProto(&zeroStatus))
+			Expect(subscription.Status).To(MatchProto(&mesh_proto.DiscoverySubscriptionStatus{
+				Total:          &mesh_proto.DiscoveryServiceStats{},
+				Cds:            &mesh_proto.DiscoveryServiceStats{},
+				Eds:            &mesh_proto.DiscoveryServiceStats{},
+				LastUpdateTime: subscription.GetStatus().GetLastUpdateTime(),
+				Lds:            &mesh_proto.DiscoveryServiceStats{},
+				Rds:            &mesh_proto.DiscoveryServiceStats{},
+			}))
 			Expect(subscription.ConnectTime.AsTime().UnixNano()).NotTo(BeZero())
-			Expect(subscription.Version).To(MatchProto(&version))
+			// and
+			// We don't want to validate KumaDpVersion.KumaCpCompatible
+			// as compatibility checks are currently checked in insights
+			// ref: https://github.com/kumahq/kuma/issues/4203
+			Expect(subscription.GetVersion().GetEnvoy()).
+				To(MatchProto(version.GetEnvoy()))
+			Expect(subscription.GetVersion().GetKumaDp().GetVersion()).
+				To(Equal(version.GetKumaDp().GetVersion()))
+			Expect(subscription.GetVersion().GetKumaDp().GetBuildDate()).
+				To(Equal(version.GetKumaDp().GetBuildDate()))
+			Expect(subscription.GetVersion().GetKumaDp().GetGitCommit()).
+				To(Equal(version.GetKumaDp().GetGitCommit()))
+			Expect(subscription.GetVersion().GetKumaDp().GetGitTag()).
+				To(Equal(version.GetKumaDp().GetGitTag()))
 
 			By("simulating initial xDS response")
 			// when
@@ -190,7 +210,7 @@ var _ = Describe("DataplaneStatusTracker", func() {
 				TypeUrl: given.TypeUrl,
 				Nonce:   "1",
 			}
-			callbacks.OnStreamResponse(streamID, discoveryRequest, discoveryResponse)
+			callbacks.OnStreamResponse(context.TODO(), streamID, discoveryRequest, discoveryResponse)
 			// and
 			key, subscription = accessor.GetStatus()
 			// then

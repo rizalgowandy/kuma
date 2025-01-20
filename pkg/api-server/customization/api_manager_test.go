@@ -2,12 +2,12 @@ package customization_test
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 
-	"github.com/emicklei/go-restful"
-	. "github.com/onsi/ginkgo"
+	"github.com/emicklei/go-restful/v3"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/api-server/customization"
@@ -17,14 +17,13 @@ import (
 )
 
 var _ = Describe("API Manager", func() {
-
 	It("should return the config", func() {
 		// given
 		cfg := api_server_config.DefaultApiServerConfig()
 
 		// setup
 		resourceStore := memory.NewStore()
-		metrics, err := metrics.NewMetrics("Standalone")
+		metrics, err := metrics.NewMetrics("Zone")
 		Expect(err).ToNot(HaveOccurred())
 		wsManager := customization.NewAPIList()
 
@@ -34,9 +33,10 @@ var _ = Describe("API Manager", func() {
 		}))
 		wsManager.Add(ws)
 
-		apiServer := createTestApiServer(resourceStore, cfg, true, metrics, wsManager)
+		apiServer := createTestApiServer(resourceStore, cfg, metrics, wsManager)
 
 		stop := make(chan struct{})
+		defer close(stop)
 		go func() {
 			defer GinkgoRecover()
 			err := apiServer.Start(stop)
@@ -55,11 +55,10 @@ var _ = Describe("API Manager", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// then
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
 		Expect(string(body)).To(Equal("\"bar\"\n"))
-		close(stop)
 	})
 })

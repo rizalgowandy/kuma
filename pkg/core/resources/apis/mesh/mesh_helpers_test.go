@@ -3,19 +3,19 @@ package mesh_test
 import (
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
+	"github.com/kumahq/kuma/api/system/v1alpha1"
 	. "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
+	"github.com/kumahq/kuma/pkg/plugins/ca/provided/config"
 	"github.com/kumahq/kuma/pkg/util/proto"
+	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
 var _ = Describe("MeshResource", func() {
-
 	Describe("HasPrometheusMetricsEnabled", func() {
-
 		type testCase struct {
 			mesh     *MeshResource
 			expected bool
@@ -61,7 +61,6 @@ var _ = Describe("MeshResource", func() {
 	})
 
 	Describe("GetTracingBackend", func() {
-
 		type testCase struct {
 			mesh     *MeshResource
 			name     string
@@ -195,7 +194,7 @@ var _ = Describe("MeshResource", func() {
 				},
 			}
 			backends := mesh.GetLoggingBackends()
-			Expect(backends).To(Equal("logstash-1, file-1"))
+			Expect(backends).To(Equal("logstash/logstash-1, file/file-1"))
 		})
 		It("should return default logging backend if logging backends is empty", func() {
 			mesh := &MeshResource{
@@ -237,7 +236,7 @@ var _ = Describe("MeshResource", func() {
 			}
 
 			backends := mesh.GetTracingBackends()
-			Expect(backends).To(Equal("zipkin-us, zipkin-eu"))
+			Expect(backends).To(Equal("zipkin/zipkin-us, zipkin/zipkin-eu"))
 		})
 		It("should return default tracing backend if tracing backends is empty", func() {
 			mesh := &MeshResource{
@@ -252,7 +251,6 @@ var _ = Describe("MeshResource", func() {
 		})
 	})
 	Describe("ParseDuration", func() {
-
 		type testCase struct {
 			input  string
 			output time.Duration
@@ -280,5 +278,39 @@ var _ = Describe("MeshResource", func() {
 				output: 5 * 365 * 24 * time.Hour,
 			}),
 		)
+	})
+	Describe("MarshalLog", func() {
+		It("should mask the sensitive information when marshaling", func() {
+			// given
+			conf, _ := util_proto.ToStruct(&config.ProvidedCertificateAuthorityConfig{
+				Cert: &v1alpha1.DataSource{Type: &v1alpha1.DataSource_Inline{Inline: util_proto.Bytes([]byte("secret1"))}},
+				Key:  &v1alpha1.DataSource{Type: &v1alpha1.DataSource_Inline{Inline: util_proto.Bytes([]byte("secret2"))}},
+			})
+			meshResourceList := MeshResourceList{
+				Items: []*MeshResource{
+					{
+						Spec: &mesh_proto.Mesh{
+							Mtls: &mesh_proto.Mesh_Mtls{
+								Backends: []*mesh_proto.CertificateAuthorityBackend{
+									{
+										Conf: conf,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			// when
+			masked := meshResourceList.MarshalLog().(MeshResourceList)
+
+			// then
+			cfg := &config.ProvidedCertificateAuthorityConfig{}
+			err := util_proto.ToTyped(masked.Items[0].Spec.Mtls.Backends[0].Conf, cfg)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cfg.Key.String()).To(Equal(`inline:{value:"***"}`))
+			Expect(cfg.Cert.String()).To(Equal(`inline:{value:"***"}`))
+		})
 	})
 })

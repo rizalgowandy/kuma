@@ -6,6 +6,8 @@ import (
 	kumactl_cmd "github.com/kumahq/kuma/app/kumactl/pkg/cmd"
 	"github.com/kumahq/kuma/app/kumactl/pkg/output"
 	kuma_cmd "github.com/kumahq/kuma/pkg/cmd"
+	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
+	"github.com/kumahq/kuma/pkg/core/resources/registry"
 )
 
 func NewInspectCmd(pctx *kumactl_cmd.RootContext) *cobra.Command {
@@ -18,18 +20,25 @@ func NewInspectCmd(pctx *kumactl_cmd.RootContext) *cobra.Command {
 		if err := kumactl_cmd.RunParentPreRunE(inspectCmd, args); err != nil {
 			return err
 		}
-		if err := pctx.CheckServerVersionCompatibility(); err != nil {
-			cmd.PrintErrln(err)
-		}
+		_ = kumactl_cmd.CheckCompatibility(pctx.FetchServerVersion, cmd.ErrOrStderr())
 		return nil
 	}
 	// flags
 	inspectCmd.PersistentFlags().StringVarP(&pctx.InspectContext.Args.OutputFormat, "output", "o", string(output.TableFormat), kuma_cmd.UsageOptions("output format", output.TableFormat, output.YAMLFormat, output.JSONFormat))
 	// sub-commands
 	inspectCmd.AddCommand(newInspectDataplanesCmd(pctx))
+	inspectCmd.AddCommand(newInspectDataplaneCmd(pctx))
+	inspectCmd.AddCommand(newInspectMeshGatewayCmd(pctx))
 	inspectCmd.AddCommand(newInspectZoneIngressesCmd(pctx))
+	inspectCmd.AddCommand(newInspectZoneIngressCmd(pctx))
+	inspectCmd.AddCommand(newInspectZoneEgressesCmd(pctx))
+	inspectCmd.AddCommand(newInspectZoneEgressCmd(pctx))
 	inspectCmd.AddCommand(newInspectZonesCmd(pctx))
 	inspectCmd.AddCommand(newInspectMeshesCmd(pctx))
 	inspectCmd.AddCommand(newInspectServicesCmd(pctx))
+
+	for _, desc := range registry.Global().ObjectDescriptors(core_model.AllowedToInspect()) {
+		inspectCmd.AddCommand(newInspectPolicyCmd(desc, pctx))
+	}
 	return inspectCmd
 }

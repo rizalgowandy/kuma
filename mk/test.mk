@@ -1,43 +1,56 @@
 UPDATE_GOLDEN_FILES ?=
-GO_TEST := TMPDIR=/tmp UPDATE_GOLDEN_FILES=$(UPDATE_GOLDEN_FILES) go test $(GOFLAGS) $(LD_FLAGS)
-GO_TEST_E2E := UPDATE_GOLDEN_FILES=$(UPDATE_GOLDEN_FILES) go test -p 1 $(GOFLAGS) $(LD_FLAGS)
-GO_TEST_OPTS ?=
-PKG_LIST ?= ./...
+TEST_PKG_LIST ?= ./...
+REPORTS_DIR ?= build/reports
+# Path to the kumactl binary for Linux. This binary will be uploaded to Docker
+# containers during transparent proxy tests.
+KUMACTL_LINUX_BIN ?= $(BUILD_DIR)/artifacts-linux-$(GOARCH)/kumactl/kumactl
 
-BUILD_COVERAGE_DIR ?= $(BUILD_DIR)/coverage
+GINKGO_UNIT_TEST_FLAGS ?= \
+	--skip-package ./test --race
 
-COVERAGE_PROFILE := $(BUILD_COVERAGE_DIR)/coverage.out
-COVERAGE_REPORT_HTML := $(BUILD_COVERAGE_DIR)/coverage.html
+ifdef CI
+	GINKGO_OPTS ?= --procs 2 --github-output
+else
+	GINKGO_OPTS ?= -p
+endif
 
-# exports below are required for K8S unit tests
-export TEST_ASSET_KUBE_APISERVER=$(KUBE_APISERVER_PATH)
-export TEST_ASSET_ETCD=$(ETCD_PATH)
-export TEST_ASSET_KUBECTL=$(KUBECTL_PATH)
+# -race requires CGO_ENABLED=1 https://go.dev/doc/articles/race_detector and https://github.com/golang/go/issues/27089
+UNIT_TEST_ENV=$(GOENV) CGO_ENABLED=1 KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) TMPDIR=/tmp UPDATE_GOLDEN_FILES=$(UPDATE_GOLDEN_FILES) $(if $(CI),TESTCONTAINERS_RYUK_DISABLED=true,GINKGO_EDITOR_INTEGRATION=true)
+GINKGO_TEST=$(GINKGO) $(GOFLAGS) $(call LD_FLAGS,$(GOOS),$(GOARCH)) --keep-going --keep-separate-reports --junit-report results.xml --json-report report.json --output-dir $(REPORTS_DIR) $(GINKGO_OPTS)
 
 .PHONY: test
-test: ${COVERAGE_PROFILE} ## Dev: Run tests for all modules
-	$(GO_TEST) $(GO_TEST_OPTS) --tags=gateway -race -covermode=atomic -coverpkg=./... -coverprofile="$(COVERAGE_PROFILE)" $(PKG_LIST)
-	$(MAKE) coverage
+test: build/ebpf | $(REPORTS_DIR) ## Dev: Run tests for all modules. to include reports set `make TEST_REPORTS=1` and `make TEST_REPORTS=coverage` to include coverage. To run only some tests by set `TEST_PKG_LIST=./pkg/...` for example
+ifdef TEST_REPORTS
+	$(UNIT_TEST_ENV) $(GINKGO_TEST) $(GINKGO_UNIT_TEST_FLAGS) $(if $(findstring coverage,$(TEST_REPORTS)),--cover --covermode atomic --coverpkg ./... --coverprofile coverage.out) $(TEST_PKG_LIST)
+	$(if $(findstring coverage,$(TEST_REPORTS)),GOFLAGS='${GOFLAGS}' go tool cover -html=$(REPORTS_DIR)/coverage.out -o "$(REPORTS_DIR)/coverage.html")
+endif
+ifndef TEST_REPORTS
+ifdef CI
+	go clean -testcache
+endif
+	$(UNIT_TEST_ENV) go test $(GOFLAGS) $(call LD_FLAGS,$(GOOS),$(GOARCH)) -race $$(go list $(TEST_PKG_LIST) | grep -E -v "test/e2e" | grep -E -v "test/transparentproxy")
+endif
 
-${COVERAGE_PROFILE}:
-	mkdir -p "$(shell dirname "$(COVERAGE_PROFILE)")"
-
-.PHONY: coverage
-coverage: ${COVERAGE_PROFILE}
-	GOFLAGS='${GOFLAGS}' go tool cover -html="$(COVERAGE_PROFILE)" -o "$(COVERAGE_REPORT_HTML)"
+$(REPORTS_DIR):
+	mkdir -p $(REPORTS_DIR)
 
 .PHONY: test/kuma-cp
-test/kuma-cp: PKG_LIST=./app/kuma-cp/... ./pkg/config/app/kuma-cp/...
-test/kuma-cp: test/kuma ## Dev: Run `kuma-cp` tests only
+test/kuma-cp: TEST_PKG_LIST=./app/kuma-cp/... ./pkg/config/app/kuma-cp/...
+test/kuma-cp: test ## Dev: Run `kuma-cp` tests only
 
 .PHONY: test/kuma-dp
-test/kuma-dp: PKG_LIST=./app/kuma-dp/... ./pkg/config/app/kuma-dp/...
-test/kuma-dp: test/kuma ## Dev: Run `kuma-dp` tests only
+test/kuma-dp: TEST_PKG_LIST=./app/kuma-dp/... ./pkg/config/app/kuma-dp/...
+test/kuma-dp: test ## Dev: Run `kuma-dp` tests only
 
 .PHONY: test/kumactl
-test/kumactl: PKG_LIST=./app/kumactl/... ./pkg/config/app/kumactl/...
-test/kumactl: test/kuma ## Dev: Run `kumactl` tests only
+test/kumactl: TEST_PKG_LIST=./app/kumactl/... ./pkg/config/app/kumactl/...
+test/kumactl: test ## Dev: Run `kumactl` tests only
 
-.PHONY: test/release
-test/release: # Dev: Run release tests
-	$(GO_TEST) $(GO_TEST_OPTS) -tags=release ./test/release/...
+.PHONY: test/cni
+test/cni: TEST_PKG_LIST=./app/cni/...
+test/cni: test ## Dev: Run `cni` tests only
+
+.PHONY: test/transparentproxy
+test/transparentproxy:
+	GOOS=linux $(MAKE) build/kumactl
+	KUMACTL_LINUX_BIN=$(KUMACTL_LINUX_BIN) $(UNIT_TEST_ENV) $(GINKGO_TEST) -v ./test/transparentproxy/...

@@ -1,26 +1,26 @@
 package transparentproxy
 
 import (
+	"context"
+
 	"github.com/kumahq/kuma/pkg/transparentproxy/config"
-	"github.com/kumahq/kuma/pkg/transparentproxy/istio"
+	"github.com/kumahq/kuma/pkg/transparentproxy/ebpf"
+	"github.com/kumahq/kuma/pkg/transparentproxy/iptables"
 )
 
-type IptablesTranslator interface {
-	// store iptables rules
-	// accepts a map of slices, the map key is the iptables table
-	// and the slices are the list of the iptables rules in that table
-	// returns the generated translated rules as a single string
-	StoreRules(rules map[string][]string) (string, error)
+func Setup(ctx context.Context, cfg config.InitializedConfig) (string, error) {
+	if cfg.IPv4.Ebpf.Enabled {
+		return ebpf.Setup(cfg.IPv4)
+	}
+
+	return iptables.Setup(ctx, cfg)
 }
 
-type TransparentProxy interface {
-	// returns the stdout and stderr as string and an error if such has occurred
-	Setup(cfg *config.TransparentProxyConfig) (string, error)
+func Cleanup(ctx context.Context, cfg config.InitializedConfig) error {
+	if cfg.IPv4.Ebpf.Enabled {
+		_, err := ebpf.Cleanup(cfg.IPv4)
+		return err
+	}
 
-	// returns the stdout and stderr as string and an error if such has occurred
-	Cleanup(dryRun, verbose bool) (string, error)
-}
-
-func DefaultTransparentProxy() TransparentProxy {
-	return istio.NewIstioTransparentProxy()
+	return iptables.Cleanup(ctx, cfg)
 }

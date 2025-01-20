@@ -1,7 +1,9 @@
 package access_test
 
 import (
-	. "github.com/onsi/ginkgo"
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -20,12 +22,7 @@ var _ = Describe("Admin Resource Access", func() {
 	})
 
 	It("should allow regular user to access non admin resource", func() {
-		err := resourceAccess.ValidateCreate(
-			model.ResourceKey{Name: "xyz", Mesh: "demo"},
-			&mesh_proto.CircuitBreaker{},
-			mesh.NewCircuitBreakerResource().Descriptor(),
-			user.Anonymous,
-		)
+		err := resourceAccess.ValidateCreate(context.Background(), model.ResourceKey{Name: "xyz", Mesh: "demo"}, &mesh_proto.CircuitBreaker{}, mesh.NewCircuitBreakerResource().Descriptor(), user.Anonymous)
 
 		// then
 		Expect(err).ToNot(HaveOccurred())
@@ -33,12 +30,7 @@ var _ = Describe("Admin Resource Access", func() {
 
 	It("should allow admin to access Create", func() {
 		// when
-		err := resourceAccess.ValidateCreate(
-			model.ResourceKey{Name: "xyz"},
-			&system_proto.Secret{},
-			system.NewSecretResource().Descriptor(),
-			user.Admin,
-		)
+		err := resourceAccess.ValidateCreate(context.Background(), model.ResourceKey{Name: "xyz"}, &system_proto.Secret{}, system.NewSecretResource().Descriptor(), user.Admin)
 
 		// then
 		Expect(err).ToNot(HaveOccurred())
@@ -46,12 +38,7 @@ var _ = Describe("Admin Resource Access", func() {
 
 	It("should deny user to access Create", func() {
 		// when
-		err := resourceAccess.ValidateCreate(
-			model.ResourceKey{Name: "xyz"},
-			&system_proto.Secret{},
-			system.NewSecretResource().Descriptor(),
-			user.User{Name: "john doe", Groups: []string{"users"}},
-		)
+		err := resourceAccess.ValidateCreate(context.Background(), model.ResourceKey{Name: "xyz"}, &system_proto.Secret{}, system.NewSecretResource().Descriptor(), user.User{Name: "john doe", Groups: []string{"users"}})
 
 		// then
 		Expect(err).To(MatchError(`access denied: user "john doe/users" cannot access the resource of type "Secret"`))
@@ -59,12 +46,7 @@ var _ = Describe("Admin Resource Access", func() {
 
 	It("should deny anonymous user to access Create", func() {
 		// when
-		err := resourceAccess.ValidateCreate(
-			model.ResourceKey{Name: "xyz"},
-			&system_proto.Secret{},
-			system.NewSecretResource().Descriptor(),
-			user.Anonymous,
-		)
+		err := resourceAccess.ValidateCreate(context.Background(), model.ResourceKey{Name: "xyz"}, &system_proto.Secret{}, system.NewSecretResource().Descriptor(), user.Anonymous)
 
 		// then
 		Expect(err).To(MatchError(`access denied: user "mesh-system:anonymous/mesh-system:unauthenticated" cannot access the resource of type "Secret"`))
@@ -73,7 +55,9 @@ var _ = Describe("Admin Resource Access", func() {
 	It("should allow admin to access Update", func() {
 		// when
 		err := resourceAccess.ValidateUpdate(
+			context.Background(),
 			model.ResourceKey{Name: "xyz"},
+			&system_proto.Secret{},
 			&system_proto.Secret{},
 			system.NewSecretResource().Descriptor(),
 			user.Admin,
@@ -86,7 +70,9 @@ var _ = Describe("Admin Resource Access", func() {
 	It("should deny user to access Update", func() {
 		// when
 		err := resourceAccess.ValidateUpdate(
+			context.Background(),
 			model.ResourceKey{Name: "xyz"},
+			&system_proto.Secret{},
 			&system_proto.Secret{},
 			system.NewSecretResource().Descriptor(),
 			user.User{Name: "john doe", Groups: []string{"users"}},
@@ -99,6 +85,7 @@ var _ = Describe("Admin Resource Access", func() {
 	It("should allow admin to access Get", func() {
 		// when
 		err := resourceAccess.ValidateGet(
+			context.Background(),
 			model.ResourceKey{Name: "xyz"},
 			system.NewSecretResource().Descriptor(),
 			user.Admin,
@@ -111,6 +98,7 @@ var _ = Describe("Admin Resource Access", func() {
 	It("should deny user to access Get", func() {
 		// when
 		err := resourceAccess.ValidateGet(
+			context.Background(),
 			model.ResourceKey{Name: "xyz"},
 			system.NewSecretResource().Descriptor(),
 			user.User{Name: "john doe", Groups: []string{"users"}},
@@ -123,6 +111,8 @@ var _ = Describe("Admin Resource Access", func() {
 	It("should allow admin to access List", func() {
 		// when
 		err := resourceAccess.ValidateList(
+			context.Background(),
+			"",
 			system.NewSecretResource().Descriptor(),
 			user.Admin,
 		)
@@ -134,6 +124,8 @@ var _ = Describe("Admin Resource Access", func() {
 	It("should deny user to access List", func() {
 		// when
 		err := resourceAccess.ValidateList(
+			context.Background(),
+			"",
 			system.NewSecretResource().Descriptor(),
 			user.User{Name: "john doe", Groups: []string{"users"}},
 		)

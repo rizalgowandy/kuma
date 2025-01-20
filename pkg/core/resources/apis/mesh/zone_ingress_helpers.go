@@ -1,11 +1,10 @@
 package mesh
 
 import (
+	"hash/fnv"
 	"net"
+	"strconv"
 
-	"github.com/pkg/errors"
-
-	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
 )
 
@@ -23,10 +22,7 @@ func (r *ZoneIngressResource) UsesInboundInterface(address net.IP, port uint32) 
 }
 
 func (r *ZoneIngressResource) IsRemoteIngress(localZone string) bool {
-	if r.Spec.GetZone() == "" || r.Spec.GetZone() == localZone {
-		return false
-	}
-	return true
+	return r.Spec.GetZone() != "" && r.Spec.GetZone() != localZone
 }
 
 func (r *ZoneIngressResource) HasPublicAddress() bool {
@@ -36,64 +32,22 @@ func (r *ZoneIngressResource) HasPublicAddress() bool {
 	return r.Spec.GetNetworking().GetAdvertisedAddress() != "" && r.Spec.GetNetworking().GetAdvertisedPort() != 0
 }
 
-func NewZoneIngressResourceFromDataplane(dataplane *DataplaneResource) (*ZoneIngressResource, error) {
-	spec, err := convert(dataplane.Spec)
-	if err != nil {
-		return nil, err
+func (r *ZoneIngressResource) AdminAddress(defaultAdminPort uint32) string {
+	if r == nil {
+		return ""
 	}
-	return &ZoneIngressResource{
-		Meta: dataplane.Meta,
-		Spec: spec,
-	}, nil
+	ip := r.Spec.GetNetworking().GetAddress()
+	adminPort := r.Spec.GetNetworking().GetAdmin().GetPort()
+	if adminPort == 0 {
+		adminPort = defaultAdminPort
+	}
+	return net.JoinHostPort(ip, strconv.FormatUint(uint64(adminPort), 10))
 }
 
-func convert(dataplane *mesh_proto.Dataplane) (*mesh_proto.ZoneIngress, error) {
-	if !dataplane.IsIngress() {
-		return nil, errors.New("provided dataplane is not an ingress")
-	}
-	if len(dataplane.GetNetworking().Inbound) == 0 {
-		return nil, errors.New("provided dataplane is not an ingress")
-	}
-	var availableServices []*mesh_proto.ZoneIngress_AvailableService
-	for _, as := range dataplane.GetNetworking().GetIngress().GetAvailableServices() {
-		availableServices = append(availableServices, &mesh_proto.ZoneIngress_AvailableService{
-			Tags:      as.GetTags(),
-			Instances: as.GetInstances(),
-			Mesh:      as.GetMesh(),
-		})
-	}
-	return &mesh_proto.ZoneIngress{
-		Networking: &mesh_proto.ZoneIngress_Networking{
-			Address: dataplane.GetNetworking().GetAddress(),
-			Port:    dataplane.GetNetworking().Inbound[0].GetPort(),
-		},
-		AvailableServices: availableServices,
-	}, nil
-}
-
-func NewZoneIngressOverviews(zoneIngresses ZoneIngressResourceList, insights ZoneIngressInsightResourceList) ZoneIngressOverviewResourceList {
-	insightsByKey := map[model.ResourceKey]*ZoneIngressInsightResource{}
-	for _, insight := range insights.Items {
-		insightsByKey[model.MetaToResourceKey(insight.Meta)] = insight
-	}
-
-	var items []*ZoneIngressOverviewResource
-	for _, zoneIngress := range zoneIngresses.Items {
-		overview := ZoneIngressOverviewResource{
-			Meta: zoneIngress.Meta,
-			Spec: &mesh_proto.ZoneIngressOverview{
-				ZoneIngress:        zoneIngress.Spec,
-				ZoneIngressInsight: nil,
-			},
-		}
-		insight, exists := insightsByKey[model.MetaToResourceKey(overview.Meta)]
-		if exists {
-			overview.Spec.ZoneIngressInsight = insight.Spec
-		}
-		items = append(items, &overview)
-	}
-	return ZoneIngressOverviewResourceList{
-		Pagination: zoneIngresses.Pagination,
-		Items:      items,
-	}
+func (r *ZoneIngressResource) Hash() []byte {
+	hasher := fnv.New128a()
+	_, _ = hasher.Write(model.HashMeta(r))
+	_, _ = hasher.Write([]byte(r.Spec.GetNetworking().GetAddress()))
+	_, _ = hasher.Write([]byte(r.Spec.GetNetworking().GetAdvertisedAddress()))
+	return hasher.Sum(nil)
 }

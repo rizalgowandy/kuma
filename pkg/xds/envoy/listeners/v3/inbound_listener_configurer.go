@@ -5,18 +5,17 @@ import (
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
+	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
 type InboundListenerConfigurer struct {
-	Protocol     core_xds.SocketAddressProtocol
-	ListenerName string
-	Address      string
-	Port         uint32
+	Protocol core_xds.SocketAddressProtocol
+	Address  string
+	Port     uint32
 }
 
 func (c *InboundListenerConfigurer) Configure(l *envoy_listener.Listener) error {
-	l.Name = c.ListenerName
-	l.ReusePort = c.Protocol == core_xds.SocketAddressProtocolUDP
+	l.EnableReusePort = util_proto.Bool(c.Protocol == core_xds.SocketAddressProtocolUDP)
 	l.TrafficDirection = envoy_core.TrafficDirection_INBOUND
 	l.Address = &envoy_core.Address{
 		Address: &envoy_core.Address_SocketAddress{

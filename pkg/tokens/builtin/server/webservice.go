@@ -2,8 +2,9 @@ package server
 
 import (
 	"net/http"
+	"time"
 
-	"github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful/v3"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core"
@@ -13,26 +14,33 @@ import (
 	"github.com/kumahq/kuma/pkg/tokens/builtin/access"
 	"github.com/kumahq/kuma/pkg/tokens/builtin/issuer"
 	"github.com/kumahq/kuma/pkg/tokens/builtin/server/types"
-	"github.com/kumahq/kuma/pkg/tokens/builtin/zoneingress"
+	"github.com/kumahq/kuma/pkg/tokens/builtin/zone"
+	zone_access "github.com/kumahq/kuma/pkg/tokens/builtin/zone/access"
 )
 
-var log = core.Log.WithName("dataplane-token-ws")
+var log = core.Log.WithName("token-ws")
 
 type tokenWebService struct {
-	issuer            issuer.DataplaneTokenIssuer
-	zoneIngressIssuer zoneingress.TokenIssuer
-	access            access.DataplaneTokenAccess
+	basePath   string
+	issuer     issuer.DataplaneTokenIssuer
+	zoneIssuer zone.TokenIssuer
+	dpAccess   access.DataplaneTokenAccess
+	zoneAccess zone_access.ZoneTokenAccess
 }
 
 func NewWebservice(
+	basePath string,
 	issuer issuer.DataplaneTokenIssuer,
-	zoneIngressIssuer zoneingress.TokenIssuer,
-	access access.DataplaneTokenAccess,
+	zoneIssuer zone.TokenIssuer,
+	dpAccess access.DataplaneTokenAccess,
+	zoneAccess zone_access.ZoneTokenAccess,
 ) *restful.WebService {
 	ws := tokenWebService{
-		issuer:            issuer,
-		zoneIngressIssuer: zoneIngressIssuer,
-		access:            access,
+		basePath:   basePath,
+		issuer:     issuer,
+		zoneIssuer: zoneIssuer,
+		dpAccess:   dpAccess,
+		zoneAccess: zoneAccess,
 	}
 	return ws.createWs()
 }
@@ -40,11 +48,11 @@ func NewWebservice(
 func (d *tokenWebService) createWs() *restful.WebService {
 	ws := new(restful.WebService).
 		Consumes(restful.MIME_JSON).
-		Produces(restful.MIME_JSON)
-	ws.Path("/tokens").
-		Route(ws.POST("").To(d.handleIdentityRequest)). // backwards compatibility
+		Produces(restful.MIME_JSON).
+		Path(d.basePath)
+	ws.
 		Route(ws.POST("/dataplane").To(d.handleIdentityRequest)).
-		Route(ws.POST("/zone-ingress").To(d.handleZoneIngressIdentityRequest))
+		Route(ws.POST("/zone").To(d.handleZoneIdentityRequest))
 	return ws
 }
 
@@ -56,31 +64,45 @@ func (d *tokenWebService) handleIdentityRequest(request *restful.Request, respon
 		return
 	}
 
+	verr := validators.ValidationError{}
+
 	if idReq.Mesh == "" {
-		verr := validators.ValidationError{}
 		verr.AddViolation("mesh", "cannot be empty")
-		errors.HandleError(response, verr.OrNil(), "Invalid request")
+	}
+
+	validForErr, validFor := validateValidFor(idReq.ValidFor)
+	verr.Add(validForErr)
+
+	if idReq.Type != "" {
+		if err := mesh_proto.ProxyType(idReq.Type).IsValid(); err != nil {
+			verr.AddViolation("type", err.Error())
+		}
+	}
+
+	if verr.HasViolations() {
+		errors.HandleError(request.Request.Context(), response, verr.OrNil(), "Invalid request")
 		return
 	}
 
-	if err := d.access.ValidateGenerateDataplaneToken(
+	if err := d.dpAccess.ValidateGenerateDataplaneToken(
+		request.Request.Context(),
 		idReq.Name,
 		idReq.Mesh,
 		idReq.Tags,
 		user.FromCtx(request.Request.Context()),
 	); err != nil {
-		errors.HandleError(response, err, "Could not issue a token")
+		errors.HandleError(request.Request.Context(), response, err, "Could not issue a token")
 		return
 	}
 
-	token, err := d.issuer.Generate(issuer.DataplaneIdentity{
+	token, err := d.issuer.Generate(request.Request.Context(), issuer.DataplaneIdentity{
 		Mesh: idReq.Mesh,
 		Name: idReq.Name,
 		Type: mesh_proto.ProxyType(idReq.Type),
 		Tags: mesh_proto.MultiValueTagSetFrom(idReq.Tags),
-	})
+	}, validFor)
 	if err != nil {
-		errors.HandleError(response, err, "Could not issue a token")
+		errors.HandleError(request.Request.Context(), response, err, "Could not issue a token")
 		return
 	}
 
@@ -90,24 +112,57 @@ func (d *tokenWebService) handleIdentityRequest(request *restful.Request, respon
 	}
 }
 
-func (d *tokenWebService) handleZoneIngressIdentityRequest(request *restful.Request, response *restful.Response) {
-	idReq := types.ZoneIngressTokenRequest{}
+func validateValidFor(validForRequest string) (validators.ValidationError, time.Duration) {
+	var verr validators.ValidationError
+	var validFor time.Duration
+	if validForRequest == "" {
+		// https://github.com/kumahq/kuma/issues/4001
+		validFor = time.Hour * 24 * 365 * 10 // 10 years. Backwards compatibility. In future releases we should make it required
+	} else {
+		dur, err := time.ParseDuration(validForRequest)
+		if err != nil {
+			verr.AddViolation("validFor", "is invalid: "+err.Error())
+		}
+		validFor = dur
+	}
+	return verr, validFor
+}
+
+func (d *tokenWebService) handleZoneIdentityRequest(request *restful.Request, response *restful.Response) {
+	var idReq types.ZoneTokenRequest
 	if err := request.ReadEntity(&idReq); err != nil {
 		log.Error(err, "Could not read a request")
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	if err := d.access.ValidateGenerateZoneIngressToken(idReq.Zone, user.FromCtx(request.Request.Context())); err != nil {
-		errors.HandleError(response, err, "Could not issue a token")
+	ctx := request.Request.Context()
+
+	if err := d.zoneAccess.ValidateGenerateZoneToken(request.Request.Context(), idReq.Zone, user.FromCtx(ctx)); err != nil {
+		errors.HandleError(request.Request.Context(), response, err, "Could not issue a token")
 		return
 	}
 
-	token, err := d.zoneIngressIssuer.Generate(zoneingress.Identity{
-		Zone: idReq.Zone,
-	})
+	var verr validators.ValidationError
+
+	if idReq.Scope == nil {
+		verr.AddViolation("scope", "cannot be empty")
+	}
+
+	validForErr, validFor := validateValidFor(idReq.ValidFor)
+	verr.Add(validForErr)
+
+	if verr.HasViolations() {
+		errors.HandleError(request.Request.Context(), response, verr.OrNil(), "Invalid request")
+		return
+	}
+
+	token, err := d.zoneIssuer.Generate(ctx, zone.Identity{
+		Zone:  idReq.Zone,
+		Scope: idReq.Scope,
+	}, validFor)
 	if err != nil {
-		errors.HandleError(response, err, "Could not issue a token")
+		errors.HandleError(request.Request.Context(), response, err, "Could not issue a token")
 		return
 	}
 

@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -12,7 +11,6 @@ import (
 )
 
 var _ = Describe("TagsHeaderConfigurer", func() {
-
 	type testCase struct {
 		tags     mesh_proto.MultiValueTagSet
 		expected string
@@ -21,7 +19,7 @@ var _ = Describe("TagsHeaderConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			routeConfiguration, err := routes.NewRouteConfigurationBuilder(envoy.APIV3).
+			routeConfiguration, err := routes.NewRouteConfigurationBuilder(envoy.APIV3, "route_configuration").
 				Configure(routes.TagsHeader(given.tags)).
 				Build()
 			// then
@@ -41,6 +39,7 @@ var _ = Describe("TagsHeaderConfigurer", func() {
 				"tag1": {"value11": true, "value12": true},
 			},
 			expected: `
+            name: route_configuration
             requestHeadersToAdd:
             - header:
                 key: x-kuma-tags
@@ -48,7 +47,7 @@ var _ = Describe("TagsHeaderConfigurer", func() {
 		}),
 		Entry("empty tags", testCase{
 			tags:     map[string]map[string]bool{},
-			expected: `{}`,
+			expected: `name: route_configuration`,
 		}),
 	)
 })

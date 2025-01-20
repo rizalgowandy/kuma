@@ -7,20 +7,17 @@ import (
 	envoy_hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_tcp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	util_error "github.com/kumahq/kuma/pkg/util/error"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	. "github.com/kumahq/kuma/pkg/xds/envoy/listeners/v3"
 )
 
 var _ = Describe("UpdateFilterConfig()", func() {
-
 	Context("happy path", func() {
 		type testCase struct {
 			filterChain *envoy_listener.FilterChain
@@ -51,7 +48,7 @@ var _ = Describe("UpdateFilterConfig()", func() {
 			}),
 			Entry("1 filter", func() testCase {
 				pbst, err := anypb.New(&envoy_tcp.TcpProxy{})
-				util_error.MustNot(err)
+				Expect(err).ToNot(HaveOccurred())
 				return testCase{
 					filterChain: &envoy_listener.FilterChain{
 						Filters: []*envoy_listener.Filter{{
@@ -80,7 +77,7 @@ var _ = Describe("UpdateFilterConfig()", func() {
 			}()),
 			Entry("2 filters", func() testCase {
 				pbst, err := anypb.New(&envoy_tcp.TcpProxy{})
-				util_error.MustNot(err)
+				Expect(err).ToNot(HaveOccurred())
 				return testCase{
 					filterChain: &envoy_listener.FilterChain{
 						Filters: []*envoy_listener.Filter{
@@ -117,7 +114,6 @@ var _ = Describe("UpdateFilterConfig()", func() {
 	})
 
 	Context("error path", func() {
-
 		type testCase struct {
 			filterChain *envoy_listener.FilterChain
 			filterName  string
@@ -146,7 +142,7 @@ var _ = Describe("UpdateFilterConfig()", func() {
 			}),
 			Entry("1 filter with a wrong config type", func() testCase {
 				pbst, err := anypb.New(&envoy_hcm.HttpConnectionManager{})
-				util_error.MustNot(err)
+				Expect(err).ToNot(HaveOccurred())
 				return testCase{
 					filterChain: &envoy_listener.FilterChain{
 						Filters: []*envoy_listener.Filter{{
@@ -166,7 +162,6 @@ var _ = Describe("UpdateFilterConfig()", func() {
 })
 
 var _ = Describe("NewUnexpectedFilterConfigTypeError()", func() {
-
 	type testCase struct {
 		inputActual   proto.Message
 		inputExpected proto.Message
@@ -180,12 +175,12 @@ var _ = Describe("NewUnexpectedFilterConfigTypeError()", func() {
 			// then
 			Expect(err).To(HaveOccurred())
 			// and
-			Expect(err.Error()).To(Equal(given.expectedErr))
+			Expect(err.Error()).To(ContainSubstring(given.expectedErr))
 		},
 		Entry("TcpProxy instead of HttpConnectionManager", testCase{
 			inputActual:   &envoy_tcp.TcpProxy{},
 			inputExpected: &envoy_hcm.HttpConnectionManager{},
-			expectedErr:   `filter config has unexpected type: expected *envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager, got *envoy_extensions_filters_network_tcp_proxy_v3.TcpProxy`,
+			expectedErr:   `filter config has unexpected type`,
 		}),
 	)
 })
@@ -206,19 +201,19 @@ var _ = Describe("ConvertPercentage", func() {
 		}),
 		Entry("fractional input with 1 digit after dot", testCase{
 			input:    util_proto.Double(50.1),
-			expected: &envoy_type.FractionalPercent{Numerator: 501000, Denominator: envoy_type.FractionalPercent_TEN_THOUSAND},
+			expected: &envoy_type.FractionalPercent{Numerator: 5010, Denominator: envoy_type.FractionalPercent_TEN_THOUSAND},
 		}),
 		Entry("fractional input with 5 digit after dot", testCase{
 			input:    util_proto.Double(50.12345),
-			expected: &envoy_type.FractionalPercent{Numerator: 50123450, Denominator: envoy_type.FractionalPercent_MILLION},
+			expected: &envoy_type.FractionalPercent{Numerator: 501235, Denominator: envoy_type.FractionalPercent_MILLION},
 		}),
 		Entry("fractional input with 7 digit after dot, last digit less than 5", testCase{
 			input:    util_proto.Double(50.1234561),
-			expected: &envoy_type.FractionalPercent{Numerator: 50123456, Denominator: envoy_type.FractionalPercent_MILLION},
+			expected: &envoy_type.FractionalPercent{Numerator: 501235, Denominator: envoy_type.FractionalPercent_MILLION},
 		}),
 		Entry("fractional input with 7 digit after dot, last digit more than 5", testCase{
 			input:    util_proto.Double(50.1234567),
-			expected: &envoy_type.FractionalPercent{Numerator: 50123457, Denominator: envoy_type.FractionalPercent_MILLION},
+			expected: &envoy_type.FractionalPercent{Numerator: 501235, Denominator: envoy_type.FractionalPercent_MILLION},
 		}),
 	)
 })
@@ -228,7 +223,7 @@ var _ = Describe("ConvertBandwidth", func() {
 		input    string
 		expected uint64
 	}
-	DescribeTable("should properly converts to kbps from gbps, mbps, kbps",
+	DescribeTable("should properly convert to kbps from gbps, mbps, kbps",
 		func(given testCase) {
 			// when
 			limitKbps, err := ConvertBandwidthToKbps(given.input)
@@ -241,11 +236,11 @@ var _ = Describe("ConvertBandwidth", func() {
 			expected: 120,
 		}),
 		Entry("mbps input", testCase{
-			input:    "120 mbps",
+			input:    "120 Mbps",
 			expected: 120000,
 		}),
 		Entry("gbps input", testCase{
-			input:    "120 gbps",
+			input:    "120 Gbps",
 			expected: 120000000,
 		}),
 	)

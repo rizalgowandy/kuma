@@ -1,8 +1,7 @@
 package endpoints_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
@@ -11,31 +10,6 @@ import (
 )
 
 var _ = Describe("Endpoints", func() {
-
-	Describe("CreateStaticEndpoint()", func() {
-		It("should generate 'static' Endpoints", func() {
-			// given
-			expected := `
-            clusterName: localhost:8080
-            endpoints:
-            - lbEndpoints:
-              - endpoint:
-                  address:
-                    socketAddress:
-                      address: 127.0.0.1
-                      portValue: 8080
-`
-			// when
-			resource := CreateStaticEndpoint("localhost:8080", "127.0.0.1", 8080)
-
-			// then
-			actual, err := util_proto.ToYAML(resource)
-
-			Expect(err).ToNot(HaveOccurred())
-			Expect(actual).To(MatchYAML(expected))
-		})
-	})
-
 	Describe("ClusterLoadAssignment()", func() {
 		type testCase struct {
 			cluster   string
@@ -211,6 +185,143 @@ var _ = Describe("Endpoints", func() {
                           region: eu
                           kuma.io/zone: west
                     loadBalancingWeight: 2
+`,
+			}),
+			Entry("mixed locality", testCase{
+				cluster: "127.0.0.1:8080",
+				endpoints: []core_xds.Endpoint{
+					{
+						Target: "192.168.0.1",
+						Port:   8081,
+						Weight: 2,
+						Locality: &core_xds.Locality{
+							Zone: "west",
+						},
+					},
+					{
+						Target: "192.168.0.2",
+						Port:   8082,
+						Weight: 1,
+					},
+					{
+						Target: "192.168.0.3",
+						Port:   8082,
+						Weight: 1,
+					},
+				},
+				expected: `
+clusterName: 127.0.0.1:8080
+endpoints:
+    - lbEndpoints:
+        - endpoint:
+            address:
+                socketAddress:
+                    address: 192.168.0.2
+                    portValue: 8082
+          loadBalancingWeight: 1
+        - endpoint:
+            address:
+                socketAddress:
+                    address: 192.168.0.3
+                    portValue: 8082
+          loadBalancingWeight: 1
+    - lbEndpoints:
+        - endpoint:
+            address:
+                socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8081
+          loadBalancingWeight: 2
+      locality:
+        zone: west
+`,
+			}),
+			Entry("mixed locality with locality weights", testCase{
+				cluster: "127.0.0.1:8080",
+				endpoints: []core_xds.Endpoint{
+					{
+						Target: "192.168.0.1",
+						Port:   8081,
+						Weight: 2,
+						Locality: &core_xds.Locality{
+							Zone:     "west",
+							Priority: 1,
+							Weight:   1,
+						},
+					},
+					{
+						Target: "192.168.0.2",
+						Port:   8082,
+						Weight: 1,
+						Locality: &core_xds.Locality{
+							Zone:    "east",
+							SubZone: "node1",
+							Weight:  20,
+						},
+					},
+					{
+						Target: "192.168.0.3",
+						Port:   8082,
+						Weight: 1,
+						Locality: &core_xds.Locality{
+							Zone:    "east",
+							SubZone: "node2",
+							Weight:  1,
+						},
+					},
+					{
+						Target: "192.168.0.4",
+						Port:   8082,
+						Weight: 1,
+						Locality: &core_xds.Locality{
+							Zone:    "east",
+							SubZone: "node2",
+							Weight:  1,
+						},
+					},
+				},
+				expected: `
+clusterName: 127.0.0.1:8080
+endpoints:
+    - lbEndpoints:
+        - endpoint:
+            address:
+                socketAddress:
+                    address: 192.168.0.2
+                    portValue: 8082
+          loadBalancingWeight: 1
+      loadBalancingWeight: 20
+      locality:
+        subZone: node1
+        zone: east
+    - lbEndpoints:
+        - endpoint:
+            address:
+                socketAddress:
+                    address: 192.168.0.3
+                    portValue: 8082
+          loadBalancingWeight: 1
+        - endpoint:
+            address:
+                socketAddress:
+                    address: 192.168.0.4
+                    portValue: 8082
+          loadBalancingWeight: 1
+      loadBalancingWeight: 1
+      locality:
+        subZone: node2
+        zone: east
+    - lbEndpoints:
+        - endpoint:
+            address:
+                socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8081
+          loadBalancingWeight: 2
+      loadBalancingWeight: 1
+      locality:
+        zone: west
+      priority: 1
 `,
 			}),
 		)

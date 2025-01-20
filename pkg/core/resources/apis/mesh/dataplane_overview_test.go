@@ -1,8 +1,7 @@
 package mesh_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,7 +13,6 @@ import (
 )
 
 var _ = Describe("DataplaneOverview", func() {
-
 	Describe("NewDataplaneOverviews", func() {
 		It("should create overviews from dataplanes and insights", func() {
 			dataplanes := DataplaneResourceList{Items: []*DataplaneResource{
@@ -67,7 +65,7 @@ var _ = Describe("DataplaneOverview", func() {
 				resource.Spec = given.overview
 
 				// when
-				status, errReasons := resource.GetStatus()
+				status, errReasons := resource.Status()
 
 				// then
 				Expect(status).To(Equal(given.status))

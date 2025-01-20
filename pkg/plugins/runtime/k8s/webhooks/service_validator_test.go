@@ -3,20 +3,18 @@ package webhooks_test
 import (
 	"context"
 
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	admissionv1 "k8s.io/api/admission/v1"
 	kube_admission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/yaml"
 
 	"github.com/kumahq/kuma/pkg/plugins/bootstrap/k8s"
 	. "github.com/kumahq/kuma/pkg/plugins/runtime/k8s/webhooks"
 )
 
 var _ = Describe("ServiceValidator", func() {
-
-	var decoder *kube_admission.Decoder
+	var decoder kube_admission.Decoder
 
 	BeforeEach(func() {
 		scheme, err := k8s.NewScheme()
@@ -24,7 +22,7 @@ var _ = Describe("ServiceValidator", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
-		decoder, err = kube_admission.NewDecoder(scheme)
+		decoder = kube_admission.NewDecoder(scheme)
 		// then
 		Expect(err).ToNot(HaveOccurred())
 	})
@@ -36,17 +34,12 @@ var _ = Describe("ServiceValidator", func() {
 
 	DescribeTable("should make a proper admission verdict",
 		func(given testCase) {
-			// setup
-			validator := &ServiceValidator{}
-			// when
-			err := validator.InjectDecoder(decoder)
-			// then
-			Expect(err).ToNot(HaveOccurred())
+			validator := &ServiceValidator{Decoder: decoder}
 
 			// setup
 			admissionReview := admissionv1.AdmissionReview{}
 			// when
-			err = yaml.Unmarshal([]byte(given.request), &admissionReview)
+			err := yaml.Unmarshal([]byte(given.request), &admissionReview)
 			// then
 			Expect(err).ToNot(HaveOccurred())
 

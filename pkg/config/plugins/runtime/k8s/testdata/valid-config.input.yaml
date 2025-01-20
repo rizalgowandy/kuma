@@ -8,7 +8,7 @@ injector:
     image: kuma-sidecar:latest
     redirectPortOutbound: 1234
     redirectPortInbound: 1236
-    redirectPortInboundV6: 1237
+    ipFamilyMode: "ipv4"
     uid: 2345
     gid: 3456
     adminPort: 45678
@@ -25,6 +25,11 @@ injector:
       timeoutSeconds:      23
       periodSeconds:       25
       failureThreshold:    212
+    startupProbe:
+      initialDelaySeconds: 261
+      timeoutSeconds:      24
+      periodSeconds:       26
+      failureThreshold:    213
     resources:
       requests:
         cpu: 150m

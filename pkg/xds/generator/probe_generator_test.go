@@ -1,10 +1,10 @@
 package generator_test
 
 import (
+	"context"
 	"path/filepath"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -20,8 +20,9 @@ import (
 
 var _ = Describe("ProbeGenerator", func() {
 	type testCase struct {
-		dataplane string
-		expected  string
+		dataplane            string
+		expected             string
+		appProbeProxyEnabled bool
 	}
 
 	DescribeTable("should generate Envoy xDS resources",
@@ -38,11 +39,14 @@ var _ = Describe("ProbeGenerator", func() {
 					},
 					Spec: dataplane,
 				},
+				Metadata: &core_xds.DataplaneMetadata{
+					AppProbeProxyEnabled: given.appProbeProxyEnabled,
+				},
 				APIVersion: envoy_common.APIV3,
 			}
 
 			// when
-			rs, err := gen.Generate(xds_context.Context{}, proxy)
+			rs, err := gen.Generate(context.Background(), nil, xds_context.Context{}, proxy)
 			// then
 			Expect(err).ToNot(HaveOccurred())
 
@@ -103,6 +107,21 @@ var _ = Describe("ProbeGenerator", func() {
                 path: /8080/healthz/probe?param1=value1&param2=value2
 `,
 			expected: "04.envoy.golden.yaml",
+		}),
+		Entry("skip probes listener with application probe proxy enabled ", testCase{
+			dataplane: `
+            networking:
+              inbound:
+              - port: 8080
+            probes:
+              port: 9000
+              endpoints:
+              - inboundPort: 8080
+                inboundPath: /healthz/probe
+                path: /8080/healthz/probe
+`,
+			appProbeProxyEnabled: true,
+			expected:             "05.envoy.golden.yaml",
 		}),
 	)
 })

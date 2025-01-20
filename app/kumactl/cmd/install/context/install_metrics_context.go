@@ -1,10 +1,5 @@
 package context
 
-type Dashboard struct {
-	FileName string
-	Content  string
-}
-
 type MetricsTemplateArgs struct {
 	Namespace         string
 	Mesh              string

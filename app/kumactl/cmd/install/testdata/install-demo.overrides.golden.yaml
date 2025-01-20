@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: not-kuma-demo
-  annotations:
+  labels:
     kuma.io/sidecar-injection: enabled
 ---
 apiVersion: v1
@@ -12,6 +12,8 @@ kind: Service
 metadata:
   name: redis
   namespace: not-kuma-demo
+  labels:
+    app: redis
 spec:
   selector:
     app: redis
@@ -24,13 +26,14 @@ kind: Service
 metadata:
   name: demo-app
   namespace: not-kuma-demo
-  annotations:
-    5000.service.kuma.io/protocol: http
+  labels:
+    app: demo-app
 spec:
   selector:
     app: demo-app
   ports:
   - protocol: TCP
+    appProtocol: http
     port: 5000
 ---
 apiVersion: apps/v1
@@ -55,6 +58,9 @@ spec:
             - name: tcp
               containerPort: 6379
           lifecycle:
+            preStop: # delay shutdown to support graceful mesh leave
+              exec:
+                command: ["/bin/sleep", "30"]
             postStart:
               exec:
                 command: ["/usr/local/bin/redis-cli", "set", "zone", "aws"]
@@ -76,10 +82,10 @@ spec:
     spec:
       containers:
         - name: demo-app
-          image: "thefosk/kuma-demo"
+          image: "kumahq/kuma-demo"
           env:
             - name: REDIS_HOST
-              value: "redis.kuma-demo.svc.cluster.local"
+              value: "redis.not-kuma-demo.svc.cluster.local"
             - name: REDIS_PORT
               value: "6379"
             - name: APP_VERSION
@@ -89,3 +95,53 @@ spec:
           ports:
             - name: http
               containerPort: 5000
+---
+apiVersion: kuma.io/v1alpha1
+kind: MeshGateway
+mesh: default
+metadata:
+  name: demo-app
+  labels:
+    kuma.io/origin: zone
+spec:
+  conf:
+    listeners:
+    - port: 80
+      protocol: HTTP
+  selectors:
+  - match:
+      kuma.io/service: demo-app-gateway_not-kuma-demo_svc
+---
+apiVersion: kuma.io/v1alpha1
+kind: MeshGatewayInstance
+metadata:
+  name: demo-app-gateway
+  namespace: not-kuma-demo
+spec:
+  replicas: 1
+  serviceType: LoadBalancer
+---
+apiVersion: kuma.io/v1alpha1
+kind: MeshHTTPRoute
+metadata:
+  name: demo-app
+  namespace: kuma-system
+  labels:
+    kuma.io/origin: zone
+    kuma.io/mesh: default
+spec:
+  targetRef:
+    kind: MeshGateway
+    name: demo-app
+  to:
+  - targetRef:
+      kind: Mesh
+    rules:
+    - default:
+        backendRefs:
+        - kind: MeshService
+          name: demo-app_not-kuma-demo_svc_5000
+      matches:
+      - path:
+          type: PathPrefix
+          value: /

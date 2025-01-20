@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -15,7 +14,6 @@ import (
 )
 
 var _ = Describe("NetworkRbacConfigurer", func() {
-
 	type testCase struct {
 		listenerName     string
 		listenerProtocol xds.SocketAddressProtocol
@@ -31,10 +29,9 @@ var _ = Describe("NetworkRbacConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(InboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
-					Configure(TcpProxy(given.statsName, given.clusters...)).
+			listener, err := NewInboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
+					Configure(TcpProxyDeprecated(given.statsName, given.clusters...)).
 					Configure(NetworkRBAC(given.listenerName, given.rbacEnabled, given.permission)))).
 				Build()
 			// then
@@ -85,6 +82,7 @@ var _ = Describe("NetworkRbacConfigurer", func() {
               socketAddress:
                 address: 192.168.0.1
                 portValue: 8080
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.rbac
@@ -155,6 +153,7 @@ var _ = Describe("NetworkRbacConfigurer", func() {
               socketAddress:
                 address: 192.168.0.1
                 portValue: 8080
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.tcp_proxy

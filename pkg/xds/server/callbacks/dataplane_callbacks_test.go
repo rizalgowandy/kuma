@@ -5,7 +5,7 @@ import (
 
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_sd "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -31,30 +31,30 @@ func (c *countingDpCallbacks) OnProxyReconnected(streamID core_xds.StreamID, dpK
 	return nil
 }
 
-func (c *countingDpCallbacks) OnProxyDisconnected(streamID core_xds.StreamID, dpKey core_model.ResourceKey) {
+func (c *countingDpCallbacks) OnProxyDisconnected(ctx context.Context, streamID core_xds.StreamID, dpKey core_model.ResourceKey) {
 	c.OnProxyDisconnectedCounter++
 }
 
 var _ DataplaneCallbacks = &countingDpCallbacks{}
 
 var _ = Describe("Dataplane Callbacks", func() {
-
 	countingCallbacks := &countingDpCallbacks{}
 	callbacks := util_xds_v3.AdaptCallbacks(DataplaneCallbacksToXdsCallbacks(countingCallbacks))
 
-	req := envoy_sd.DiscoveryRequest{
-		Node: &envoy_core.Node{
-			Id: "default.example",
-			Metadata: &structpb.Struct{
-				Fields: map[string]*structpb.Value{
-					"dataplane.token": {
-						Kind: &structpb.Value_StringValue{
-							StringValue: "token",
-						},
+	node := &envoy_core.Node{
+		Id: "default.example",
+		Metadata: &structpb.Struct{
+			Fields: map[string]*structpb.Value{
+				"dataplane.token": {
+					Kind: &structpb.Value_StringValue{
+						StringValue: "token",
 					},
 				},
 			},
 		},
+	}
+	req := envoy_sd.DiscoveryRequest{
+		Node: node,
 	}
 
 	It("should call DataplaneCallbacks correctly", func() {
@@ -93,13 +93,13 @@ var _ = Describe("Dataplane Callbacks", func() {
 		Expect(countingCallbacks.OnProxyReconnectedCounter).To(Equal(1))
 
 		// when first stream is closed
-		callbacks.OnStreamClosed(1)
+		callbacks.OnStreamClosed(1, node)
 
 		// then OnProxyDisconnected should not yet be called
 		Expect(countingCallbacks.OnProxyDisconnectedCounter).To(Equal(0))
 
 		// when last stream is closed
-		callbacks.OnStreamClosed(2)
+		callbacks.OnStreamClosed(2, node)
 
 		// then OnProxyDisconnected should be called
 		Expect(countingCallbacks.OnProxyDisconnectedCounter).To(Equal(1))

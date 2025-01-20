@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
-	"github.com/kumahq/kuma/pkg/plugins/resources/remote"
+	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
 )
 
@@ -44,14 +44,14 @@ func (d *httpDataplaneOverviewClient) List(ctx context.Context, meshName string,
 		return nil, errors.Errorf("(%d): %s", statusCode, string(b))
 	}
 	overviews := mesh.DataplaneOverviewResourceList{}
-	if err := remote.UnmarshalList(b, &overviews); err != nil {
+	if err := rest.JSON.UnmarshalListToCore(b, &overviews); err != nil {
 		return nil, err
 	}
 	return &overviews, nil
 }
 
 func constructUrl(meshName string, tags map[string]string, gateway bool, ingress bool) (*url.URL, error) {
-	result, err := url.Parse(fmt.Sprintf("/meshes/%s/dataplanes+insights", meshName))
+	result, err := url.Parse(fmt.Sprintf("/meshes/%s/%s/_overview", meshName, mesh.DataplaneResourceTypeDescriptor.WsPath))
 	if err != nil {
 		return nil, err
 	}

@@ -11,15 +11,14 @@ import (
 	"strconv"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
 	"github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/app/kumactl/cmd"
 	kumactl_cmd "github.com/kumahq/kuma/app/kumactl/pkg/cmd"
-	config_proto "github.com/kumahq/kuma/pkg/config/app/kumactl/v1alpha1"
+	test_kumactl "github.com/kumahq/kuma/app/kumactl/pkg/test"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
@@ -27,29 +26,28 @@ import (
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/core/rest/errors/types"
 	memory_resources "github.com/kumahq/kuma/pkg/plugins/resources/memory"
+	"github.com/kumahq/kuma/pkg/test/matchers"
 	"github.com/kumahq/kuma/pkg/test/resources/model"
 	test_store "github.com/kumahq/kuma/pkg/test/store"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
-	"github.com/kumahq/kuma/pkg/util/test"
 )
 
-var _ = Describe("kumactl apply", func() {
+const defaultNetworkingSection = `networking:
+  address: 2.2.2.2
+  inbound:
+    - port: 80
+      tags:
+        "kuma.io/service": "web"`
 
+var _ = Describe("kumactl apply", func() {
 	var rootCtx *kumactl_cmd.RootContext
 	var rootCmd *cobra.Command
 	var store core_store.ResourceStore
 	BeforeEach(func() {
-		rootCtx = &kumactl_cmd.RootContext{
-			Runtime: kumactl_cmd.RootRuntime{
-				Registry: registry.Global(),
-				NewBaseAPIServerClient: func(server *config_proto.ControlPlaneCoordinates_ApiServer) (util_http.Client, error) {
-					return nil, nil
-				},
-				NewResourceStore: func(util_http.Client) core_store.ResourceStore {
-					return store
-				},
-				NewAPIServerClient: test.GetMockNewAPIServerClient(),
-			},
+		rootCtx = test_kumactl.MakeMinimalRootContext()
+		rootCtx.Runtime.Registry = registry.Global()
+		rootCtx.Runtime.NewResourceStore = func(util_http.Client) core_store.ResourceStore {
+			return store
 		}
 		store = core_store.NewPaginationStore(memory_resources.NewStore())
 		rootCmd = cmd.NewRootCmd(rootCtx)
@@ -77,7 +75,7 @@ var _ = Describe("kumactl apply", func() {
 		Expect(resource.Spec.Networking.Outbound).To(HaveLen(1))
 		Expect(resource.Spec.Networking.Outbound[0].Port).To(Equal(uint32(3000)))
 		// nolint:staticcheck
-		Expect(resource.Spec.Networking.Outbound[0].Service).To(Equal("postgres"))
+		Expect(resource.Spec.Networking.Outbound[0].GetService()).To(Equal("postgres"))
 	}
 
 	It("should require -f arg", func() {
@@ -119,8 +117,8 @@ var _ = Describe("kumactl apply", func() {
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-			"apply", "-f", filepath.Join("testdata", "apply-dataplane.yaml")},
-		)
+			"apply", "-f", filepath.Join("testdata", "apply-dataplane.yaml"),
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -157,8 +155,8 @@ var _ = Describe("kumactl apply", func() {
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-			"apply", "-f", filepath.Join("testdata", "apply-dataplane.yaml")},
-		)
+			"apply", "-f", filepath.Join("testdata", "apply-dataplane.yaml"),
+		})
 
 		// when
 		err = rootCmd.Execute()
@@ -173,8 +171,8 @@ var _ = Describe("kumactl apply", func() {
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-			"apply", "-f", filepath.Join("testdata", "apply-mesh.yaml")},
-		)
+			"apply", "-f", filepath.Join("testdata", "apply-mesh.yaml"),
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -196,8 +194,8 @@ var _ = Describe("kumactl apply", func() {
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-			"apply", "-f", filepath.Join("testdata", "apply-secret.yaml")},
-		)
+			"apply", "-f", filepath.Join("testdata", "apply-secret.yaml"),
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -229,7 +227,7 @@ var _ = Describe("kumactl apply", func() {
 
 		// then
 		Eventually(func() bool {
-			resp, err := http.Get(testurl)
+			resp, err := http.Get(testurl) // #nosec G107 -- reused in different places
 			if err != nil {
 				return false
 			}
@@ -242,8 +240,8 @@ var _ = Describe("kumactl apply", func() {
 
 		// given
 		rootCmd.SetArgs([]string{
-			"apply", "-f", testurl},
-		)
+			"apply", "-f", testurl,
+		})
 
 		// when
 		err = rootCmd.Execute()
@@ -260,8 +258,8 @@ var _ = Describe("kumactl apply", func() {
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
 			"apply", "-f", filepath.Join("testdata", "apply-mesh-template.yaml"),
-			"-v", "name=meshinit", "-v", "type=Mesh"},
-		)
+			"-v", "name=meshinit", "-v", "type=Mesh",
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -283,8 +281,8 @@ var _ = Describe("kumactl apply", func() {
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-			"apply", "-f", filepath.Join("testdata", "apply-multiple-resource-same-type.yaml")},
-		)
+			"apply", "-f", filepath.Join("testdata", "apply-multiple-resource-same-type.yaml"),
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -304,8 +302,8 @@ var _ = Describe("kumactl apply", func() {
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-			"apply", "-f", filepath.Join("testdata", "apply-multiple-resource-different-type.yaml")},
-		)
+			"apply", "-f", filepath.Join("testdata", "apply-multiple-resource-different-type.yaml"),
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -326,7 +324,6 @@ var _ = Describe("kumactl apply", func() {
 
 		Expect(secret.Meta.GetName()).To(Equal("sample"))
 		Expect(secret.Meta.GetMesh()).To(Equal("default"))
-
 	})
 
 	It("should return kuma api server error", func() {
@@ -355,8 +352,8 @@ var _ = Describe("kumactl apply", func() {
 		// given
 		rootCmd.SetArgs([]string{
 			"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-			"apply", "-f", filepath.Join("testdata", "apply-mesh.yaml")},
-		)
+			"apply", "-f", filepath.Join("testdata", "apply-mesh.yaml"),
+		})
 		buf := &bytes.Buffer{}
 		rootCmd.SetOut(buf)
 		rootCmd.SetErr(buf)
@@ -409,14 +406,18 @@ var _ = Describe("kumactl apply", func() {
 		Expect(resource.Spec.Networking.Address).To(Equal("1.1.1.1"))
 
 		// then
-		Expect(buf.String()).To(Equal(
+		Expect(buf.String()).To(MatchYAML(
 			`creationTime: "0001-01-01T00:00:00Z"
 mesh: default
 modificationTime: "0001-01-01T00:00:00Z"
 name: sample
+type: Dataplane
 networking:
   address: 2.2.2.2
-type: Dataplane
+  inbound:
+    - port: 80
+      tags:
+        "kuma.io/service": "web"
 `))
 	})
 
@@ -424,8 +425,8 @@ type: Dataplane
 		// given
 		rootCmd.SetArgs([]string{
 			"apply", "-f", filepath.Join("testdata", "apply-dataplane-template-dots.yaml"),
-			"-v", "var.with.dots.in.the.name=2.2.2.2"},
-		)
+			"-v", "var.with.dots.in.the.name=2.2.2.2",
+		})
 
 		// when
 		err := rootCmd.Execute()
@@ -443,6 +444,24 @@ type: Dataplane
 		Expect(resource.Spec.Networking.Address).To(Equal("2.2.2.2"))
 	})
 
+	It("dry-run outputs templated resources", func() {
+		// given
+		rootCmd.SetArgs([]string{
+			"apply", "-f", filepath.Join("testdata", "apply-many-dataplane-template.yaml"),
+			"-v", "address=2.2.2.2", "--dry-run",
+		})
+
+		// when
+		buf := &bytes.Buffer{}
+		rootCmd.SetOut(buf)
+		rootCmd.SetErr(buf)
+		err := rootCmd.Execute()
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(buf.String()).To(matchers.MatchGoldenEqual(filepath.Join("testdata", "apply-many-dataplane-template.golden.yaml")))
+	})
+
 	type testCase struct {
 		resource string
 		err      string
@@ -453,28 +472,29 @@ type: Dataplane
 			// given
 			rootCmd.SetArgs([]string{
 				"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-				"apply", "-f", "-"},
-			)
+				"apply", "-f", "-",
+			})
 			rootCmd.SetIn(strings.NewReader(given.resource))
 
 			// when
 			err := rootCmd.Execute()
 
 			// then
-			Expect(err).To(MatchError(given.err))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(given.err))
 		},
 		Entry("no mesh", testCase{
 			resource: `
 type: Dataplane
 name: dp-1
-`,
+` + defaultNetworkingSection,
 			err: "mesh: cannot be empty",
 		}),
 		Entry("no name", testCase{
 			resource: `
 type: Dataplane
 mesh: default
-`,
+` + defaultNetworkingSection,
 			err: "name: cannot be empty",
 		}),
 		Entry("invalid data", testCase{
@@ -485,11 +505,27 @@ mesh: default
 networking:
   inbound: 0 # should be a string
 `,
-			err: "YAML contains invalid resource: invalid Dataplane object \"dp-1\": json: cannot unmarshal number into Go value of type []json.RawMessage",
+			err: `YAML contains invalid resource: invalid Dataplane object: "error unmarshaling JSON: while decoding JSON: json: cannot unmarshal number into Go value of type []json.RawMessage"`,
 		}),
 		Entry("no resource", testCase{
 			resource: ``,
 			err:      "no resource(s) passed to apply",
+		}),
+		Entry("data not passing schema validation", testCase{
+			resource: `
+type: MeshTrafficPermission
+mesh: mesh-1
+name: mtp-1
+spec:
+  targetRef:
+    kind: Mesh
+  from:
+    - targetRef:
+        kind: Mesh
+      default:
+        action: foo
+`,
+			err: `YAML contains invalid resource: spec.from[0].default.action: in body should be one of [Allow Deny AllowWithShadowDeny]`,
 		}),
 	)
 })

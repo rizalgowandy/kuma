@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	gomega_types "github.com/onsi/gomega/types"
 	"github.com/spf13/cobra"
@@ -17,9 +15,9 @@ import (
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/app/kumactl/cmd"
 	"github.com/kumahq/kuma/app/kumactl/pkg/resources"
+	test_kumactl "github.com/kumahq/kuma/app/kumactl/pkg/test"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
-	test_kumactl "github.com/kumahq/kuma/pkg/test/kumactl"
 	"github.com/kumahq/kuma/pkg/test/matchers"
 	test_model "github.com/kumahq/kuma/pkg/test/resources/model"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
@@ -49,15 +47,13 @@ func (c *testDataplaneOverviewClient) List(_ context.Context, _ string, tags map
 var _ resources.DataplaneOverviewClient = &testDataplaneOverviewClient{}
 
 var _ = Describe("kumactl inspect dataplanes", func() {
-
 	var now, t1, t2 time.Time
 	var sampleDataplaneOverview []*core_mesh.DataplaneOverviewResource
 
 	BeforeEach(func() {
-		now, _ = time.Parse(time.RFC3339, "2019-07-17T18:08:41+00:00")
-		t1, _ = time.Parse(time.RFC3339, "2018-07-17T16:05:36.995+00:00")
-		t2, _ = time.Parse(time.RFC3339, "2019-07-17T16:05:36.995+00:00")
-		time.Local = time.UTC
+		now, _ = time.ParseInLocation(time.RFC3339, "2019-07-17T18:08:41+00:00", time.UTC)
+		t1, _ = time.ParseInLocation(time.RFC3339, "2018-07-17T16:05:36.995+00:00", time.UTC)
+		t2, _ = time.ParseInLocation(time.RFC3339, "2019-07-17T16:05:36.995+00:00", time.UTC)
 
 		sampleDataplaneOverview = []*core_mesh.DataplaneOverviewResource{
 			{
@@ -114,6 +110,9 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 										Version: "1.16.0",
 										Build:   "hash/1.16.0/RELEASE",
 									},
+									Dependencies: map[string]string{
+										"coredns": "1.8.3",
+									},
 								},
 							},
 							{
@@ -137,6 +136,9 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 										Version: "1.16.1",
 										Build:   "hash/1.16.1/RELEASE",
 									},
+									Dependencies: map[string]string{
+										"coredns": "1.8.3",
+									},
 								},
 							},
 						},
@@ -148,6 +150,8 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 								Seconds: 1563306488,
 							},
 							CertificateRegenerations: 10,
+							IssuedBackend:            "ca-1",
+							SupportedBackends:        []string{"ca-1", "ca-2"},
 						},
 					},
 				},
@@ -205,6 +209,9 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 										Version: "1.16.0",
 										Build:   "hash/1.16.0/RELEASE",
 									},
+									Dependencies: map[string]string{
+										"coredns": "1.8.3",
+									},
 								},
 							},
 							{
@@ -227,6 +234,9 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 									Envoy: &mesh_proto.EnvoyVersion{
 										Version: "1.16.1",
 										Build:   "hash/1.16.1/RELEASE",
+									},
+									Dependencies: map[string]string{
+										"coredns": "1.8.3",
 									},
 								},
 							},
@@ -299,6 +309,9 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 										Version: "1.16.0",
 										Build:   "hash/1.16.0/RELEASE",
 									},
+									Dependencies: map[string]string{
+										"coredns": "1.8.3",
+									},
 								},
 							},
 							{
@@ -322,6 +335,9 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 										Version: "1.16.1",
 										Build:   "hash/1.16.1/RELEASE",
 									},
+									Dependencies: map[string]string{
+										"coredns": "1.8.3",
+									},
 								},
 							},
 						},
@@ -333,6 +349,8 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 								Seconds: 1563306488,
 							},
 							CertificateRegenerations: 10,
+							IssuedBackend:            "ca-1",
+							SupportedBackends:        []string{"ca-1", "ca-2"},
 						},
 					},
 				},
@@ -381,7 +399,6 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 	})
 
 	Describe("InspectDataplanesCmd", func() {
-
 		var rootCmd *cobra.Command
 		var buf *bytes.Buffer
 
@@ -408,16 +425,7 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 		type testCase struct {
 			outputFormat string
 			goldenFile   string
-			matcher      func(interface{}) gomega_types.GomegaMatcher
-		}
-
-		byLine := func(s string) []string {
-			lines := strings.Split(s, "\n")
-			var trimmedLines []string
-			for _, line := range lines {
-				trimmedLines = append(trimmedLines, strings.TrimSpace(line))
-			}
-			return trimmedLines
+			matcher      func(path ...string) gomega_types.GomegaMatcher
 		}
 
 		DescribeTable("kumactl inspect dataplanes -o table|json|yaml",
@@ -425,38 +433,35 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 				// given
 				rootCmd.SetArgs(append([]string{
 					"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-					"inspect", "dataplanes"}, given.outputFormat))
+					"inspect", "dataplanes",
+				}, given.outputFormat))
 
 				// when
 				err := rootCmd.Execute()
 
 				// then
 				Expect(err).ToNot(HaveOccurred())
-				Expect(buf.String()).To(matchers.MatchGoldenEqual(filepath.Join("testdata", given.goldenFile)))
+				Expect(buf.String()).To(given.matcher("testdata", given.goldenFile))
 			},
 			Entry("should support Table output by default", testCase{
 				outputFormat: "",
 				goldenFile:   "inspect-dataplanes.golden.txt",
-				matcher: func(expected interface{}) gomega_types.GomegaMatcher {
-					return WithTransform(byLine, Equal(byLine(string(expected.([]byte)))))
-				},
+				matcher:      matchers.MatchGoldenEqual,
 			}),
 			Entry("should support Table output explicitly", testCase{
 				outputFormat: "-otable",
 				goldenFile:   "inspect-dataplanes.golden.txt",
-				matcher: func(expected interface{}) gomega_types.GomegaMatcher {
-					return WithTransform(byLine, Equal(byLine(string(expected.([]byte)))))
-				},
+				matcher:      matchers.MatchGoldenEqual,
 			}),
 			Entry("should support JSON output", testCase{
 				outputFormat: "-ojson",
 				goldenFile:   "inspect-dataplanes.golden.json",
-				matcher:      MatchJSON,
+				matcher:      matchers.MatchGoldenJSON,
 			}),
 			Entry("should support YAML output", testCase{
 				outputFormat: "-oyaml",
 				goldenFile:   "inspect-dataplanes.golden.yaml",
-				matcher:      MatchYAML,
+				matcher:      matchers.MatchGoldenYAML,
 			}),
 		)
 
@@ -465,7 +470,8 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 				// given
 				rootCmd.SetArgs([]string{
 					"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-					"inspect", "dataplanes", "--tag", "kuma.io/service=mobile", "--tag", "version=v1"})
+					"inspect", "dataplanes", "--tag", "kuma.io/service=mobile", "--tag", "version=v1",
+				})
 
 				// when
 				err := rootCmd.Execute()
@@ -482,7 +488,8 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 				// given
 				rootCmd.SetArgs([]string{
 					"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-					"inspect", "dataplanes", "--gateway"})
+					"inspect", "dataplanes", "--gateway",
+				})
 
 				// when
 				err := rootCmd.Execute()
@@ -498,7 +505,8 @@ var _ = Describe("kumactl inspect dataplanes", func() {
 				// given
 				rootCmd.SetArgs([]string{
 					"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-					"inspect", "dataplanes", "--ingress"})
+					"inspect", "dataplanes", "--ingress",
+				})
 
 				// when
 				err := rootCmd.Execute()

@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/core/xds"
@@ -12,7 +11,6 @@ import (
 )
 
 var _ = Describe("StaticEndpointsConfigurer", func() {
-
 	type testCase struct {
 		listenerName     string
 		listenerProtocol xds.SocketAddressProtocol
@@ -26,9 +24,9 @@ var _ = Describe("StaticEndpointsConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(InboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
+			listener, err := NewInboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				WithOverwriteName(given.listenerName).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
 					Configure(StaticEndpoints(given.listenerName,
 						[]*envoy_common.StaticEndpointPath{
 							{
@@ -60,6 +58,7 @@ var _ = Describe("StaticEndpointsConfigurer", func() {
               socketAddress:
                 address: 192.168.0.1
                 portValue: 8080
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.http_connection_manager
@@ -67,6 +66,8 @@ var _ = Describe("StaticEndpointsConfigurer", func() {
                   '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                   httpFilters:
                   - name: envoy.filters.http.router
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                   routeConfig:
                     validateClusters: false
                     virtualHosts:
@@ -83,5 +84,4 @@ var _ = Describe("StaticEndpointsConfigurer", func() {
 `,
 		}),
 	)
-
 })

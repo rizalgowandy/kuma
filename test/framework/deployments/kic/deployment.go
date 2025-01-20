@@ -10,7 +10,9 @@ import (
 
 const DeploymentName = "kongingresscontroller"
 
-type KIC interface{}
+type KIC interface {
+	IP(namespace string) (string, error)
+}
 
 type Deployment interface {
 	framework.Deployment
@@ -19,6 +21,8 @@ type Deployment interface {
 
 type deployOptions struct {
 	namespace string
+	mesh      string
+	name      string
 }
 
 type deployOptionsFunc func(*deployOptions)
@@ -41,10 +45,10 @@ func Install(fs ...deployOptionsFunc) framework.InstallFunc {
 		var deployment *k8sDeployment
 		switch cluster.(type) {
 		case *framework.K8sCluster:
-			deployment = &k8sDeployment{}
-			// Need to trigger default command if unspecified
-			if opts.namespace != "" {
-				deployment.ingressNamespace = opts.namespace
+			deployment = &k8sDeployment{
+				ingressNamespace: opts.namespace,
+				mesh:             opts.mesh,
+				name:             opts.name,
 			}
 		default:
 			return errors.New("invalid cluster")
@@ -59,36 +63,44 @@ func WithNamespace(namespace string) deployOptionsFunc {
 	}
 }
 
+func WithMesh(mesh string) deployOptionsFunc {
+	return func(o *deployOptions) {
+		o.mesh = mesh
+	}
+}
+
+func WithName(name string) deployOptionsFunc {
+	return func(o *deployOptions) {
+		o.name = name
+	}
+}
+
 func KongIngressController(fs ...deployOptionsFunc) framework.InstallFunc {
 	return Install(fs...)
 }
 
-func KongIngressNodePort(fs ...deployOptionsFunc) framework.InstallFunc {
-	proxy_port := NodePortHTTP()
-	proxy_ssl_port := NodePortHTTPS()
+func KongIngressService(fs ...deployOptionsFunc) framework.InstallFunc {
 	opts := newDeployOpt(fs...)
 	if opts.namespace == "" {
-		opts.namespace = framework.DefaultGatewayNamespace
+		opts.namespace = framework.Config.DefaultGatewayNamespace
 	}
-	nodeport := `
+	svc := `
 apiVersion: v1
 kind: Service
 metadata:
-  name: gateway-nodeport
+  name: gateway
   namespace: %s
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
-    app: ingress-kong
+    app: %s-gateway
   ports:
     - name: proxy
       targetPort: 8000
-      nodePort: %d
-      port: %d
+      port: 80
     - name: proxy-ssl
       targetPort: 8443
-      nodePort: %d
-      port: %d
+      port: 443
 `
-	return framework.YamlK8s(fmt.Sprintf(nodeport, opts.namespace, proxy_port, proxy_port, proxy_ssl_port, proxy_ssl_port))
+	return framework.YamlK8s(fmt.Sprintf(svc, opts.namespace, opts.name))
 }

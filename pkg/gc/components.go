@@ -23,16 +23,21 @@ func Setup(rt runtime.Runtime) error {
 }
 
 func setupCollector(rt runtime.Runtime) error {
-	switch rt.Config().Environment {
-	// Dataplane GC is run only on Universal because on Kubernetes Dataplanes are bounded by ownership to Pods.
-	// Therefore on K8S offline dataplanes are cleaned up quickly enough to not run this.
-	case config_core.UniversalEnvironment:
-		return rt.Add(
-			NewCollector(rt.ResourceManager(), 1*time.Minute, rt.Config().Runtime.Universal.DataplaneCleanupAge),
-		)
-	default:
+	if rt.Config().Environment != config_core.UniversalEnvironment || rt.Config().Mode == config_core.Global {
+		// Dataplane GC is run only on Universal because on Kubernetes Dataplanes are bounded by ownership to Pods.
+		// Therefore, on K8S offline dataplanes are cleaned up quickly enough to not run this.
 		return nil
 	}
+	collector, err := NewCollector(
+		rt.ResourceManager(),
+		func() *time.Ticker { return time.NewTicker(1 * time.Minute) },
+		rt.Config().Runtime.Universal.DataplaneCleanupAge.Duration,
+		rt.Metrics(),
+	)
+	if err != nil {
+		return err
+	}
+	return rt.Add(collector)
 }
 
 func setupFinalizer(rt runtime.Runtime) error {
@@ -40,24 +45,18 @@ func setupFinalizer(rt runtime.Runtime) error {
 	var resourceTypes []model.ResourceType
 
 	switch rt.Config().Mode {
-	case config_core.Standalone:
-		newTicker = func() *time.Ticker {
-			return time.NewTicker(rt.Config().Metrics.Dataplane.IdleTimeout)
-		}
-		resourceTypes = []model.ResourceType{
-			mesh.DataplaneInsightType,
-		}
 	case config_core.Zone:
 		newTicker = func() *time.Ticker {
-			return time.NewTicker(rt.Config().Metrics.Dataplane.IdleTimeout)
+			return time.NewTicker(rt.Config().Metrics.Dataplane.IdleTimeout.Duration)
 		}
 		resourceTypes = []model.ResourceType{
 			mesh.DataplaneInsightType,
 			mesh.ZoneIngressInsightType,
+			mesh.ZoneEgressInsightType,
 		}
 	case config_core.Global:
 		newTicker = func() *time.Ticker {
-			return time.NewTicker(rt.Config().Metrics.Zone.IdleTimeout)
+			return time.NewTicker(rt.Config().Metrics.Zone.IdleTimeout.Duration)
 		}
 		resourceTypes = []model.ResourceType{
 			system.ZoneInsightType,
@@ -66,7 +65,7 @@ func setupFinalizer(rt runtime.Runtime) error {
 		return errors.Errorf("unknown Kuma CP mode %s", rt.Config().Mode)
 	}
 
-	finalizer, err := NewSubscriptionFinalizer(rt.ResourceManager(), newTicker, resourceTypes...)
+	finalizer, err := NewSubscriptionFinalizer(rt.ResourceManager(), rt.Tenants(), newTicker, rt.Metrics(), rt.Extensions(), rt.Config().Store.Upsert, resourceTypes...)
 	if err != nil {
 		return err
 	}

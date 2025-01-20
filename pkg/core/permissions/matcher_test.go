@@ -3,8 +3,7 @@ package permissions_test
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -19,7 +18,6 @@ import (
 )
 
 var _ = Describe("Match", func() {
-
 	type testCase struct {
 		dataplane *core_mesh.DataplaneResource
 		mesh      *core_mesh.MeshResource
@@ -174,8 +172,8 @@ var _ = Describe("Match", func() {
 				},
 			},
 			expected: map[mesh_proto.InboundInterface]string{
-				{DataplaneAdvertisedIP: "192.168.0.1", DataplaneIP: "192.168.0.1", WorkloadIP: "127.0.0.1", WorkloadPort: 8081, DataplanePort: 8080}: "more-specific-kong-to-web",
-				{DataplaneAdvertisedIP: "192.168.0.1", DataplaneIP: "192.168.0.1", WorkloadIP: "127.0.0.1", WorkloadPort: 1234, DataplanePort: 1234}: "metrics",
+				{DataplaneAdvertisedIP: "192.168.0.1", DataplaneIP: "192.168.0.1", WorkloadIP: "192.168.0.1", WorkloadPort: 8081, DataplanePort: 8080}: "more-specific-kong-to-web",
+				{DataplaneAdvertisedIP: "192.168.0.1", DataplaneIP: "192.168.0.1", WorkloadIP: "192.168.0.1", WorkloadPort: 1234, DataplanePort: 1234}: "metrics",
 			},
 		}),
 	)
@@ -191,7 +189,6 @@ var _ = Describe("Match", func() {
 		DescribeTable("should find the policy",
 			func(given testCase) {
 				manager := core_manager.NewResourceManager(memory.NewStore())
-				matcher := permissions.TrafficPermissionsMatcher{ResourceManager: manager}
 
 				err := manager.Create(context.Background(), core_mesh.NewMeshResource(), store.CreateByKey(core_model.DefaultMesh, core_model.NoMesh))
 				Expect(err).ToNot(HaveOccurred())
@@ -204,8 +201,10 @@ var _ = Describe("Match", func() {
 				es := &core_mesh.ExternalServiceResourceList{
 					Items: given.externalServices,
 				}
-				matchedEs, err := matcher.MatchExternalServices(context.Background(), given.dataplane, es)
-				Expect(err).ToNot(HaveOccurred())
+				tp := &core_mesh.TrafficPermissionResourceList{
+					Items: given.policies,
+				}
+				matchedEs := permissions.MatchExternalServicesTrafficPermissions(given.dataplane, es, tp)
 
 				Expect(given.expected).To(HaveLen(len(matchedEs)))
 				for _, externalService := range matchedEs {

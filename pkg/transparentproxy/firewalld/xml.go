@@ -20,6 +20,7 @@ type Chain struct {
 
 func (c *Chain) String() string {
 	data, _ := xml.MarshalIndent(c, "", "  ")
+
 	return string(data)
 }
 
@@ -29,15 +30,7 @@ func NewIP4Chain(table, chain string) *Chain {
 		Table: table,
 		Chain: chain,
 	}
-	return c
-}
 
-func NewIP6Chain(table, chain string) *Chain {
-	c := &Chain{
-		IPv:   "ipv6",
-		Table: table,
-		Chain: chain,
-	}
 	return c
 }
 
@@ -62,29 +55,18 @@ type Rule struct {
 
 func (r *Rule) String() string {
 	data, _ := xml.MarshalIndent(r, "", "  ")
+
 	return string(data)
 }
 
-func NewIP4Rule(prio int, table, chain, body string) *Rule {
-	r := &Rule{
-		Priority: prio,
+func NewIP4Rule(table string, priority int, chain, body string) *Rule {
+	return &Rule{
+		Priority: priority,
 		IPv:      "ipv4",
 		Table:    table,
 		Chain:    chain,
 		Body:     body,
 	}
-	return r
-}
-
-func NewIP6Rule(prio int, table, chain, body string) *Rule {
-	r := &Rule{
-		Priority: prio,
-		IPv:      "ipv6",
-		Table:    table,
-		Chain:    chain,
-		Body:     body,
-	}
-	return r
 }
 
 type Direct struct {
@@ -96,6 +78,7 @@ type Direct struct {
 
 func (d *Direct) Bytes() []byte {
 	data, _ := xml.MarshalIndent(d, "", "  ")
+
 	return append([]byte(xml.Header), data...)
 }
 
@@ -109,6 +92,7 @@ func (d *Direct) AddChain(chain *Chain) {
 			return
 		}
 	}
+
 	d.Chains = append(d.Chains, chain)
 }
 
@@ -118,12 +102,12 @@ func (d *Direct) AddRule(rule *Rule) {
 			return
 		}
 	}
+
 	d.Rules = append(d.Rules, rule)
 }
 
 func NewDirect(rules ...*Rule) *Direct {
-	d := &Direct{
+	return &Direct{
 		Rules: rules,
 	}
-	return d
 }

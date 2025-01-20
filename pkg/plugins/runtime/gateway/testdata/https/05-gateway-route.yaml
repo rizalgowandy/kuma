@@ -9,11 +9,9 @@ Listeners:
         socketAddress:
           address: 192.168.1.1
           portValue: 8080
+      enableReusePort: true
       filterChains:
       - filterChainMatch:
-          applicationProtocols:
-          - h2
-          - http/1.1
           serverNames:
           - echo.example.com
           transportProtocol: tls
@@ -30,6 +28,10 @@ Listeners:
               initialStreamWindowSize: 65536
               maxConcurrentStreams: 100
             httpFilters:
+            - name: envoy.filters.http.local_ratelimit
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                statPrefix: rate_limit
             - name: gzip-compress
               typedConfig:
                 '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
@@ -40,18 +42,21 @@ Listeners:
                 responseDirectionConfig:
                   disableOnEtagHeader: true
             - name: envoy.filters.http.router
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
             mergeSlashes: true
             normalizePath: true
+            pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
             rds:
               configSource:
                 ads: {}
                 resourceApiVersion: V3
-              routeConfigName: edge-gateway:HTTPS:8080
+              routeConfigName: edge-gateway:HTTPS:8080:echo.example.com
             requestHeadersTimeout: 0.500s
             serverName: Kuma Gateway
             statPrefix: gateway-default
             streamIdleTimeout: 5s
-            stripAnyHostPort: true
+            useRemoteAddress: true
         transportSocket:
           name: envoy.transport_sockets.tls
           typedConfig:
@@ -74,22 +79,22 @@ Listeners:
           '@type': type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
       name: edge-gateway:HTTPS:8080
       perConnectionBufferLimitBytes: 32768
-      reusePort: true
       trafficDirection: INBOUND
 Routes:
   Resources:
-    edge-gateway:HTTPS:8080:
-      name: edge-gateway:HTTPS:8080
+    edge-gateway:HTTPS:8080:echo.example.com:
+      ignorePortInHostMatching: true
+      name: edge-gateway:HTTPS:8080:echo.example.com
       requestHeadersToRemove:
       - x-kuma-tags
       validateClusters: false
       virtualHosts:
       - domains:
         - echo.example.com
-        name: edge-gateway:HTTPS:8080:echo.example.com
+        name: echo.example.com
         requireTls: ALL
         responseHeadersToAdd:
-        - append: false
+        - appendAction: OVERWRITE_IF_EXISTS_OR_ADD
           header:
             key: Strict-Transport-Security
             value: max-age=31536000; includeSubDomains
@@ -98,11 +103,19 @@ Routes:
             path: /
           redirect:
             hostRedirect: example.com
+            portRedirect: 8080
+            regexRewrite:
+              pattern:
+                regex: .*
+              substitution: /redirected
             responseCode: FOUND
             schemeRedirect: https
             stripQuery: true
 Runtimes:
-  Resources: {}
+  Resources:
+    gateway.listeners:
+      layer: {}
+      name: gateway.listeners
 Secrets:
   Resources:
     cert.rsa:secret:echo-example-com-server-cert:

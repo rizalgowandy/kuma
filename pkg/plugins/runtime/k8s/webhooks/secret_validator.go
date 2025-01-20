@@ -12,20 +12,20 @@ import (
 	kube_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	config_core "github.com/kumahq/kuma/pkg/config/core"
 	secret_manager "github.com/kumahq/kuma/pkg/core/secrets/manager"
 	"github.com/kumahq/kuma/pkg/core/validators"
 	common_k8s "github.com/kumahq/kuma/pkg/plugins/common/k8s"
 	mesh_k8s "github.com/kumahq/kuma/pkg/plugins/resources/k8s/native/api/v1alpha1"
-)
-
-const (
-	meshLabel = "kuma.io/mesh"
+	"github.com/kumahq/kuma/pkg/plugins/runtime/k8s/metadata"
 )
 
 type SecretValidator struct {
-	Decoder   *admission.Decoder
-	Client    kube_client.Reader
-	Validator secret_manager.SecretValidator
+	Decoder      admission.Decoder
+	Client       kube_client.Reader
+	Validator    secret_manager.SecretValidator
+	UnsafeDelete bool
+	CpMode       config_core.CpMode
 }
 
 func (v *SecretValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
@@ -67,6 +67,9 @@ func (v *SecretValidator) handleUpdate(ctx context.Context, req admission.Reques
 }
 
 func (v *SecretValidator) handleDelete(ctx context.Context, req admission.Request) admission.Response {
+	if v.UnsafeDelete {
+		return admission.Allowed("")
+	}
 	secret := &kube_core.Secret{}
 	if err := v.Client.Get(ctx, kube_types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, secret); err != nil {
 		if kube_apierrs.IsNotFound(err) { // let K8S handle case when resource is not found
@@ -75,6 +78,9 @@ func (v *SecretValidator) handleDelete(ctx context.Context, req admission.Reques
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 	if secret.Type == common_k8s.MeshSecretType {
+		if syncedResource(v.CpMode, secret.GetLabels()) {
+			return admission.Allowed("ignore. It's synced resource.")
+		}
 		if err := v.Validator.ValidateDelete(ctx, req.Name, meshOfSecret(secret)); err != nil {
 			if verr, ok := err.(*validators.ValidationError); ok {
 				return convertValidationErrorOf(*verr, secret, secret)
@@ -115,7 +121,7 @@ func (v *SecretValidator) validateMeshSecret(ctx context.Context, verr *validato
 	// block change of the mesh on the secret
 	if oldSecret != nil {
 		if meshOfSecret(secret) != meshOfSecret(oldSecret) {
-			verr.AddViolationAt(validators.RootedAt("metadata").Field("labels").Key(meshLabel), "cannot change mesh of the Secret. Delete the Secret first and apply it again.")
+			verr.AddViolationAt(validators.RootedAt("metadata").Field("labels").Key(metadata.KumaMeshLabel), "cannot change mesh of the Secret. Delete the Secret first and apply it again.")
 		}
 	}
 	v.validateSecretData(verr, secret)
@@ -123,8 +129,8 @@ func (v *SecretValidator) validateMeshSecret(ctx context.Context, verr *validato
 }
 
 func (v *SecretValidator) validateGlobalSecret(verr *validators.ValidationError, secret *kube_core.Secret) {
-	if _, ok := secret.GetLabels()[meshLabel]; ok {
-		verr.AddViolationAt(validators.RootedAt("metadata").Field("labels").Key(meshLabel), "mesh cannot be set on global secret")
+	if _, ok := secret.GetLabels()[metadata.KumaMeshLabel]; ok {
+		verr.AddViolationAt(validators.RootedAt("metadata").Field("labels").Key(metadata.KumaMeshLabel), "mesh cannot be set on global secret")
 	}
 	v.validateSecretData(verr, secret)
 }
@@ -137,14 +143,9 @@ func (v *SecretValidator) validateSecretData(verr *validators.ValidationError, s
 }
 
 func meshOfSecret(secret *kube_core.Secret) string {
-	meshName := secret.GetLabels()[meshLabel]
+	meshName := secret.GetLabels()[metadata.KumaMeshLabel]
 	if meshName == "" {
 		return "default"
 	}
 	return meshName
-}
-
-func (v *SecretValidator) InjectDecoder(d *admission.Decoder) error {
-	v.Decoder = d
-	return nil
 }

@@ -1,8 +1,7 @@
 package xds_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -10,9 +9,7 @@ import (
 )
 
 var _ = Describe("xDS", func() {
-
 	Describe("ParseProxyId(..)", func() {
-
 		Context("valid input", func() {
 			type testCase struct {
 				nodeID   string
@@ -51,7 +48,7 @@ var _ = Describe("xDS", func() {
 		Context("invalid input", func() {
 			type testCase struct {
 				nodeID      string
-				expectedErr interface{}
+				expectedErr string
 			}
 
 			DescribeTable("should fail to parse",

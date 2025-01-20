@@ -1,646 +1,66 @@
 package api_server_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"path"
 
-	"github.com/emicklei/go-restful"
-	. "github.com/onsi/ginkgo"
+	"github.com/emicklei/go-restful/v3"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	api_server "github.com/kumahq/kuma/pkg/api-server"
-	config "github.com/kumahq/kuma/pkg/config/api-server"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
+	meshexternalservice_api "github.com/kumahq/kuma/pkg/core/resources/apis/meshexternalservice/api/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
-	"github.com/kumahq/kuma/pkg/core/resources/store"
+	"github.com/kumahq/kuma/pkg/core/resources/model/rest/unversioned"
+	rest_v1alpha1 "github.com/kumahq/kuma/pkg/core/resources/model/rest/v1alpha1"
+	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	core_metrics "github.com/kumahq/kuma/pkg/metrics"
+	"github.com/kumahq/kuma/pkg/plugins/policies/meshtrafficpermission/api/v1alpha1"
 	"github.com/kumahq/kuma/pkg/plugins/resources/memory"
-	sample_proto "github.com/kumahq/kuma/pkg/test/apis/sample/v1alpha1"
+	"github.com/kumahq/kuma/pkg/test/matchers"
 	test_metrics "github.com/kumahq/kuma/pkg/test/metrics"
-	sample_model "github.com/kumahq/kuma/pkg/test/resources/apis/sample"
+	"github.com/kumahq/kuma/pkg/test/resources/builders"
+	"github.com/kumahq/kuma/pkg/util/pointer"
 )
 
 var _ = Describe("Resource Endpoints", func() {
 	var apiServer *api_server.ApiServer
-	var resourceStore store.ResourceStore
-	var client resourceApiClient
-	var stop chan struct{}
+	var resourceStore core_store.ResourceStore
+	stop := func() {}
 	var metrics core_metrics.Metrics
 
 	const mesh = "default"
 
 	BeforeEach(func() {
-		resourceStore = store.NewPaginationStore(memory.NewStore())
-		serverConfig := config.DefaultApiServerConfig()
-		m, err := core_metrics.NewMetrics("Standalone")
-		metrics = m
-		Expect(err).ToNot(HaveOccurred())
-		apiServer = createTestApiServer(resourceStore, serverConfig, true, metrics)
-		client = resourceApiClient{
-			address: apiServer.Address(),
-			path:    "/meshes/" + mesh + "/sample-traffic-routes",
-		}
-		stop = make(chan struct{})
-		go func() {
-			defer GinkgoRecover()
-			err := apiServer.Start(stop)
-			Expect(err).ToNot(HaveOccurred())
-		}()
-		waitForServer(&client)
-	}, 5)
+		resourceStore = core_store.NewPaginationStore(memory.NewStore())
+		apiServer, _, stop = StartApiServer(NewTestApiServerConfigurer().WithStore(resourceStore).WithMetrics(func() core_metrics.Metrics {
+			m, _ := core_metrics.NewMetrics("Zone")
+			metrics = m
+			return m
+		}))
+	})
 
 	AfterEach(func() {
-		close(stop)
+		stop()
 	})
 
 	BeforeEach(func() {
 		// create default mesh
-		err := resourceStore.Create(context.Background(), core_mesh.NewMeshResource(), store.CreateByKey(mesh, model.NoMesh))
+		err := resourceStore.Create(context.Background(), core_mesh.NewMeshResource(), core_store.CreateByKey(mesh, model.NoMesh))
 		Expect(err).ToNot(HaveOccurred())
-	})
-
-	Describe("On GET", func() {
-		It("should return an existing resource", func() {
-			// given
-			putSampleResourceIntoStore(resourceStore, "tr-1", mesh)
-
-			// when
-			response := client.get("tr-1")
-
-			// then
-			Expect(response.StatusCode).To(Equal(200))
-			body, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			json := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "tr-1",
-				"mesh": "default",
-				"creationTime": "0001-01-01T00:00:00Z",
-				"modificationTime": "0001-01-01T00:00:00Z",
-				"path": "/sample-path"
-			}`
-			Expect(body).To(MatchJSON(json))
-		})
-
-		It("should return 404 for non existing resource", func() {
-			// when
-			response := client.get("non-existing-resource")
-
-			// then
-			Expect(response.StatusCode).To(Equal(404))
-
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not retrieve a resource",
-				"details": "Not found"
-			}
-			`))
-		})
-
-		It("should list resources", func() {
-			// given
-			putSampleResourceIntoStore(resourceStore, "tr-1", mesh)
-			putSampleResourceIntoStore(resourceStore, "tr-2", mesh)
-
-			// when
-			response := client.list()
-
-			// then
-			Expect(response.StatusCode).To(Equal(200))
-			json1 := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "tr-1",
-				"mesh": "default",
-				"creationTime": "0001-01-01T00:00:00Z",
-				"modificationTime": "0001-01-01T00:00:00Z",
-				"path": "/sample-path"
-			}`
-			json2 := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "tr-2",
-				"mesh": "default",
-				"creationTime": "0001-01-01T00:00:00Z",
-				"modificationTime": "0001-01-01T00:00:00Z",
-				"path": "/sample-path"
-			}`
-			body, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(body).To(Or(
-				MatchJSON(fmt.Sprintf(`{"total": %d, "items": [%s,%s], "next": null}`, 2, json1, json2)),
-				MatchJSON(fmt.Sprintf(`{"total": %d, "items": [%s,%s], "next": null}`, 2, json2, json1)),
-			))
-		})
-
-		It("should list resources from all meshes", func() {
-			// given
-			putSampleResourceIntoStore(resourceStore, "tr-1", "mesh-1")
-			putSampleResourceIntoStore(resourceStore, "tr-2", "mesh-2")
-
-			// when
-			client = resourceApiClient{
-				address: apiServer.Address(),
-				path:    "/sample-traffic-routes",
-			}
-			response := client.list()
-
-			// then
-			Expect(response.StatusCode).To(Equal(200))
-			json1 := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "tr-1",
-				"mesh": "mesh-1",
-				"creationTime": "0001-01-01T00:00:00Z",
-				"modificationTime": "0001-01-01T00:00:00Z",
-				"path": "/sample-path"
-			}`
-			json2 := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "tr-2",
-				"mesh": "mesh-2",
-				"creationTime": "0001-01-01T00:00:00Z",
-				"modificationTime": "0001-01-01T00:00:00Z",
-				"path": "/sample-path"
-			}`
-			body, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(body).To(Or(
-				MatchJSON(fmt.Sprintf(`{"total": %d, "items": [%s,%s], "next": null}`, 2, json1, json2)),
-				MatchJSON(fmt.Sprintf(`{"total": %d, "items": [%s,%s], "next": null}`, 2, json2, json1)),
-			))
-		})
-
-		It("should list resources using pagination", func() {
-			// given three resources
-			putSampleResourceIntoStore(resourceStore, "tr-1", "mesh-1")
-			putSampleResourceIntoStore(resourceStore, "tr-2", "mesh-1")
-			putSampleResourceIntoStore(resourceStore, "tr-3", "mesh-1")
-
-			// when ask for page with size 2
-			client = resourceApiClient{
-				address: apiServer.Address(),
-				path:    "/sample-traffic-routes?size=2",
-			}
-			response := client.list()
-
-			// then one page is returned with next url
-			Expect(response.StatusCode).To(Equal(200))
-			json := fmt.Sprintf(`
-			{
-				"total": 3,
-				"items": [
-					{
-						"type": "SampleTrafficRoute",
-						"name": "tr-1",
-						"mesh": "mesh-1",
-						"creationTime": "0001-01-01T00:00:00Z",
-						"modificationTime": "0001-01-01T00:00:00Z",
-						"path": "/sample-path"
-					},
-					{
-						"type": "SampleTrafficRoute",
-						"name": "tr-2",
-						"mesh": "mesh-1",
-						"creationTime": "0001-01-01T00:00:00Z",
-						"modificationTime": "0001-01-01T00:00:00Z",
-						"path": "/sample-path"
-					}
-				],
-				"next": "http://%s/sample-traffic-routes?offset=2&size=2"
-			}`, client.address)
-			body, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(body).To(MatchJSON(json))
-
-			// when query for next page
-			client = resourceApiClient{
-				address: apiServer.Address(),
-				path:    "/sample-traffic-routes?size=2&offset=2",
-			}
-			response = client.list()
-
-			// then another page with one element left is returned
-			Expect(response.StatusCode).To(Equal(200))
-			json = `
-			{
-				"total": 3,
-				"items": [
-					{
-						"type": "SampleTrafficRoute",
-						"name": "tr-3",
-						"mesh": "mesh-1",
-						"creationTime": "0001-01-01T00:00:00Z",
-				        "modificationTime": "0001-01-01T00:00:00Z",
-						"path": "/sample-path"
-					}
-				],
-				"next": null
-			}`
-			body, err = ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(body).To(MatchJSON(json))
-		})
-
-		It("should return 400 with error on invalid offset", func() {
-			// when
-			client = resourceApiClient{
-				address: apiServer.Address(),
-				path:    "/sample-traffic-routes?size=2&offset=invalidoffset",
-			}
-			response := client.list()
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not retrieve resources",
-				"details": "Invalid offset",
-				"causes": [
-					{
-						"field": "offset",
-						"message": "Invalid format"
-					}
-				]
-			}
-			`))
-		})
-
-		It("should return 400 with error on invalid size type", func() {
-			// when
-			client = resourceApiClient{
-				address: apiServer.Address(),
-				path:    "/sample-traffic-routes?size=invalid",
-			}
-			response := client.list()
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not retrieve resources",
-				"details": "Invalid page size",
-				"causes": [
-					{
-						"field": "size",
-						"message": "Invalid format"
-					}
-				]
-			}
-			`))
-		})
-
-		It("should return 400 with error when page size exceeded the limit", func() {
-			// when
-			client = resourceApiClient{
-				address: apiServer.Address(),
-				path:    "/sample-traffic-routes?size=2000",
-			}
-			response := client.list()
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not retrieve resources",
-				"details": "Invalid page size",
-				"causes": [
-					{
-						"field": "size",
-						"message": "Invalid page size of 2000. Maximum page size is 1000"
-					}
-				]
-			}
-			`))
-		})
-	})
-
-	Describe("On PUT", func() {
-		It("should create a resource when one does not exist", func() {
-			// given
-			res := rest.Resource{
-				Meta: rest.ResourceMeta{
-					Name: "new-resource",
-					Mesh: mesh,
-					Type: string(sample_model.TrafficRouteType),
-				},
-				Spec: &sample_proto.TrafficRoute{
-					Path: "/sample-path",
-				},
-			}
-
-			// when
-			response := client.put(res)
-
-			// then
-			Expect(response.StatusCode).To(Equal(201))
-		})
-
-		It("should update a resource when one already exist", func() {
-			// given
-			name := "tr-1"
-			putSampleResourceIntoStore(resourceStore, name, mesh)
-
-			// when
-			res := rest.Resource{
-				Meta: rest.ResourceMeta{
-					Name: name,
-					Mesh: mesh,
-					Type: string(sample_model.TrafficRouteType),
-				},
-				Spec: &sample_proto.TrafficRoute{
-					Path: "/update-sample-path",
-				},
-			}
-			response := client.put(res)
-			Expect(response.StatusCode).To(Equal(200))
-
-			// then
-			resource := sample_model.NewTrafficRouteResource()
-			err := resourceStore.Get(context.Background(), resource, store.GetByKey(name, mesh))
-			Expect(err).ToNot(HaveOccurred())
-			Expect(resource.Spec.Path).To(Equal("/update-sample-path"))
-		})
-
-		It("should return 400 on the type in url that is different from request", func() {
-			// given
-			json := `
-			{
-				"type": "InvalidType",
-				"name": "tr-1",
-				"mesh": "default",
-				"path": "/sample-path"
-			}
-			`
-
-			// when
-			response := client.putJson("tr-1", []byte(json))
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not process a resource",
-				"details": "Resource is not valid",
-				"causes": [
-					{
-						"field": "type",
-						"message": "type from the URL has to be the same as in body"
-					}
-				]
-			}
-			`))
-		})
-
-		It("should return 400 on the name that is different from request", func() {
-			// given
-			json := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "different-name",
-				"mesh": "default",
-				"path": "/sample-path"
-			}
-			`
-
-			// when
-			response := client.putJson("tr-1", []byte(json))
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not process a resource",
-				"details": "Resource is not valid",
-				"causes": [
-					{
-						"field": "name",
-						"message": "name from the URL has to be the same as in body"
-					}
-				]
-			}
-			`))
-		})
-
-		It("should return 400 on the mesh that is different from request", func() {
-			// given
-			json := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "tr-1",
-				"mesh": "different-mesh",
-				"path": "/sample-path"
-			}
-			`
-
-			// when
-			response := client.putJson("tr-1", []byte(json))
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not process a resource",
-				"details": "Resource is not valid",
-				"causes": [
-					{
-						"field": "mesh",
-						"message": "mesh from the URL has to be the same as in body"
-					}
-				]
-			}`))
-		})
-
-		It("should return 400 on validation error", func() {
-			// given
-			json := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "tr-1",
-				"mesh": "default",
-				"path": ""
-			}
-			`
-
-			// when
-			response := client.putJson("tr-1", []byte(json))
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-
-			// when
-			respBytes, err := ioutil.ReadAll(response.Body)
-
-			// then
-			Expect(err).ToNot(HaveOccurred())
-			Expect(respBytes).To(MatchJSON(`
-			{
-				"title": "Could not create a resource",
-				"details": "Resource is not valid",
-				"causes": [
-					{
-						"field": "path",
-						"message": "cannot be empty"
-					}
-				]
-			}
-			`))
-		})
-
-		It("should return 400 on invalid name and mesh", func() {
-			// given
-			json := `
-			{
-				"type": "SampleTrafficRoute",
-				"name": "invalid@",
-				"mesh": "invalid$",
-				"path": "/path"
-			}
-			`
-
-			// when
-			client = resourceApiClient{
-				address: apiServer.Address(),
-				path:    "/meshes/invalid$/sample-traffic-routes",
-			}
-			response := client.putJson("invalid@", []byte(json))
-
-			// then
-			Expect(response.StatusCode).To(Equal(400))
-
-			// when
-			respBytes, err := ioutil.ReadAll(response.Body)
-
-			// then
-			Expect(err).ToNot(HaveOccurred())
-			Expect(respBytes).To(MatchJSON(`
-			{
-				"title": "Could not process a resource",
-				"details": "Resource is not valid",
-				"causes": [
-					{
-						"field": "name",
-						"message": "invalid characters. Valid characters are numbers, lowercase latin letters and '-', '_' symbols."
-					},
-					{
-						"field": "mesh",
-						"message": "invalid characters. Valid characters are numbers, lowercase latin letters and '-', '_' symbols."
-					}
-				]
-			}
-			`))
-		})
-
-		It("should return 400 when mesh does not exist", func() {
-			// setup
-			err := resourceStore.Delete(context.Background(), core_mesh.NewMeshResource(), store.DeleteByKey(model.DefaultMesh, model.NoMesh))
-			Expect(err).ToNot(HaveOccurred())
-
-			// given
-			res := rest.Resource{
-				Meta: rest.ResourceMeta{
-					Name: "new-resource",
-					Mesh: "default",
-					Type: string(sample_model.TrafficRouteType),
-				},
-				Spec: &sample_proto.TrafficRoute{
-					Path: "/sample-path",
-				},
-			}
-
-			// when
-			response := client.put(res)
-
-			// when
-			respBytes, err := ioutil.ReadAll(response.Body)
-
-			// then
-			Expect(err).ToNot(HaveOccurred())
-			Expect(respBytes).To(MatchJSON(`
-			{
-				"title": "Could not create a resource",
-				"details": "Mesh is not found",
-				"causes": [
-					{
-						"field": "mesh",
-						"message": "mesh of name default is not found"
-					}
-          		]
-			}
-			`))
-		})
-	})
-
-	Describe("On DELETE", func() {
-		It("should delete existing resource", func() {
-			// given
-			name := "tr-1"
-			putSampleResourceIntoStore(resourceStore, name, mesh)
-
-			// when
-			response := client.delete(name)
-
-			// then
-			Expect(response.StatusCode).To(Equal(200))
-
-			// and
-			resource := sample_model.NewTrafficRouteResource()
-			err := resourceStore.Get(context.Background(), resource, store.GetByKey(name, mesh))
-			Expect(err).To(Equal(store.ErrorResourceNotFound(resource.Descriptor().Name, name, mesh)))
-		})
-
-		It("should delete non-existing resource", func() {
-			// when
-			response := client.delete("non-existing-resource")
-
-			// then
-			Expect(response.StatusCode).To(Equal(404))
-
-			// and
-			bytes, err := ioutil.ReadAll(response.Body)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(bytes).To(MatchJSON(`
-			{
-				"title": "Could not delete a resource",
-				"details": "Not found"
-			}
-			`))
-		})
 	})
 
 	It("should support CORS", func() {
 		// given
-		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/meshes/%s/sample-traffic-routes", apiServer.Address(), mesh), nil)
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/meshes/%s/traffic-routes", apiServer.Address(), mesh), nil)
 		Expect(err).NotTo(HaveOccurred())
 		req.Header.Add(restful.HEADER_Origin, "test")
 
@@ -659,7 +79,7 @@ var _ = Describe("Resource Endpoints", func() {
 
 	It("should expose metrics", func() {
 		// given
-		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/meshes/%s/sample-traffic-routes", apiServer.Address(), mesh), nil)
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/meshes/%s/traffic-routes", apiServer.Address(), mesh), nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		// when
@@ -670,5 +90,275 @@ var _ = Describe("Resource Endpoints", func() {
 		Expect(test_metrics.FindMetric(metrics, "api_server_http_request_duration_seconds")).ToNot(BeNil())
 		Expect(test_metrics.FindMetric(metrics, "api_server_http_requests_inflight")).ToNot(BeNil())
 		Expect(test_metrics.FindMetric(metrics, "api_server_http_response_size_bytes")).ToNot(BeNil())
+	})
+})
+
+var _ = Describe("Resource Endpoints on Zone, label origin", func() {
+	createServer := func(federatedZone, validateOriginLabel bool) (*api_server.ApiServer, core_store.ResourceStore, func()) {
+		store := core_store.NewPaginationStore(memory.NewStore())
+		zone := ""
+		if federatedZone {
+			zone = "zone-1"
+		}
+		apiServer, _, stop := StartApiServer(
+			NewTestApiServerConfigurer().
+				WithStore(store).
+				WithDisableOriginLabelValidation(!validateOriginLabel).
+				WithZone(zone),
+		)
+		return apiServer, store, stop
+	}
+
+	mesh := "mesh-1"
+	put := func(address string, resType model.ResourceTypeDescriptor, name string, res rest.Resource) (*http.Response, error) {
+		GinkgoHelper()
+		jsonBytes, err := json.Marshal(res)
+		Expect(err).ToNot(HaveOccurred())
+
+		request, err := http.NewRequest(
+			"PUT",
+			fmt.Sprintf("http://%s/meshes/%s/%s/%s", address, mesh, resType.WsPath, name),
+			bytes.NewBuffer(jsonBytes),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		request.Header.Add("content-type", "application/json")
+		return http.DefaultClient.Do(request)
+	}
+
+	createMesh := func(s core_store.ResourceStore) {
+		// create default mesh
+		err := s.Create(context.Background(), core_mesh.NewMeshResource(), core_store.CreateByKey(mesh, model.NoMesh))
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	It("should return 400 when origin validation is enabled and origin label is not set", func() {
+		// given
+		apiServer, store, stop := createServer(true, true)
+		defer stop()
+		createMesh(store)
+
+		// when
+		res := &rest_v1alpha1.Resource{
+			ResourceMeta: rest_v1alpha1.ResourceMeta{
+				Name: "mtp-1",
+				Mesh: mesh,
+				Type: string(v1alpha1.MeshTrafficPermissionType),
+			},
+			Spec: builders.MeshTrafficPermission().
+				WithTargetRef(builders.TargetRefMesh()).
+				AddFrom(builders.TargetRefMesh(), v1alpha1.Allow).
+				Build().Spec,
+		}
+		resp, err := put(apiServer.Address(), v1alpha1.MeshTrafficPermissionResourceTypeDescriptor, "mtp-1", res)
+
+		// and then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		bytes, err := io.ReadAll(resp.Body)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(bytes).To(matchers.MatchGoldenJSON(path.Join("testdata", "resource_400onNoOriginLabel.golden.json")))
+	})
+
+	It("should return 400 when mesh label is different from resource mesh", func() {
+		// given
+		apiServer, store, stop := createServer(true, true)
+		defer stop()
+		createMesh(store)
+
+		// when
+		res := &rest_v1alpha1.Resource{
+			ResourceMeta: rest_v1alpha1.ResourceMeta{
+				Name: "mtp-1",
+				Mesh: mesh,
+				Type: string(v1alpha1.MeshTrafficPermissionType),
+				Labels: map[string]string{
+					mesh_proto.MeshTag:             "some-other-mesh",
+					mesh_proto.ResourceOriginLabel: "zone",
+				},
+			},
+			Spec: builders.MeshTrafficPermission().
+				WithTargetRef(builders.TargetRefMesh()).
+				AddFrom(builders.TargetRefMesh(), v1alpha1.Allow).
+				Build().Spec,
+		}
+		resp, err := put(apiServer.Address(), v1alpha1.MeshTrafficPermissionResourceTypeDescriptor, "mtp-1", res)
+
+		// and then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		bytes, err := io.ReadAll(resp.Body)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(bytes).To(matchers.MatchGoldenJSON(path.Join("testdata", "resource_400onmeshlabeldiffer.golden.json")))
+	})
+
+	It("should not return 400 when mesh label is identical to resource mesh", func() {
+		// given
+		apiServer, store, stop := createServer(true, true)
+		defer stop()
+		createMesh(store)
+
+		// when
+		res := &rest_v1alpha1.Resource{
+			ResourceMeta: rest_v1alpha1.ResourceMeta{
+				Name: "mtp-1",
+				Mesh: mesh,
+				Type: string(v1alpha1.MeshTrafficPermissionType),
+				Labels: map[string]string{
+					mesh_proto.MeshTag:             mesh,
+					mesh_proto.ResourceOriginLabel: "zone",
+				},
+			},
+			Spec: builders.MeshTrafficPermission().
+				WithTargetRef(builders.TargetRefMesh()).
+				AddFrom(builders.TargetRefMesh(), v1alpha1.Allow).
+				Build().Spec,
+		}
+		resp, err := put(apiServer.Address(), v1alpha1.MeshTrafficPermissionResourceTypeDescriptor, "mtp-1", res)
+
+		// and then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+	})
+
+	DescribeTable("should set origin label automatically when origin validation is disabled",
+		func(federatedZone bool) {
+			// given
+			apiServer, store, stop := createServer(federatedZone, false)
+			defer stop()
+			createMesh(store)
+			zone := "default"
+			if federatedZone {
+				zone = "zone-1"
+			}
+
+			// when
+			res := &rest_v1alpha1.Resource{
+				ResourceMeta: rest_v1alpha1.ResourceMeta{
+					Name: "mtp-1",
+					Mesh: mesh,
+					Type: string(v1alpha1.MeshTrafficPermissionType),
+				},
+				Spec: builders.MeshTrafficPermission().
+					WithTargetRef(builders.TargetRefMesh()).
+					AddFrom(builders.TargetRefMesh(), v1alpha1.Allow).
+					Build().Spec,
+			}
+			resp, err := put(apiServer.Address(), v1alpha1.MeshTrafficPermissionResourceTypeDescriptor, "mtp-1", res)
+
+			// then
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+			// and then
+			actualMtp := v1alpha1.NewMeshTrafficPermissionResource()
+			Expect(store.Get(context.Background(), actualMtp, core_store.GetByKey("mtp-1", mesh))).To(Succeed())
+			Expect(actualMtp.Meta.GetLabels()).To(Equal(map[string]string{
+				mesh_proto.ResourceOriginLabel: string(mesh_proto.ZoneResourceOrigin),
+				mesh_proto.ZoneTag:             zone,
+				mesh_proto.MeshTag:             mesh,
+				mesh_proto.EnvTag:              "universal",
+			}))
+		},
+		Entry("non-federated zone", false),
+		Entry("federated zone", true),
+	)
+
+	It("should set origin label automatically for DPPs", func() {
+		// given
+		apiServer, store, stop := createServer(false, false)
+		defer stop()
+		createMesh(store)
+		name := "dpp-1"
+
+		// when
+		res := &unversioned.Resource{
+			Meta: rest_v1alpha1.ResourceMeta{
+				Name: name,
+				Mesh: mesh,
+				Type: string(core_mesh.DataplaneType),
+			},
+			Spec: builders.Dataplane().
+				WithName("backend-1").
+				WithHttpServices("backend").
+				AddOutboundsToServices("redis", "elastic", "postgres").
+				Build().Spec,
+		}
+		resp, err := put(apiServer.Address(), core_mesh.DataplaneResourceTypeDescriptor, name, res)
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+		// and then
+		actualDpp := core_mesh.NewDataplaneResource()
+		Expect(store.Get(context.Background(), actualDpp, core_store.GetByKey("dpp-1", mesh))).To(Succeed())
+		Expect(actualDpp.Meta.GetLabels()).To(Equal(map[string]string{
+			mesh_proto.ResourceOriginLabel: string(mesh_proto.ZoneResourceOrigin),
+			mesh_proto.ZoneTag:             "default",
+			mesh_proto.MeshTag:             mesh,
+			mesh_proto.EnvTag:              "universal",
+			mesh_proto.ProxyTypeLabel:      string(mesh_proto.SidecarLabel),
+		}))
+	})
+
+	It("should compute labels on update of the resource", func() {
+		// given
+		apiServer, store, stop := createServer(false, false)
+		defer stop()
+		createMesh(store)
+		name := "ext-svc"
+
+		// when
+		res := &rest_v1alpha1.Resource{
+			ResourceMeta: rest_v1alpha1.ResourceMeta{
+				Name: name,
+				Mesh: mesh,
+				Type: string(meshexternalservice_api.MeshExternalServiceType),
+				Labels: map[string]string{
+					"kuma.io/origin": "zone",
+				},
+			},
+			Spec: &meshexternalservice_api.MeshExternalService{
+				Match: meshexternalservice_api.Match{
+					Type:     pointer.To(meshexternalservice_api.HostnameGeneratorType),
+					Port:     9000,
+					Protocol: core_mesh.ProtocolHTTP,
+				},
+				Endpoints: []meshexternalservice_api.Endpoint{
+					{
+						Address: "192.168.0.1",
+						Port:    meshexternalservice_api.Port(27017),
+					},
+				},
+			},
+		}
+		resp, err := put(apiServer.Address(), meshexternalservice_api.MeshExternalServiceResourceTypeDescriptor, name, res)
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+		// and then
+		actualMes := meshexternalservice_api.NewMeshExternalServiceResource()
+		Expect(store.Get(context.Background(), actualMes, core_store.GetByKey(name, mesh))).To(Succeed())
+		Expect(actualMes.Meta.GetLabels()).To(Equal(map[string]string{
+			mesh_proto.ResourceOriginLabel: "zone",
+			mesh_proto.ZoneTag:             "default",
+			mesh_proto.MeshTag:             mesh,
+			mesh_proto.EnvTag:              "universal",
+		}))
+
+		// after update it should have computed labels
+		resp, err = put(apiServer.Address(), meshexternalservice_api.MeshExternalServiceResourceTypeDescriptor, name, res)
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		// and then
+		actualMes = meshexternalservice_api.NewMeshExternalServiceResource()
+		Expect(store.Get(context.Background(), actualMes, core_store.GetByKey(name, mesh))).To(Succeed())
+		Expect(actualMes.Meta.GetLabels()).To(Equal(map[string]string{
+			mesh_proto.ResourceOriginLabel: "zone",
+			mesh_proto.ZoneTag:             "default",
+			mesh_proto.MeshTag:             mesh,
+			mesh_proto.EnvTag:              "universal",
+		}))
 	})
 })

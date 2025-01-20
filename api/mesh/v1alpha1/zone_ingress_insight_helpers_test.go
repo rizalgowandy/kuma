@@ -3,7 +3,7 @@ package v1alpha1_test
 import (
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -38,8 +38,8 @@ var _ = Describe("Zone Ingress Insights", func() {
 			})).To(Succeed())
 
 			// then
-			_, subscription := zoneInsight.GetSubscription("2")
-			Expect(subscription.DisconnectTime).ToNot(BeNil())
+			subscription := zoneInsight.GetSubscription("2")
+			Expect(subscription.(*mesh_proto.DiscoverySubscription).DisconnectTime).ToNot(BeNil())
 		})
 
 		It("should return error for wrong subscription type", func() {

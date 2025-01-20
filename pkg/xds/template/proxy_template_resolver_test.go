@@ -1,9 +1,9 @@
-package template
+package template_test
 
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,6 +14,7 @@ import (
 	"github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	. "github.com/kumahq/kuma/pkg/test/matchers"
 	test_model "github.com/kumahq/kuma/pkg/test/resources/model"
+	"github.com/kumahq/kuma/pkg/xds/template"
 )
 
 var _ = Describe("Reconcile", func() {
@@ -29,7 +30,7 @@ var _ = Describe("Reconcile", func() {
 			}
 
 			// setup
-			resolver := &SimpleProxyTemplateResolver{
+			resolver := &template.SimpleProxyTemplateResolver{
 				ReadOnlyResourceManager: manager.NewResourceManager(memory.NewStore()),
 			}
 
@@ -92,7 +93,7 @@ var _ = Describe("Reconcile", func() {
 				Expect(err).ToNot(HaveOccurred())
 			}
 
-			resolver := &SimpleProxyTemplateResolver{
+			resolver := &template.SimpleProxyTemplateResolver{
 				ReadOnlyResourceManager: manager.NewResourceManager(memStore),
 			}
 
@@ -118,7 +119,7 @@ var _ = Describe("Reconcile", func() {
 			}
 
 			// setup
-			resolver := &SimpleProxyTemplateResolver{
+			resolver := &template.SimpleProxyTemplateResolver{
 				ReadOnlyResourceManager: manager.NewResourceManager(memory.NewStore()),
 			}
 
@@ -128,6 +129,5 @@ var _ = Describe("Reconcile", func() {
 			// then
 			Expect(actual).To(BeNil())
 		})
-
 	})
 })

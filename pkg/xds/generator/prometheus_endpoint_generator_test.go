@@ -1,10 +1,10 @@
 package generator_test
 
 import (
+	"context"
 	"path/filepath"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -20,7 +20,6 @@ import (
 )
 
 var _ = Describe("PrometheusEndpointGenerator", func() {
-
 	type testCase struct {
 		ctx      xds_context.Context
 		proxy    *core_xds.Proxy
@@ -33,7 +32,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 			gen := &generator.PrometheusEndpointGenerator{}
 
 			// when
-			rs, err := gen.Generate(given.ctx, given.proxy)
+			rs, err := gen.Generate(context.Background(), nil, given.ctx, given.proxy)
 			// then
 			Expect(err).ToNot(HaveOccurred())
 			// and
@@ -51,7 +50,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id: *core_xds.BuildProxyId("", "demo.backend-01"),
+				Id: *core_xds.BuildProxyId("demo", "backend-01"),
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -59,7 +58,8 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 					},
 					Spec: &mesh_proto.Dataplane{},
 				},
-				APIVersion: envoy_common.APIV3,
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 			},
 		}),
 		Entry("Dataplane has Prometheus configuration while Mesh doesn't", testCase{
@@ -74,8 +74,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -120,8 +121,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -167,8 +169,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -196,7 +199,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 			gen := &generator.PrometheusEndpointGenerator{}
 
 			// when
-			rs, err := gen.Generate(given.ctx, given.proxy)
+			rs, err := gen.Generate(context.Background(), nil, given.ctx, given.proxy)
 			// then
 			Expect(err).ToNot(HaveOccurred())
 
@@ -242,8 +245,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -262,6 +266,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 							Version: "1.2.0",
 						},
 					},
+					WorkDir: "/tmp",
 				},
 			},
 			expected: "default.envoy-config.golden.yaml",
@@ -296,8 +301,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -316,6 +322,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 							Version: "1.1.6",
 						},
 					},
+					WorkDir: "/tmp",
 				},
 			},
 			expected: "default-without-hijacker.envoy-config.golden.yaml",
@@ -337,6 +344,10 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 										Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
 											Port: 1234,
 											Path: "/non-standard-path",
+											Envoy: &mesh_proto.PrometheusEnvoyConfig{
+												FilterRegex: "123.*",
+												UsedOnly:    util_proto.Bool(true),
+											},
 										}),
 									},
 								},
@@ -346,8 +357,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -374,6 +386,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 							Version: "1.2.0",
 						},
 					},
+					WorkDir: "/tmp",
 				},
 			},
 			expected: "custom.envoy-config.golden.yaml",
@@ -420,8 +433,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -440,6 +454,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 							Version: "1.2.0",
 						},
 					},
+					WorkDir: "/tmp",
 				},
 			},
 			expected: "default-mtls.envoy-config.golden.yaml",
@@ -485,8 +500,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -505,6 +521,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 							Version: "1.2.0",
 						},
 					},
+					WorkDir: "/tmp",
 				},
 			},
 			expected: "default-mtls.envoy-config.golden.yaml",
@@ -549,8 +566,9 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				},
 			},
 			proxy: &core_xds.Proxy{
-				Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
-				APIVersion: envoy_common.APIV3,
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
 				Dataplane: &core_mesh.DataplaneResource{
 					Meta: &test_model.ResourceMeta{
 						Name: "backend-01",
@@ -569,14 +587,222 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 							Version: "1.2.0",
 						},
 					},
+					WorkDir: "/tmp",
 				},
 			},
 			expected: "default.envoy-config.golden.yaml",
 		}),
+		Entry("should support setting static path for TLS listener", testCase{
+			ctx: xds_context.Context{
+				ControlPlane: &xds_context.ControlPlaneContext{},
+				Mesh: xds_context.MeshContext{
+					Resource: &core_mesh.MeshResource{
+						Meta: &test_model.ResourceMeta{
+							Name: "demo",
+						},
+						Spec: &mesh_proto.Mesh{
+							Mtls: &mesh_proto.Mesh_Mtls{
+								EnabledBackend: "builtin",
+								Backends: []*mesh_proto.CertificateAuthorityBackend{
+									{
+										Name: "builtin",
+										Type: "builtin",
+									},
+								},
+							},
+							Metrics: &mesh_proto.Metrics{
+								EnabledBackend: "prometheus-1",
+								Backends: []*mesh_proto.MetricsBackend{
+									{
+										Name: "prometheus-1",
+										Type: mesh_proto.MetricsPrometheusType,
+										Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+											Port: 1234,
+											Path: "/non-standard-path",
+											Tags: map[string]string{
+												"kuma.io/service": "dataplane-metrics",
+											},
+											Tls: &mesh_proto.PrometheusTlsConfig{
+												Mode: mesh_proto.PrometheusTlsConfig_providedTLS,
+											},
+										}),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			proxy: &core_xds.Proxy{
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
+				Dataplane: &core_mesh.DataplaneResource{
+					Meta: &test_model.ResourceMeta{
+						Name: "backend-01",
+						Mesh: "demo",
+					},
+					Spec: &mesh_proto.Dataplane{
+						Networking: &mesh_proto.Dataplane_Networking{
+							Address: "192.168.0.1",
+						},
+					},
+				},
+				Metadata: &core_xds.DataplaneMetadata{
+					AdminPort: 9902,
+					Version: &mesh_proto.Version{
+						KumaDp: &mesh_proto.KumaDpVersion{
+							Version: "1.2.0",
+						},
+					},
+					WorkDir:         "/tmp",
+					MetricsCertPath: "/path/cert",
+					MetricsKeyPath:  "/path/key",
+				},
+			},
+			expected: "delegated-tls.envoy-config.golden.yaml",
+		}),
+		Entry("should support disabling TLS listener", testCase{
+			ctx: xds_context.Context{
+				ControlPlane: &xds_context.ControlPlaneContext{},
+				Mesh: xds_context.MeshContext{
+					Resource: &core_mesh.MeshResource{
+						Meta: &test_model.ResourceMeta{
+							Name: "demo",
+						},
+						Spec: &mesh_proto.Mesh{
+							Mtls: &mesh_proto.Mesh_Mtls{
+								EnabledBackend: "builtin",
+								Backends: []*mesh_proto.CertificateAuthorityBackend{
+									{
+										Name: "builtin",
+										Type: "builtin",
+									},
+								},
+							},
+							Metrics: &mesh_proto.Metrics{
+								EnabledBackend: "prometheus-1",
+								Backends: []*mesh_proto.MetricsBackend{
+									{
+										Name: "prometheus-1",
+										Type: mesh_proto.MetricsPrometheusType,
+										Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+											Port: 1234,
+											Path: "/non-standard-path",
+											Tags: map[string]string{
+												"kuma.io/service": "dataplane-metrics",
+											},
+											Tls: &mesh_proto.PrometheusTlsConfig{
+												Mode: mesh_proto.PrometheusTlsConfig_disabled,
+											},
+										}),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			proxy: &core_xds.Proxy{
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
+				Dataplane: &core_mesh.DataplaneResource{
+					Meta: &test_model.ResourceMeta{
+						Name: "backend-01",
+						Mesh: "demo",
+					},
+					Spec: &mesh_proto.Dataplane{
+						Networking: &mesh_proto.Dataplane_Networking{
+							Address: "192.168.0.1",
+						},
+					},
+				},
+				Metadata: &core_xds.DataplaneMetadata{
+					AdminPort: 9902,
+					Version: &mesh_proto.Version{
+						KumaDp: &mesh_proto.KumaDpVersion{
+							Version: "1.2.0",
+						},
+					},
+					WorkDir:         "/tmp",
+					MetricsCertPath: "/path/cert",
+					MetricsKeyPath:  "/path/key",
+				},
+			},
+			expected: "disabled-tls.envoy-config.golden.yaml",
+		}),
+		Entry("should fallback to no TLS listener when certs are not provided", testCase{
+			ctx: xds_context.Context{
+				ControlPlane: &xds_context.ControlPlaneContext{},
+				Mesh: xds_context.MeshContext{
+					Resource: &core_mesh.MeshResource{
+						Meta: &test_model.ResourceMeta{
+							Name: "demo",
+						},
+						Spec: &mesh_proto.Mesh{
+							Mtls: &mesh_proto.Mesh_Mtls{
+								EnabledBackend: "builtin",
+								Backends: []*mesh_proto.CertificateAuthorityBackend{
+									{
+										Name: "builtin",
+										Type: "builtin",
+									},
+								},
+							},
+							Metrics: &mesh_proto.Metrics{
+								EnabledBackend: "prometheus-1",
+								Backends: []*mesh_proto.MetricsBackend{
+									{
+										Name: "prometheus-1",
+										Type: mesh_proto.MetricsPrometheusType,
+										Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+											Port: 1234,
+											Path: "/non-standard-path",
+											Tags: map[string]string{
+												"kuma.io/service": "dataplane-metrics",
+											},
+											Tls: &mesh_proto.PrometheusTlsConfig{
+												Mode: mesh_proto.PrometheusTlsConfig_providedTLS,
+											},
+										}),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			proxy: &core_xds.Proxy{
+				Id:             *core_xds.BuildProxyId("demo", "backend-01"),
+				SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+				APIVersion:     envoy_common.APIV3,
+				Dataplane: &core_mesh.DataplaneResource{
+					Meta: &test_model.ResourceMeta{
+						Name: "backend-01",
+						Mesh: "demo",
+					},
+					Spec: &mesh_proto.Dataplane{
+						Networking: &mesh_proto.Dataplane_Networking{
+							Address: "192.168.0.1",
+						},
+					},
+				},
+				Metadata: &core_xds.DataplaneMetadata{
+					AdminPort: 9902,
+					Version: &mesh_proto.Version{
+						KumaDp: &mesh_proto.KumaDpVersion{
+							Version: "1.2.0",
+						},
+					},
+					WorkDir: "/tmp",
+				},
+			},
+			expected: "delegated-tls-fallback.envoy-config.golden.yaml",
+		}),
 	)
 
 	Describe("should not generate Envoy xDS resources if Prometheus endpoint would otherwise overshadow a port that is already in use by the application or other Envoy listeners", func() {
-
 		type testCase struct {
 			dataplane string
 		}
@@ -584,7 +810,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 		DescribeTable("should not generate Envoy xDS resources if Prometheus endpoint would otherwise overshadow a port that is already in use by the application or other Envoy listeners",
 			func(given testCase) {
 				// given
-				ctx := xds_context.Context{
+				xdsCtx := xds_context.Context{
 					Mesh: xds_context.MeshContext{
 						Resource: &core_mesh.MeshResource{
 							Meta: &test_model.ResourceMeta{
@@ -609,7 +835,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 					},
 				}
 				proxy := &core_xds.Proxy{
-					Id:         *core_xds.BuildProxyId("", "demo.backend-01"),
+					Id:         *core_xds.BuildProxyId("demo", "backend-01"),
 					APIVersion: envoy_common.APIV3,
 					Dataplane: &core_mesh.DataplaneResource{
 						Meta: &test_model.ResourceMeta{
@@ -628,7 +854,7 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
 				gen := &generator.PrometheusEndpointGenerator{}
 
 				// when
-				rs, err := gen.Generate(ctx, proxy)
+				rs, err := gen.Generate(context.Background(), nil, xdsCtx, proxy)
 				// then
 				Expect(err).ToNot(HaveOccurred())
 				// and
@@ -643,9 +869,11 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
                     servicePort: 8080
                   outbound:
                   - port: 54321
-                    service: db
+                    tags:
+                      kuma.io/service: db
                   - port: 59200
-                    service: elastic
+                    tags:
+                      kuma.io/service: elastic
                 metrics:
                   type: prometheus
                   conf:
@@ -661,9 +889,11 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
                     servicePort: 8080
                   outbound:
                   - port: 54321
-                    service: db
+                    tags:
+                      kuma.io/service: db
                   - port: 59200
-                    service: elastic
+                    tags:
+                      kuma.io/service: elastic
                 metrics:
                   type: prometheus
                   conf:
@@ -680,7 +910,8 @@ var _ = Describe("PrometheusEndpointGenerator", func() {
                   outbound:
                   - port: 54321
                     address: 192.168.0.1
-                    service: db
+                    tags:
+                      kuma.io/service: db
                 metrics:
                   type: prometheus
                   conf:

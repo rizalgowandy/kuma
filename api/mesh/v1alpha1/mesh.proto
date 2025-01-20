@@ -4,8 +4,9 @@ package kuma.mesh.v1alpha1;
 
 option go_package = "github.com/kumahq/kuma/api/mesh/v1alpha1";
 
-import "mesh/options.proto";
-import "mesh/v1alpha1/metrics.proto";
+import "api/mesh/options.proto";
+import "api/mesh/v1alpha1/metrics.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/wrappers.proto";
 import "google/protobuf/struct.proto";
 
@@ -19,6 +20,7 @@ message Mesh {
   option (kuma.mesh.resource).kds.send_to_zone = true;
   option (kuma.mesh.resource).ws.name = "mesh";
   option (kuma.mesh.resource).ws.plural = "meshes";
+  option (kuma.mesh.resource).short_name = "m";
 
   // mTLS settings of a Mesh.
   message Mtls {
@@ -28,6 +30,9 @@ message Mesh {
 
     // List of available Certificate Authority backends
     repeated CertificateAuthorityBackend backends = 2;
+
+    // If enabled, skips CA validation.
+    bool skipValidation = 3;
   }
 
   // mTLS settings.
@@ -55,6 +60,63 @@ message Mesh {
 
   // Routing settings of the mesh
   Routing routing = 6;
+
+  // Constraints to apply to the mesh and its entities
+  message Constraints {
+
+    // DataplaneProxyMembership defines a set of requirements for data plane
+    // proxies to be a member of the mesh.
+    DataplaneProxyConstraints dataplaneProxy = 1;
+  }
+
+  // Constraints that applies to the mesh and its entities
+  Constraints constraints = 7;
+
+  // List of policies to skip creating by default when the mesh is created.
+  // e.g. TrafficPermission, MeshRetry, etc. An '*' can be used to skip all
+  // policies.
+  repeated string skipCreatingInitialPolicies = 8;
+
+  MeshServices meshServices = 9;
+
+  message DataplaneProxyConstraints {
+
+    // Rules defines a set of rules for data plane proxies to be member of the
+    // mesh.
+    message Rules {
+      // Tags defines set of required tags. You can specify '*' in value to
+      // require non empty value of tag
+      map<string, string> tags = 1;
+    }
+
+    // Requirements defines a set of requirements that data plane proxies must
+    // fulfill in order to join the mesh. A data plane proxy must fulfill at
+    // least one requirement in order to join the mesh. Empty list of allowed
+    // requirements means that any proxy that is not explicitly denied can join.
+    repeated Rules requirements = 1;
+    // Restrictions defines a set of restrictions that data plane proxies cannot
+    // fulfill in order to join the mesh. A data plane proxy cannot fulfill any
+    // requirement in order to join the mesh.
+    // Restrictions takes precedence over requirements.
+    repeated Rules restrictions = 2;
+  };
+
+  message MeshServices {
+    Mode mode = 1;
+
+    enum Mode {
+      // MeshServices are't generated
+      Disabled = 0;
+      // MeshServices are generated and used for configuration
+      Everywhere = 1;
+      // MeshServices are generated but only used for configuration where
+      // configured via reachableBackends
+      ReachableBackends = 2;
+      // MeshServices are generated, used for configuration and kuma.io/services
+      // are not used
+      Exclusive = 3;
+    }
+  }
 }
 
 // CertificateAuthorityBackend defines Certificate Authority backend
@@ -76,6 +138,9 @@ message CertificateAuthorityBackend {
     }
     // Rotation settings
     Rotation rotation = 1;
+
+    // Timeout on request to CA for DP certificate generation and retrieval
+    google.protobuf.Duration requestTimeout = 2;
   }
 
   // Dataplane certificate settings
@@ -98,6 +163,15 @@ message CertificateAuthorityBackend {
   // Mode defines the behaviour of inbound listeners with regard to traffic
   // encryption
   Mode mode = 5;
+
+  // RootChain defines settings related to CA root certificate chain.
+  message RootChain {
+    // Timeout on request for to CA for root certificate chain.
+    // If not specified, defaults to 10s.
+    google.protobuf.Duration requestTimeout = 1;
+  }
+
+  RootChain rootChain = 6;
 }
 
 // Networking defines the networking configuration of the mesh
@@ -147,6 +221,13 @@ message DatadogTracingBackendConfig {
 
   // Port of datadog collector
   uint32 port = 2;
+
+  // Determines if datadog service name should be split based on traffic
+  // direction and destination. For example, with `splitService: true` and a
+  // `backend` service that communicates with a couple of databases, you would
+  // get service names like `backend_INBOUND`, `backend_OUTBOUND_db1`, and
+  // `backend_OUTBOUND_db2` in Datadog. Default: false
+  bool splitService = 3;
 }
 
 message ZipkinTracingBackendConfig {
@@ -183,7 +264,7 @@ message LoggingBackend {
   // TrafficLogging
   string name = 1;
 
-  // Format of access logs. Placehodlers available on
+  // Format of access logs. Placeholders available on
   // https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log
   string format = 2;
 
@@ -210,4 +291,12 @@ message TcpLoggingBackendConfig {
 message Routing {
   // Enable the Locality Aware Load Balancing
   bool localityAwareLoadBalancing = 1;
+
+  // Enable routing traffic to services in other zone or external services
+  // through ZoneEgress. Default: false
+  bool zoneEgress = 2;
+
+  // If true, blocks traffic to MeshExternalServices.
+  // Default: false
+  bool defaultForbidMeshExternalServiceAccess = 3;
 }

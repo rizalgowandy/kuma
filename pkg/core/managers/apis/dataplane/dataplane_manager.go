@@ -13,22 +13,37 @@ import (
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 )
 
-func NewDataplaneManager(store core_store.ResourceStore, zone string) core_manager.ResourceManager {
+func NewDataplaneManager(
+	store core_store.ResourceStore,
+	zone string,
+	mode string,
+	isK8s bool,
+	systemNamespace string,
+	validator Validator,
+) core_manager.ResourceManager {
 	return &dataplaneManager{
 		ResourceManager: core_manager.NewResourceManager(store),
 		store:           store,
 		zone:            zone,
+		mode:            mode,
+		isK8s:           isK8s,
+		systemNamespace: systemNamespace,
+		validator:       validator,
 	}
 }
 
 type dataplaneManager struct {
 	core_manager.ResourceManager
-	store core_store.ResourceStore
-	zone  string
+	store           core_store.ResourceStore
+	zone            string
+	mode            string
+	isK8s           bool
+	systemNamespace string
+	validator       Validator
 }
 
 func (m *dataplaneManager) Create(ctx context.Context, resource core_model.Resource, fs ...core_store.CreateOptionsFunc) error {
-	if err := resource.Validate(); err != nil {
+	if err := core_model.Validate(resource); err != nil {
 		return err
 	}
 	dp, err := m.dataplane(resource)
@@ -36,14 +51,36 @@ func (m *dataplaneManager) Create(ctx context.Context, resource core_model.Resou
 		return err
 	}
 
+	opts := core_store.NewCreateOptions(fs...)
 	m.setInboundsClusterTag(dp)
 	m.setGatewayClusterTag(dp)
 	m.setHealth(dp)
+	labels, err := core_model.ComputeLabels(
+		resource.Descriptor(),
+		resource.GetSpec(),
+		opts.Labels,
+		core_model.UnsetNamespace,
+		opts.Mesh,
+		m.mode,
+		m.isK8s,
+		m.zone,
+	)
+	if err != nil {
+		return err
+	}
+	fs = append(fs, core_store.CreateWithLabels(labels))
 
-	opts := core_store.NewCreateOptions(fs...)
 	owner := core_mesh.NewMeshResource()
 	if err := m.store.Get(ctx, owner, core_store.GetByKey(opts.Mesh, core_model.NoMesh)); err != nil {
 		return core_manager.MeshNotFound(opts.Mesh)
+	}
+
+	key := core_model.ResourceKey{
+		Mesh: opts.Mesh,
+		Name: opts.Name,
+	}
+	if err := m.validator.ValidateCreate(ctx, key, dp, owner); err != nil {
+		return err
 	}
 
 	return m.store.Create(ctx, resource, append(fs, core_store.CreatedAt(core.Now()))...)
@@ -57,6 +94,28 @@ func (m *dataplaneManager) Update(ctx context.Context, resource core_model.Resou
 
 	m.setInboundsClusterTag(dp)
 	m.setGatewayClusterTag(dp)
+	labels, err := core_model.ComputeLabels(
+		resource.Descriptor(),
+		resource.GetSpec(),
+		resource.GetMeta().GetLabels(),
+		core_model.GetNamespace(resource.GetMeta(), m.systemNamespace),
+		resource.GetMeta().GetMesh(),
+		m.mode,
+		m.isK8s,
+		m.zone,
+	)
+	if err != nil {
+		return err
+	}
+	fs = append(fs, core_store.UpdateWithLabels(labels))
+
+	owner := core_mesh.NewMeshResource()
+	if err := m.store.Get(ctx, owner, core_store.GetByKey(resource.GetMeta().GetMesh(), core_model.NoMesh)); err != nil {
+		return core_manager.MeshNotFound(resource.GetMeta().GetMesh())
+	}
+	if err := m.validator.ValidateUpdate(ctx, dp, owner); err != nil {
+		return err
+	}
 
 	return m.ResourceManager.Update(ctx, resource, fs...)
 }
@@ -94,8 +153,12 @@ func (m *dataplaneManager) setGatewayClusterTag(dp *core_mesh.DataplaneResource)
 
 func (m *dataplaneManager) setHealth(dp *core_mesh.DataplaneResource) {
 	for _, inbound := range dp.Spec.Networking.Inbound {
-		if inbound.ServiceProbe != nil && inbound.Health == nil {
-			inbound.Health = &mesh_proto.Dataplane_Networking_Inbound_Health{Ready: false}
+		if inbound.ServiceProbe != nil {
+			inbound.State = mesh_proto.Dataplane_Networking_Inbound_NotReady
+			// write health for backwards compatibility with Kuma 2.5 and older
+			inbound.Health = &mesh_proto.Dataplane_Networking_Inbound_Health{
+				Ready: false,
+			}
 		}
 	}
 }

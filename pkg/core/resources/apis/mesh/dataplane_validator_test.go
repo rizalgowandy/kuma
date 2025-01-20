@@ -1,17 +1,15 @@
 package mesh_test
 
 import (
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
 var _ = Describe("Dataplane", func() {
-
 	DescribeTable("should pass validation",
 		func(dpYAML string) {
 			// given
@@ -98,7 +96,8 @@ var _ = Describe("Dataplane", func() {
               outbound:
                 - port: 3333
                   address: 127.0.0.1
-                  service: redis`,
+                  tags:
+                    kuma.io/service: redis`,
 		),
 		Entry("dataplane with gateway", `
             type: Dataplane
@@ -113,7 +112,8 @@ var _ = Describe("Dataplane", func() {
                   version: "1"
               outbound:
                 - port: 3333
-                  service: redis`,
+                  tags:
+                    kuma.io/service: redis`,
 		),
 		Entry("dataplane with valid tags", `
             type: Dataplane
@@ -131,60 +131,6 @@ var _ = Describe("Dataplane", func() {
                   tags:
                     kuma.io/service: redis`,
 		),
-		Entry("dataplane in ingress mode with public address and port", `
-            type: Dataplane
-            name: dp-1
-            mesh: default
-            networking:
-                address: 192.168.0.1
-                ingress:
-                  publicAddress: 10.0.0.1
-                  publicPort: 1234
-                  availableServices:
-                    - tags:
-                        kuma.io/service: backend
-                        version: "1"
-                        region: us
-                    - tags:
-                        kuma.io/service: web
-                        version: v2
-                        region: eu
-                inbound:
-                  - port: 10001`,
-		),
-		Entry("dataplane in ingress mode with public ipv6 address and port", `
-            type: Dataplane
-            name: dp-1
-            mesh: default
-            networking:
-                address: 192.168.0.1
-                ingress:
-                  publicAddress: ::ffff:0a00:0001
-                  publicPort: 1234
-                  availableServices:
-                    - tags:
-                        kuma.io/service: backend
-                        version: "1"
-                        region: us
-                    - tags:
-                        kuma.io/service: web
-                        version: v2
-                        region: eu
-                inbound:
-                  - port: 10001`,
-		),
-		// no public address and port is valid because we may be waiting for Kubernetes to reconcile it
-		Entry("dataplane in ingress mode without public address and port", `
-            type: Dataplane
-            name: dp-1
-            mesh: default
-            networking:
-                address: 192.168.0.1
-                ingress:
-                  availableServices: []
-                inbound:
-                  - port: 10001`,
-		),
 		Entry("dataplane domain name in the address", `
             type: Dataplane
             name: dp-1
@@ -200,21 +146,6 @@ var _ = Describe("Dataplane", func() {
                 - port: 3333
                   tags:
                     kuma.io/service: redis`,
-		),
-		Entry("dataplane in ingress mode with protocol tag", `
-            type: Dataplane
-            name: dp-1
-            mesh: default
-            networking:
-                address: 192.168.0.1
-                ingress:
-                  availableServices:
-                    - tags:
-                        kuma.io/service: backend
-                inbound:
-                  - port: 10001
-                    tags:
-                      kuma.io/protocol: tcp`,
 		),
 		Entry("dataplane with probes", `
             type: Dataplane
@@ -258,6 +189,174 @@ var _ = Describe("Dataplane", func() {
                   tags:
                     kuma.io/service: redis`,
 		),
+		Entry("dataplane with admin port", `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 127.0.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  address: 127.0.0.1
+                  tags:
+                    kuma.io/service: redis`),
+		Entry("dataplane with admin port equal to inbound and outbound but different network interfaces", `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              admin:
+                port: 8080
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: redis`),
+		Entry("dataplane with metrics backend defined and unique aggregate entries", `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              admin:
+                port: 8080
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: redis
+            metrics:
+              type: prometheus
+              conf:
+                aggregate:
+                - name: app
+                  port: 123
+                  path: "/stats"
+                - name: sidecar
+                  port: 999
+                  path: "/metrics"`),
+		Entry("dataplane with metrics backend type defined", `
+                type: Dataplane
+                name: dp-1
+                mesh: default
+                networking:
+                  address: 192.168.0.1
+                  admin:
+                    port: 8080
+                  inbound:
+                    - port: 8080
+                      servicePort: 7777
+                      address: 192.168.0.1
+                      tags:
+                        kuma.io/service: backend
+                        version: "1"
+                  outbound:
+                    - port: 3333
+                      address: 192.168.0.1
+                      tags:
+                        kuma.io/service: redis
+                metrics:
+                  type: prometheus`),
+		Entry("dataplane with backend ref for MeshService", `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  backendRef:
+                    kind: MeshService
+                    name: xyz
+                    port: 80`,
+		),
+		Entry("dataplane with backend ref for MeshExternalService", `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  backendRef:
+                    kind: MeshExternalService
+                    name: xyz`,
+		),
+		Entry("dataplane with reachableBackendRefs", `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              transparentProxying:
+                reachableBackends:
+                  refs:
+                  - kind: MeshService
+                    name: a
+                    port: 9090
+                  - kind: MeshExternalService
+                    name: es
+                    namespace: es1
+                  - kind: MeshService
+                    labels:
+                      kuma.io/test: abc`,
+		),
+		Entry("dataplane with backend ref with labels", `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  backendRef:
+                    kind: MeshService
+                    labels:
+                      kuma.io/display-name: redis
+                    port: 8080`,
+		),
 	)
 
 	type testCase struct {
@@ -284,6 +383,38 @@ var _ = Describe("Dataplane", func() {
 			// and
 			Expect(actual).To(MatchYAML(given.expected))
 		},
+		Entry("networking.address: can't use 0.0.0.0", testCase{
+			dataplane: `
+                type: Dataplane
+                name: dp-1
+                mesh: default
+                networking:
+                  address: 0.0.0.0
+                  inbound:
+                    - port: 8080
+                      tags:
+                        kuma.io/service: backend`,
+			expected: `
+                violations:
+                - field: networking.address
+                  message: 'must not be 0.0.0.0 or ::'`,
+		}),
+		Entry("networking.address: can't use ::", testCase{
+			dataplane: `
+                type: Dataplane
+                name: dp-1
+                mesh: default
+                networking:
+                  address: "::"
+                  inbound:
+                    - port: 8080
+                      tags:
+                        kuma.io/service: backend`,
+			expected: `
+                violations:
+                - field: networking.address
+                  message: 'must not be 0.0.0.0 or ::'`,
+		}),
 		Entry("networking: not enough inbound interfaces and no gateway", testCase{
 			dataplane: `
                 type: Dataplane
@@ -293,7 +424,8 @@ var _ = Describe("Dataplane", func() {
                   address: 192.168.0.1
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking
@@ -381,7 +513,8 @@ var _ = Describe("Dataplane", func() {
                       kuma.io/service: kong
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking.inbound
@@ -400,7 +533,6 @@ var _ = Describe("Dataplane", func() {
                       kuma.io/service: kong
                   inbound:
                     - port: 3333
-                      service: redis
                       tags:
                         kuma.io/service: kong`,
 			expected: `
@@ -421,7 +553,6 @@ var _ = Describe("Dataplane", func() {
                       kuma.io/service: kong
                   outbound:
                     - port: 3333
-                      service: redis
                       tags:
                         kuma.io/service: kong`,
 			expected: `
@@ -464,8 +595,8 @@ var _ = Describe("Dataplane", func() {
                       foo: bar`,
 			expected: `
                 violations:
-                - field: networking.gateway.tags["kuma.io/service"]
-                  message: tag has to exist`,
+                - field: networking.gateway.tags
+                  message: mandatory tag "kuma.io/service" is missing`,
 		}),
 		Entry("networking.inbound: port of the range", testCase{
 			dataplane: `
@@ -483,7 +614,8 @@ var _ = Describe("Dataplane", func() {
                         kuma.io/service: sub-backend
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking.inbound[0].port
@@ -505,7 +637,8 @@ var _ = Describe("Dataplane", func() {
                         kuma.io/service: backend
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking.inbound[0].servicePort
@@ -525,7 +658,8 @@ var _ = Describe("Dataplane", func() {
                         kuma.io/service: backend
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking.inbound[0].address
@@ -544,7 +678,8 @@ var _ = Describe("Dataplane", func() {
                         version: "v1"
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking.inbound[0].tags["kuma.io/service"]
@@ -564,11 +699,12 @@ var _ = Describe("Dataplane", func() {
                         version:
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: 'networking.inbound[0].tags["version"]'
-                  message: tag value cannot be empty`,
+                  message: tag value must be non-empty`,
 		}),
 		Entry("networking.inbound: `protocol` tag with an empty value", testCase{
 			dataplane: `
@@ -584,13 +720,14 @@ var _ = Describe("Dataplane", func() {
                         kuma.io/protocol:
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: 'networking.inbound[0].tags["kuma.io/protocol"]'
                   message: 'tag "kuma.io/protocol" has an invalid value "". Allowed values: grpc, http, http2, kafka, tcp'
                 - field: 'networking.inbound[0].tags["kuma.io/protocol"]'
-                  message: tag value cannot be empty`,
+                  message: tag value must be non-empty`,
 		}),
 		Entry("networking.inbound: `protocol` tag with unsupported value", testCase{
 			dataplane: `
@@ -606,7 +743,8 @@ var _ = Describe("Dataplane", func() {
                         kuma.io/protocol: not-yet-supported-protocol
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: 'networking.inbound[0].tags["kuma.io/protocol"]'
@@ -624,11 +762,12 @@ var _ = Describe("Dataplane", func() {
                       version: "v1"
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
-                - field: 'networking.gateway.tags["kuma.io/service"]'
-                  message: tag has to exist`,
+                - field: networking.gateway.tags
+                  message: mandatory tag "kuma.io/service" is missing`,
 		}),
 		Entry("networking.gateway: empty tag value", testCase{
 			dataplane: `
@@ -643,11 +782,12 @@ var _ = Describe("Dataplane", func() {
                       version:
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: 'networking.gateway.tags["version"]'
-                  message: tag value cannot be empty`,
+                  message: tag value must be non-empty`,
 		}),
 		Entry("networking.gateway: protocol http", testCase{
 			dataplane: `
@@ -662,11 +802,12 @@ var _ = Describe("Dataplane", func() {
                       kuma.io/protocol: http
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: 'networking.gateway.tags["kuma.io/protocol"]'
-                  message: other values than TCP are not allowed`,
+                  message: other values than tcp are not allowed, provided value "http"`,
 		}),
 		Entry("networking.outbound: empty service tag", testCase{
 			dataplane: `
@@ -684,8 +825,8 @@ var _ = Describe("Dataplane", func() {
                     - port: 3333`,
 			expected: `
                 violations:
-                - field: networking.outbound[0].kuma.io/service
-                  message: cannot be empty`,
+                - field: networking.outbound[0].tags
+                  message: mandatory tag "kuma.io/service" is missing`,
 		}),
 		Entry("networking.outbound: empty service tag", testCase{
 			dataplane: `
@@ -705,8 +846,8 @@ var _ = Describe("Dataplane", func() {
                         version: v1`,
 			expected: `
                 violations:
-                - field: networking.outbound[0].tags["kuma.io/service"]
-                  message: tag has to exist`,
+                - field: networking.outbound[0].tags
+                  message: mandatory tag "kuma.io/service" is missing`,
 		}),
 		Entry("networking.outbound: port out of the range", testCase{
 			dataplane: `
@@ -721,9 +862,11 @@ var _ = Describe("Dataplane", func() {
                         kuma.io/service: backend
                         version: "v1"
                   outbound:
-                    - service: redis
+                    - tags:
+                        kuma.io/service: redis
                     - port: 65536
-                      service: elastic`,
+                      tags:
+                        kuma.io/service: elastic`,
 			expected: `
                 violations:
                 - field: networking.outbound[0].port
@@ -746,7 +889,8 @@ var _ = Describe("Dataplane", func() {
                   outbound:
                     - port: 3333
                       address: invalid
-                      service: elastic`,
+                      tags:
+                        kuma.io/service: elastic`,
 			expected: `
                 violations:
                 - field: networking.outbound[0].address
@@ -767,7 +911,8 @@ var _ = Describe("Dataplane", func() {
                   outbound:
                     - port: 3333
                       address: invalid
-                      service: elastic`,
+                      tags:
+                        kuma.io/service: elastic`,
 			expected: `
                 violations:
                 - field: networking.outbound[0].address
@@ -788,7 +933,8 @@ var _ = Describe("Dataplane", func() {
                         inv@lidT/gN%me: value
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking.inbound[0].tags["inv@lidT/gN%me"]
@@ -809,145 +955,12 @@ var _ = Describe("Dataplane", func() {
                         invalidTagValue: inv@lid+t@g
                   outbound:
                     - port: 3333
-                      service: redis`,
+                      tags:
+                        kuma.io/service: redis`,
 			expected: `
                 violations:
                 - field: networking.inbound[0].tags["invalidTagValue"]
                   message: tag value must consist of alphanumeric characters, dots, dashes and underscores`,
-		}),
-		Entry("networking.ingress: outbound is not empty", testCase{
-			dataplane: `
-                type: Dataplane
-                name: dp-1
-                mesh: default
-                networking:
-                  address: 192.168.0.1
-                  ingress:
-                    availableServices:
-                      - tags:
-                          kuma.io/service: backend
-                          version: "1"
-                          region: us
-                      - tags:
-                          kuma.io/service: web
-                          version: v2
-                          region: eu
-                  inbound:
-                    - port: 10001
-                  outbound:
-                    - port: 3333
-                      service: redis`,
-			expected: `
-                violations:
-                - field: networking
-                  message: dataplane cannot have outbounds in the ingress mode`,
-		}),
-		Entry("networking.ingress: gateway defined", testCase{
-			dataplane: `
-                type: Dataplane
-                name: dp-1
-                mesh: default
-                networking:
-                  address: 192.168.0.1
-                  ingress:
-                    availableServices:
-                      - tags:
-                          kuma.io/service: backend
-                          version: "1"
-                          region: us
-                      - tags:
-                          kuma.io/service: web
-                          version: v2
-                          region: eu
-                  gateway: {}
-                  inbound:
-                    - port: 10001`,
-			expected: `
-                violations:
-                - field: networking
-                  message: gateway cannot be defined in the ingress mode`,
-		}),
-		Entry("networking.ingress: no inbound defined", testCase{
-			dataplane: `
-                type: Dataplane
-                name: dp-1
-                mesh: default
-                networking:
-                  address: 192.168.0.1
-                  ingress:
-                    availableServices:
-                      - tags:
-                          kuma.io/service: backend
-                          version: "1"
-                          region: us
-                      - tags:
-                          kuma.io/service: web
-                          version: v2
-                          region: eu`,
-			expected: `
-                violations:
-                - field: networking
-                  message: dataplane must have one inbound interface`,
-		}),
-		Entry("networking.ingress: inbound with redundant fields", testCase{
-			dataplane: `
-                type: Dataplane
-                name: dp-1
-                mesh: default
-                networking:
-                  address: 192.168.0.1
-                  ingress:
-                    availableServices:
-                      - tags:
-                          kuma.io/service: backend
-                          version: "1"
-                          region: us
-                      - tags:
-                          kuma.io/service: web
-                          version: v2
-                          region: eu
-                  inbound:
-                    - port: 10001
-                      servicePort: 5050
-                      address: 1.1.1.1
-                      tags:
-                        name: ingress-dp`,
-			expected: `
-                violations:
-                - field: networking.inbound[0].servicePort
-                  message: cannot be defined in the ingress mode
-                - field: networking.inbound[0].address
-                  message: cannot be defined in the ingress mode`,
-		}),
-		Entry("networking.ingress: invalid public address and port", testCase{
-			dataplane: `
-                type: Dataplane
-                name: dp-1
-                mesh: default
-                networking:
-                  address: 192.168.0.1
-                  ingress:
-                    publicAddress: "!@#$"
-                    publicPort: 100000
-                    availableServices:
-                      - tags:
-                          kuma.io/service: backend
-                          version: "1"
-                          region: us
-                      - tags:
-                          kuma.io/service: web
-                          version: v2
-                          region: eu
-                  inbound:
-                    - port: 10001
-                      tags:
-                        name: ingress-dp`,
-			expected: `
-                violations:
-                - field: networking.ingress.publicAddress.address
-                  message: address has to be valid IP address or domain name
-                - field: networking.ingress.publicPort
-                  message: port must be in the range [1, 65535]`,
 		}),
 		Entry("inbound service address", testCase{
 			dataplane: `
@@ -1031,38 +1044,6 @@ var _ = Describe("Dataplane", func() {
                       tags:
                         kuma.io/service: backend`,
 		}),
-		Entry("inbound service address and ingress", testCase{
-			dataplane: `
-                type: Dataplane
-                name: dp-1
-                mesh: default
-                networking:
-                  address: 192.168.0.1
-                  ingress:
-                    availableServices:
-                      - tags:
-                          kuma.io/service: backend
-                          version: "1"
-                          region: us
-                  inbound:
-                    - port: 10001
-                      serviceAddress: 192.168.0.2
-                      servicePort: 5050
-                      address: 1.1.1.1
-                      tags:
-                        name: ingress-dp
-                        kuma.io/protocol: http`,
-			expected: `
-                violations:
-                - field: networking.inbound[0].servicePort
-                  message: cannot be defined in the ingress mode
-                - field: networking.inbound[0].serviceAddress
-                  message: cannot be defined in the ingress mode
-                - field: networking.inbound[0].address
-                  message: cannot be defined in the ingress mode
-                - field: tags["kuma.io/protocol"]
-                  message: other values than TCP are not allowed`,
-		}),
 		Entry("dataplane with virtual probe", testCase{
 			dataplane: `
             type: Dataplane
@@ -1135,6 +1116,241 @@ var _ = Describe("Dataplane", func() {
                 - field: networking.inbound[0].serviceProbe.unhealthyThreshold
                   message: must have a positive value`,
 		}),
+		Entry("dataplane with admin port equal to inbound", testCase{
+			dataplane: `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              admin:
+                port: 8080
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 127.0.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  address: 127.0.0.1
+                  tags:
+                    kuma.io/service: redis`,
+			expected: `
+                violations:
+                - field: networking.admin.port
+                  message: must differ from inbound`,
+		}),
+		Entry("dataplane with admin port equal to outbound", testCase{
+			dataplane: `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              admin:
+                port: 3333
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 127.0.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  address: 127.0.0.1
+                  tags:
+                    kuma.io/service: redis`,
+			expected: `
+                violations:
+                - field: networking.admin.port
+                  message: must differ from outbound`,
+		}),
+		Entry("dataplane with duplicate metrics entry", testCase{
+			dataplane: `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: redis
+            metrics:
+              type: prometheus
+              conf:
+                aggregate:
+                - name: app
+                  port: 123
+                  path: "/stats"
+                - name: app
+                  port: 999
+                  path: "/metrics"
+                - name: duplicate-app
+                  port: 12366
+                  path: "/duplicate"
+                - name: duplicate-app
+                  port: 12345
+                  path: "/other"  `,
+			expected: `
+                violations:
+                - field: metrics.conf.aggregate[1].name
+                  message: 'duplicate entry: app, values have to be unique'
+                - field: metrics.conf.aggregate[3].name
+                  message: 'duplicate entry: duplicate-app, values have to be unique'`,
+		}),
+		Entry("dataplane with not supported metrics type", testCase{
+			dataplane: `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: redis
+            metrics:
+              type: custom-backend`,
+			expected: `
+                violations:
+                - field: metrics.type
+                  message: 'unknown backend type. Available backends: "prometheus"'`,
+		}),
+		Entry("dataplane with empty backend ref", testCase{
+			dataplane: `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  backendRef: {}`,
+			expected: `
+                violations:
+                - field: networking.outbound[0].backendRef.kind
+                  message: 'invalid value. Available values are: MeshExternalService,MeshMultiZoneService,MeshService'
+                - field: networking.outbound[0].backendRef
+                  message:  either 'name' or 'labels' should be specified
+                - field: networking.outbound[0].backendRef.port
+                  message: port must be in the range [1, 65535]`,
+		}),
+		Entry("backend ref clashes with tags or service and missing port", testCase{
+			dataplane: `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              outbound:
+                - port: 3333
+                  tags:
+                    kuma.io/service: xyz
+                  backendRef:
+                    kind: MeshService
+                    name: xyz
+                    port: 8080
+                - port: 3334
+                  tags:
+                    service: xyz
+                  backendRef:
+                    kind: MeshService
+                    name: xyz`,
+			expected: `
+                violations:
+                - field: networking.outbound[0].backendRef
+                  message: both backendRef and tags/service cannot be defined
+                - field: networking.outbound[1].backendRef.port
+                  message: port must be in the range [1, 65535]
+                - field: networking.outbound[1].backendRef
+                  message: both backendRef and tags/service cannot be defined`,
+		}),
+		Entry("transparent proxy with reachable backend refs", testCase{
+			dataplane: `
+            type: Dataplane
+            name: dp-1
+            mesh: default
+            networking:
+              address: 192.168.0.1
+              inbound:
+                - port: 8080
+                  servicePort: 7777
+                  address: 192.168.0.1
+                  tags:
+                    kuma.io/service: backend
+                    version: "1"
+              transparentProxying:
+                reachableBackends:
+                  refs:
+                  - kind: Something
+                    name: first
+                    labels:
+                      kuma.io/test: test
+                  - kind: MeshService
+                    name: second
+                    namespace: not-valid
+                    labels:
+                      kuma.io/test: test
+                  - kind: MeshService
+                    name: third
+                    labels:
+                      kuma.io/test: test
+                  - kind: MeshService
+                    name: first$-.kuma
+                  - kind: MeshService
+                  - kind: MeshService
+                    namespace: xyz
+`,
+			expected: `
+                violations:
+                - field: networking.transparentProxing.reachableBackends.refs[0].kind
+                  message: 'invalid value. Available values are: MeshExternalService,MeshMultiZoneService,MeshService'
+                - field: networking.transparentProxing.reachableBackends.refs[0].labels
+                  message: labels cannot be defined when name is specified
+                - field: networking.transparentProxing.reachableBackends.refs[1].labels
+                  message: labels cannot be defined when name is specified
+                - field: networking.transparentProxing.reachableBackends.refs[2].labels
+                  message: labels cannot be defined when name is specified
+                - field: networking.transparentProxing.reachableBackends.refs[3].name
+                  message: invalid characters. A lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character
+                - field: networking.transparentProxing.reachableBackends.refs[4].name
+                  message: name or labels are required
+                - field: networking.transparentProxing.reachableBackends.refs[5].name
+                  message: name is required, when namespace is defined`,
+		}),
 	)
-
 })

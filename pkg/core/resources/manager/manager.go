@@ -2,7 +2,9 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/sethvargo/go-retry"
@@ -47,10 +49,22 @@ func (r *resourcesManager) List(ctx context.Context, list model.ResourceList, fs
 }
 
 func (r *resourcesManager) Create(ctx context.Context, resource model.Resource, fs ...store.CreateOptionsFunc) error {
-	if err := resource.Validate(); err != nil {
+	opts := store.NewCreateOptions(fs...)
+
+	// Create temporary meta so validation can see the meta that the store will set
+	existingMeta := resource.GetMeta()
+	if existingMeta == nil {
+		resource.SetMeta(metaFromCreateOpts(resource.Descriptor(), *opts))
+	}
+	if defaulter, ok := resource.(model.Defaulter); ok {
+		if err := defaulter.Default(); err != nil {
+			return err
+		}
+	}
+	if err := model.Validate(resource); err != nil {
 		return err
 	}
-	opts := store.NewCreateOptions(fs...)
+	resource.SetMeta(existingMeta)
 
 	var owner model.Resource
 	if resource.Descriptor().Scope == model.ScopeMesh {
@@ -66,7 +80,9 @@ func (r *resourcesManager) Create(ctx context.Context, resource model.Resource, 
 		}
 	}
 
-	return r.Store.Create(ctx, resource, append(fs, store.CreatedAt(core.Now()), store.CreateWithOwner(owner))...)
+	allOpts := []store.CreateOptionsFunc{store.CreatedAt(core.Now()), store.CreateWithOwner(owner)}
+	allOpts = append(allOpts, fs...)
+	return r.Store.Create(ctx, resource, allOpts...)
 }
 
 func (r *resourcesManager) Delete(ctx context.Context, resource model.Resource, fs ...store.DeleteOptionsFunc) error {
@@ -91,70 +107,98 @@ func DeleteAllResources(manager ResourceManager, ctx context.Context, list model
 }
 
 func (r *resourcesManager) Update(ctx context.Context, resource model.Resource, fs ...store.UpdateOptionsFunc) error {
-	if err := resource.Validate(); err != nil {
+	if defaulter, ok := resource.(model.Defaulter); ok {
+		if err := defaulter.Default(); err != nil {
+			return err
+		}
+	}
+	if err := model.Validate(resource); err != nil {
 		return err
 	}
 	return r.Store.Update(ctx, resource, append(fs, store.ModifiedAt(time.Now()))...)
 }
 
 type ConflictRetry struct {
-	BaseBackoff time.Duration
-	MaxTimes    uint
+	BaseBackoff   time.Duration
+	MaxTimes      uint
+	JitterPercent uint
 }
 
 type UpsertOpts struct {
 	ConflictRetry ConflictRetry
+	Transactions  store.Transactions
 }
 
 type UpsertFunc func(opts *UpsertOpts)
 
-func WithConflictRetry(baseBackoff time.Duration, maxTimes uint) UpsertFunc {
+func WithConflictRetry(baseBackoff time.Duration, maxTimes uint, jitterPercent uint) UpsertFunc {
 	return func(opts *UpsertOpts) {
 		opts.ConflictRetry.BaseBackoff = baseBackoff
 		opts.ConflictRetry.MaxTimes = maxTimes
+		opts.ConflictRetry.JitterPercent = jitterPercent
+	}
+}
+
+func WithTransactions(transactions store.Transactions) UpsertFunc {
+	return func(opts *UpsertOpts) {
+		opts.Transactions = transactions
 	}
 }
 
 func NewUpsertOpts(fs ...UpsertFunc) UpsertOpts {
-	opts := UpsertOpts{}
+	opts := UpsertOpts{
+		Transactions: store.NoTransactions{},
+	}
 	for _, f := range fs {
 		f(&opts)
 	}
 	return opts
 }
 
-func Upsert(manager ResourceManager, key model.ResourceKey, resource model.Resource, fn func(resource model.Resource) error, fs ...UpsertFunc) error {
-	upsert := func() error {
-		create := false
-		err := manager.Get(context.Background(), resource, store.GetBy(key))
-		if err != nil {
-			if store.IsResourceNotFound(err) {
-				create = true
-			} else {
+var ErrSkipUpsert = errors.New("don't do upsert")
+
+func Upsert(ctx context.Context, manager ResourceManager, key model.ResourceKey, resource model.Resource, fn func(resource model.Resource) error, fs ...UpsertFunc) error {
+	opts := NewUpsertOpts(fs...)
+	upsert := func(ctx context.Context) error {
+		return store.InTx(ctx, opts.Transactions, func(ctx context.Context) error {
+			create := false
+			err := manager.Get(ctx, resource, store.GetBy(key), store.GetConsistent())
+			if err != nil {
+				if store.IsResourceNotFound(err) {
+					create = true
+				} else {
+					return err
+				}
+			}
+			if err := fn(resource); err != nil {
+				if err == ErrSkipUpsert { // Way to skip inserts when there are no change
+					return nil
+				}
 				return err
 			}
-		}
-		if err := fn(resource); err != nil {
-			return err
-		}
-		if create {
-			return manager.Create(context.Background(), resource, store.CreateBy(key))
-		} else {
-			return manager.Update(context.Background(), resource)
-		}
+			if create {
+				return manager.Create(ctx, resource, store.CreateBy(key))
+			} else {
+				return manager.Update(ctx, resource)
+			}
+		})
 	}
 
-	opts := NewUpsertOpts(fs...)
 	if opts.ConflictRetry.BaseBackoff <= 0 || opts.ConflictRetry.MaxTimes == 0 {
-		return upsert()
+		return upsert(ctx)
 	}
-	backoff, _ := retry.NewExponential(opts.ConflictRetry.BaseBackoff) // we can ignore error because RetryBaseBackoff > 0
+	backoff := retry.NewExponential(opts.ConflictRetry.BaseBackoff)
 	backoff = retry.WithMaxRetries(uint64(opts.ConflictRetry.MaxTimes), backoff)
-	return retry.Do(context.Background(), backoff, func(ctx context.Context) error {
+	backoff = retry.WithJitterPercent(uint64(opts.ConflictRetry.JitterPercent), backoff)
+	return retry.Do(ctx, backoff, func(ctx context.Context) error {
 		resource.SetMeta(nil)
-		resource.GetSpec().Reset()
-		err := upsert()
-		if store.IsResourceConflict(err) {
+		specType := reflect.TypeOf(resource.GetSpec()).Elem()
+		zeroSpec := reflect.New(specType).Interface().(model.ResourceSpec)
+		if err := resource.SetSpec(zeroSpec); err != nil {
+			return err
+		}
+		err := upsert(ctx)
+		if errors.Is(err, &store.ResourceConflictError{}) {
 			return retry.RetryableError(err)
 		}
 		return err

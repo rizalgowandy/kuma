@@ -2,8 +2,7 @@ package v3_test
 
 import (
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,7 +13,6 @@ import (
 )
 
 var _ = Describe("Network Filter modifications", func() {
-
 	type testCase struct {
 		listeners     []string
 		modifications []string
@@ -64,7 +62,8 @@ var _ = Describe("Network Filter modifications", func() {
                     address: 192.168.0.1
                     portValue: 8080`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: addFirst
                    value: |
@@ -97,7 +96,8 @@ var _ = Describe("Network Filter modifications", func() {
                       response:
                         inlineString: "xyz"`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: addFirst
                    value: |
@@ -149,7 +149,8 @@ var _ = Describe("Network Filter modifications", func() {
                       '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
                       cluster: backend`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: remove
 `,
@@ -193,7 +194,8 @@ var _ = Describe("Network Filter modifications", func() {
                       '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
                       cluster: backend`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: remove
                    match:
@@ -239,7 +241,8 @@ var _ = Describe("Network Filter modifications", func() {
                       '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
                       cluster: backend`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: remove
                    match:
@@ -289,7 +292,8 @@ var _ = Describe("Network Filter modifications", func() {
                       '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
                       cluster: backend`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: remove
                    match:
@@ -328,7 +332,8 @@ var _ = Describe("Network Filter modifications", func() {
                       response:
                         inlineString: "xyz"`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: addAfter
                    match:
@@ -375,7 +380,8 @@ var _ = Describe("Network Filter modifications", func() {
                        cluster: backend
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: addAfter
                    match:
@@ -414,7 +420,8 @@ var _ = Describe("Network Filter modifications", func() {
                 filterChains:
                 - {}`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: addAfter
                    match:
@@ -447,7 +454,8 @@ var _ = Describe("Network Filter modifications", func() {
                       response:
                         inlineString: "xyz"`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: addBefore
                    match:
@@ -494,7 +502,8 @@ var _ = Describe("Network Filter modifications", func() {
                        cluster: backend
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 networkFilter:
                    operation: addBefore
                    match:
@@ -544,7 +553,8 @@ var _ = Describe("Network Filter modifications", func() {
                       - name: router
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                networkFilter:
                  operation: patch
                  match:
@@ -588,7 +598,8 @@ var _ = Describe("Network Filter modifications", func() {
                   - name: envoy.filters.network.http_connection_manager
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                networkFilter:
                  operation: patch
                  match:
@@ -610,6 +621,91 @@ var _ = Describe("Network Filter modifications", func() {
                     typedConfig:
                       '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                       statPrefix: backend
+                name: inbound:192.168.0.1:8080`,
+		}),
+		Entry("should patch resource matching listener tags", testCase{
+			listeners: []string{
+				`
+                name: inbound:192.168.0.1:8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
+`,
+			},
+			modifications: []string{
+				`
+               networkFilter:
+                 operation: patch
+                 match:
+                   name: envoy.filters.network.http_connection_manager
+                   listenerTags:
+                       kuma.io/service: backend
+                 value: |
+                   name: envoy.filters.network.http_connection_manager
+                   typedConfig:
+                     '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                     statPrefix: backend`,
+			},
+			expected: `
+            resources:
+            - name: inbound:192.168.0.1:8080
+              resource:
+                '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                      statPrefix: backend
+                name: inbound:192.168.0.1:8080`,
+		}),
+		Entry("should not patch resource with non matching listener tags", testCase{
+			listeners: []string{
+				`
+                name: inbound:192.168.0.1:8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
+`,
+			},
+			modifications: []string{
+				`
+               networkFilter:
+                 operation: patch
+                 match:
+                   name: envoy.filters.network.http_connection_manager
+                   listenerTags:
+                       kuma.io/service: web
+                 value: |
+                   name: envoy.filters.network.http_connection_manager
+                   typedConfig:
+                     '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                     statPrefix: backend`,
+			},
+			expected: `
+            resources:
+            - name: inbound:192.168.0.1:8080
+              resource:
+                '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
                 name: inbound:192.168.0.1:8080`,
 		}),
 	)

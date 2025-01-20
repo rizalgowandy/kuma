@@ -1,7 +1,9 @@
 package cmd
 
 import (
-	"io/ioutil"
+	"fmt"
+	"io"
+	"os"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -24,11 +26,11 @@ func readResource(cmd *cobra.Command, r *kuma_dp.DataplaneRuntime) (model.Resour
 			b = []byte(r.Resource)
 		}
 	case "-":
-		if b, err = ioutil.ReadAll(cmd.InOrStdin()); err != nil {
+		if b, err = io.ReadAll(cmd.InOrStdin()); err != nil {
 			return nil, err
 		}
 	default:
-		if b, err = ioutil.ReadFile(r.ResourcePath); err != nil {
+		if b, err = os.ReadFile(r.ResourcePath); err != nil {
 			return nil, errors.Wrap(err, "error while reading provided file")
 		}
 	}
@@ -40,13 +42,17 @@ func readResource(cmd *cobra.Command, r *kuma_dp.DataplaneRuntime) (model.Resour
 	b = template.Render(string(b), r.ResourceVars)
 	runLog.Info("rendered resource", "resource", string(b))
 
-	res, err := rest.UnmarshallToCore(b)
+	res, err := rest.YAML.UnmarshalCore(b)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := core_mesh.ValidateMeta(res.GetMeta().GetName(), res.GetMeta().GetMesh(), res.Descriptor().Scope); err.HasViolations() {
+	if err, msg := core_mesh.ValidateMetaBackwardsCompatible(res.GetMeta(), res.Descriptor().Scope); err.HasViolations() {
 		return nil, &err
+	} else if msg != "" {
+		if _, printErr := fmt.Fprintln(cmd.ErrOrStderr(), msg); printErr != nil {
+			return nil, printErr
+		}
 	}
 
 	return res, nil

@@ -3,7 +3,9 @@ package k8s
 import (
 	"context"
 	"strings"
+	"time"
 
+	"github.com/goburrow/cache"
 	"github.com/pkg/errors"
 	kube_auth "k8s.io/api/authentication/v1"
 	kube_core "k8s.io/api/core/v1"
@@ -12,45 +14,51 @@ import (
 
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
+	util_cache "github.com/kumahq/kuma/pkg/util/cache"
 	util_k8s "github.com/kumahq/kuma/pkg/util/k8s"
 	"github.com/kumahq/kuma/pkg/xds/auth"
+	xds_metrics "github.com/kumahq/kuma/pkg/xds/metrics"
 )
 
-func New(client kube_client.Client) auth.Authenticator {
+func New(client kube_client.Client, metrics *xds_metrics.Metrics) auth.Authenticator {
+	authCache := cache.New(
+		cache.WithExpireAfterAccess(1*time.Hour),
+		cache.WithMaximumSize(100000),
+		cache.WithStatsCounter(&util_cache.PrometheusStatsCounter{Metric: metrics.KubeAuthCache}),
+	)
+
 	return &kubeAuthenticator{
-		client: client,
+		client:        client,
+		authenticated: authCache,
 	}
 }
 
 type kubeAuthenticator struct {
 	client kube_client.Client
+
+	authenticated cache.Cache
 }
 
 var _ auth.Authenticator = &kubeAuthenticator{}
 
 func (k *kubeAuthenticator) Authenticate(ctx context.Context, resource model.Resource, credential auth.Credential) error {
-	switch resource := resource.(type) {
-	case *core_mesh.DataplaneResource:
-		return k.authDataplane(ctx, resource, credential)
-	case *core_mesh.ZoneIngressResource:
-		return k.authZoneIngress(ctx, resource, credential)
-	default:
-		return errors.Errorf("no matching authenticator for %s resource", resource.Descriptor().Name)
+	if _, authenticated := k.authenticated.GetIfPresent(credential); authenticated {
+		return nil
 	}
-}
 
-func (k *kubeAuthenticator) authDataplane(ctx context.Context, dataplane *core_mesh.DataplaneResource, credential auth.Credential) error {
-	proxyName, proxyNamespace, err := util_k8s.CoreNameToK8sName(dataplane.Meta.GetName())
+	var err error
+	switch resource := resource.(type) {
+	case *core_mesh.DataplaneResource, *core_mesh.ZoneIngressResource, *core_mesh.ZoneEgressResource:
+		err = k.authResource(ctx, resource, credential)
+	default:
+		err = errors.Errorf("no matching authenticator for %s resource", resource.Descriptor().Name)
+	}
+
 	if err != nil {
 		return err
 	}
-	serviceAccountName, err := k.podServiceAccountName(ctx, proxyName, proxyNamespace)
-	if err != nil {
-		return err
-	}
-	if err := k.verifyToken(ctx, credential, proxyNamespace, serviceAccountName); err != nil {
-		return errors.Wrap(err, "authentication failed")
-	}
+
+	k.authenticated.Put(credential, struct{}{})
 	return nil
 }
 
@@ -84,18 +92,21 @@ func (k *kubeAuthenticator) verifyToken(ctx context.Context, credential auth.Cre
 	return nil
 }
 
-func (k *kubeAuthenticator) authZoneIngress(ctx context.Context, zoneIngress *core_mesh.ZoneIngressResource, credential auth.Credential) error {
-	proxyName, proxyNamespace, err := util_k8s.CoreNameToK8sName(zoneIngress.Meta.GetName())
+func (k *kubeAuthenticator) authResource(ctx context.Context, resource model.Resource, credential auth.Credential) error {
+	name, namespace, err := util_k8s.CoreNameToK8sName(resource.GetMeta().GetName())
 	if err != nil {
 		return err
 	}
-	serviceAccountName, err := k.podServiceAccountName(ctx, proxyName, proxyNamespace)
+
+	serviceAccountName, err := k.podServiceAccountName(ctx, name, namespace)
 	if err != nil {
 		return err
 	}
-	if err := k.verifyToken(ctx, credential, proxyNamespace, serviceAccountName); err != nil {
+
+	if err := k.verifyToken(ctx, credential, namespace, serviceAccountName); err != nil {
 		return errors.Wrap(err, "authentication failed")
 	}
+
 	return nil
 }
 

@@ -1,24 +1,23 @@
-package envoy
+package envoy_test
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kumahq/kuma/app/kuma-dp/pkg/dataplane/envoy"
 	kuma_dp "github.com/kumahq/kuma/pkg/config/app/kuma-dp"
 )
 
 var _ = Describe("Bootstrap File", func() {
 	Describe("GenerateBootstrapFile(..)", func() {
-
 		var configDir string
 
 		BeforeEach(func() {
 			var err error
-			configDir, err = ioutil.TempDir("", "")
+			configDir, err = os.MkdirTemp("", "")
 			Expect(err).ToNot(HaveOccurred())
 		})
 		AfterEach(func() {
@@ -41,14 +40,14 @@ var _ = Describe("Bootstrap File", func() {
 			}
 
 			// when
-			filename, err := GenerateBootstrapFile(runtime, []byte(config))
+			filename, err := envoy.GenerateBootstrapFile(runtime, []byte(config))
 			// then
 			Expect(err).ToNot(HaveOccurred())
 			// and
 			Expect(filename).To(Equal(filepath.Join(configDir, "bootstrap.yaml")))
 
 			// when
-			actual, err := ioutil.ReadFile(filename)
+			actual, err := os.ReadFile(filename)
 			// then
 			Expect(err).ToNot(HaveOccurred())
 			// and

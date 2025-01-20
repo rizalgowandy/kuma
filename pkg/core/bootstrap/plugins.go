@@ -1,7 +1,6 @@
 package bootstrap
 
 import (
-
 	// force plugins to get initialized and registered
 	_ "github.com/kumahq/kuma/pkg/plugins/authn/api-server/certs"
 	_ "github.com/kumahq/kuma/pkg/plugins/authn/api-server/tokens"
@@ -16,6 +15,7 @@ import (
 	_ "github.com/kumahq/kuma/pkg/plugins/resources/postgres"
 	_ "github.com/kumahq/kuma/pkg/plugins/runtime/gateway"
 	_ "github.com/kumahq/kuma/pkg/plugins/runtime/k8s"
+	_ "github.com/kumahq/kuma/pkg/plugins/runtime/opentelemetry"
 	_ "github.com/kumahq/kuma/pkg/plugins/runtime/universal"
 	_ "github.com/kumahq/kuma/pkg/plugins/secrets/k8s"
 	_ "github.com/kumahq/kuma/pkg/plugins/secrets/universal"

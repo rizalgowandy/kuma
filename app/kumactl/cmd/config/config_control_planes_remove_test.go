@@ -2,27 +2,24 @@ package config_test
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
-	"github.com/kumahq/kuma/pkg/util/test"
+	"github.com/kumahq/kuma/app/kumactl/pkg/test"
 )
 
 var _ = Describe("kumactl config control-planes remove", func() {
-
 	var configFile *os.File
 
 	BeforeEach(func() {
 		var err error
-		configFile, err = ioutil.TempFile("", "")
+		configFile, err = os.CreateTemp("", "")
 		Expect(err).ToNot(HaveOccurred())
 	})
 	AfterEach(func() {
@@ -35,7 +32,7 @@ var _ = Describe("kumactl config control-planes remove", func() {
 	var outbuf *bytes.Buffer
 
 	BeforeEach(func() {
-		rootCmd = test.DefaultTestingRootCmd()
+		_, _, rootCmd = test.DefaultTestingRootCmd()
 
 		// Different versions of cobra might emit errors to stdout
 		// or stderr. It's too fragile to depend on precidely what
@@ -48,11 +45,12 @@ var _ = Describe("kumactl config control-planes remove", func() {
 	})
 
 	Describe("error cases", func() {
-
 		It("should require name", func() {
 			// given
-			rootCmd.SetArgs([]string{"--config-file", configFile.Name(),
-				"config", "control-planes", "remove"})
+			rootCmd.SetArgs([]string{
+				"--config-file", configFile.Name(),
+				"config", "control-planes", "remove",
+			})
 			// when
 			err := rootCmd.Execute()
 			// then
@@ -64,9 +62,11 @@ var _ = Describe("kumactl config control-planes remove", func() {
 
 		It("should fail to remove unknown Control Plane", func() {
 			// given
-			rootCmd.SetArgs([]string{"--config-file", filepath.Join("testdata", "config-control-planes-remove.01.initial.yaml"),
+			rootCmd.SetArgs([]string{
+				"--config-file", filepath.Join("testdata", "config-control-planes-remove.01.initial.yaml"),
 				"config", "control-planes", "remove",
-				"--name", "example"})
+				"--name", "example",
+			})
 			// when
 			err := rootCmd.Execute()
 			// then
@@ -78,7 +78,6 @@ var _ = Describe("kumactl config control-planes remove", func() {
 	})
 
 	Describe("happy path", func() {
-
 		type testCase struct {
 			configFile  string
 			goldenFile  string
@@ -88,27 +87,29 @@ var _ = Describe("kumactl config control-planes remove", func() {
 		DescribeTable("should remove an existing Control Plane",
 			func(given testCase) {
 				// setup
-				initial, err := ioutil.ReadFile(filepath.Join("testdata", given.configFile))
+				initial, err := os.ReadFile(filepath.Join("testdata", given.configFile))
 				Expect(err).ToNot(HaveOccurred())
-				err = ioutil.WriteFile(configFile.Name(), initial, 0600)
+				err = os.WriteFile(configFile.Name(), initial, 0o600)
 				Expect(err).ToNot(HaveOccurred())
 
 				// given
-				rootCmd.SetArgs([]string{"--config-file", configFile.Name(),
+				rootCmd.SetArgs([]string{
+					"--config-file", configFile.Name(),
 					"config", "control-planes", "remove",
-					"--name", "example"})
+					"--name", "example",
+				})
 				// when
 				err = rootCmd.Execute()
 				// then
 				Expect(err).ToNot(HaveOccurred())
 
 				// when
-				expected, err := ioutil.ReadFile(filepath.Join("testdata", given.goldenFile))
+				expected, err := os.ReadFile(filepath.Join("testdata", given.goldenFile))
 				// then
 				Expect(err).ToNot(HaveOccurred())
 
 				// when
-				actual, err := ioutil.ReadFile(configFile.Name())
+				actual, err := os.ReadFile(configFile.Name())
 				// then
 				Expect(err).ToNot(HaveOccurred())
 

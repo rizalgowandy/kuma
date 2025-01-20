@@ -3,7 +3,7 @@ package api_server
 import (
 	"context"
 
-	"github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful/v3"
 
 	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
@@ -17,12 +17,11 @@ type Zone struct {
 
 type Zones []Zone
 
-func zonesWs(resManager manager.ResourceManager) *restful.WebService {
-	ws := new(restful.WebService).Path("/status/zones")
-	return ws.Route(ws.GET("").To(func(request *restful.Request, response *restful.Response) {
+func addZoneEndpoints(ws *restful.WebService, resManager manager.ResourceManager) {
+	ws.Route(ws.GET("/status/zones").To(func(request *restful.Request, response *restful.Response) {
 		zoneOverviews, err := fetchOverviews(resManager, request.Request.Context())
 		if err != nil {
-			rest_errors.HandleError(response, err, "Could not retrieve a zone overview")
+			rest_errors.HandleError(request.Request.Context(), response, err, "Could not retrieve a zone overview")
 			return
 		}
 

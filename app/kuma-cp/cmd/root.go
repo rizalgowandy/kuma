@@ -11,14 +11,11 @@ import (
 	"github.com/kumahq/kuma/pkg/cmd/version"
 	"github.com/kumahq/kuma/pkg/core"
 	kuma_log "github.com/kumahq/kuma/pkg/log"
-
 	// import Envoy protobuf definitions so (un)marshaling Envoy protobuf works
 	_ "github.com/kumahq/kuma/pkg/xds/envoy"
 )
 
-var (
-	controlPlaneLog = core.Log.WithName("kuma-cp")
-)
+var controlPlaneLog = core.Log.WithName("kuma-cp")
 
 // newRootCmd represents the base command when called without any subcommands.
 func newRootCmd() *cobra.Command {

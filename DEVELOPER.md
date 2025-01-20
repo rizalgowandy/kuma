@@ -4,28 +4,6 @@ Hello, and welcome! If you're thinking about contributing to Kuma's code base, y
 right place. This document serves as guide/reference for technical
 contributors. 
 
-Consult the Table of Contents below, and jump to the desired section.
-
-## Table of Contents
-
-- [Developer documentation](#developer-documentation)
-  - [Table of Contents](#table-of-contents)
-  - [Dependencies](#dependencies)
-    - [Command line tool](#command-line-tool)
-    - [Helper commands](#helper-commands)
-    - [Installing dev tools](#installing-dev-tools)
-  - [Testing](#testing)
-  - [Building](#building)
-  - [Running Control Plane on local machine](#running-control-plane-on-local-machine)
-    - [Universal](#universal)
-      - [Universal without any external dependency (in-memory storage)](#universal-without-any-external-dependency-in-memory-storage)
-      - [Universal with Postgres as a storage](#universal-with-postgres-as-a-storage)
-      - [Running a Dataplane (Envoy)](#running-a-dataplane-envoy)
-  - [Kubernetes](#kubernetes)
-    - [Local Control Plane working with Kubernetes](#local-control-plane-working-with-kubernetes)
-      - [Running Dataplane (Envoy)](#running-dataplane-envoy)
-    - [Control Plane on Kubernetes](#control-plane-on-kubernetes)
-
 ##  Dependencies
 
 The following dependencies are all necessary. Please follow the installation instructions 
@@ -34,42 +12,22 @@ for any tools/libraries that you may be missing.
 ### Command line tool
 
 - [`curl`](https://curl.haxx.se/)  
-- [`git`](https://git-scm.com/) 
+- [`git`](https://git-scm.com/)
+- [`unzip`](http://infozip.sourceforge.net/UnZip.html)
 - [`make`](https://www.gnu.org/software/make/)
 - [`go`](https://golang.org/)
+- [`jq`](https://jqlang.github.io/jq/download/)
+- [`yq`](https://mikefarah.gitbook.io/yq)
 - [`clang-format`](https://clang.llvm.org/docs/ClangFormat.html) # normally included in
   system's clang package with some exceptions, please check with the following command:
   ```bash
   clang-format --version
   ```
 
-For a quick start, use the official `golang` Docker image. It includes all the command line tools pre-installed, with exception for from [`clang-format`](https://clang.llvm.org/docs/ClangFormat.html). 
-
-```bash
-docker run --name kuma-build -ti \
-  --volume `pwd`:/go/src/github.com/kumahq/kuma \
-  --workdir /go/src/github.com/kumahq/kuma \
-  --env GO111MODULE=on \
-  golang:1.16 \
-  bash -c 'apt update && apt install -y unzip && export PATH=$HOME/bin:$PATH && bash'
-```
-
-If `kuma-build` container already exists, start it with
-
-```bash
-docker start --attach --interactive kuma-build
-```
-
-To cleanup disk space, run
-
-```bash
-docker rm kuma-build
-```
-
 ### Helper commands
 
-Throughout this guide, we will use the `make` utility to run pre-defined
-tasks in the [Makefile](Makefile). Use the following command to list out all the possible commands:
+Throughout this guide, we will use `make` to run pre-defined tasks in the [Makefile](Makefile).
+Use the following command to list out all the possible commands:
 
 ```bash
 make help
@@ -77,25 +35,24 @@ make help
 
 ### Installing dev tools
 
-We packaged the remaining dependencies into one command. This is one of many commands
-that's listed if you run the `make help` command above. You can also install each tool
-individually if you know what you are missing. Run:
+We packaged the remaining dependencies into one target:
 
 ```bash
 make dev/tools
 ```
 
-to install all of the following tools at `$HOME/bin`:
+You can install each commands individually if you prefer.
 
-1. [Ginkgo](https://github.com/onsi/ginkgo#set-me-up) (BDD-style Go testing framework)
-2. [Kubebuilder](https://book.kubebuilder.io/quick-start.html#installation) (Kubernetes API extension framework, comes with `etcd` and `kube-apiserver`)
-3. [kustomize](https://book.kubebuilder.io/quick-start.html#installation) (Customization of kubernetes YAML configurations)
-4. [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/#install-kubectl-binary-with-curl-on-linux) (Kubernetes API client)
-5. [KIND](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) (Kubernetes IN Docker)
-6. [Minikube](https://kubernetes.io/docs/tasks/tools/install-minikube/#linux) (Kubernetes in VM)
+ATTENTION: By default, development tools will be installed at `$HOME/.kuma-dev/bin`. Remember to include this directory
+into your `PATH`, e.g. by adding `export PATH=$HOME/.kuma-dev/bin:$PATH` line to the `$HOME/.bashrc` file or `$HOME/.zshrc` if using zsh.
+This can be overridden by setting the env var `CI_TOOLS_DIR`, but it isn't recommended.
 
-ATTENTION: By default, development tools will be installed at `$HOME/bin`. Remember to include this directory into your `PATH`, 
-e.g. by adding `export PATH=$HOME/bin:$PATH` line to the `$HOME/.bashrc` file.
+## Code checks
+
+To run all code formatting, linting and vetting tools use the target:
+```bash
+make check
+```
 
 ## Testing
 
@@ -105,203 +62,101 @@ For all tests, run:
 ```bash
 make test
 ```
-For integration tests, run:
-```bash
-make integration
-```
 And you can run tests that are specific to a part of Kuma by appending the app name as shown below:
 ```bash
 make test/kumactl
 ```
-Please make sure that all tests pass before submitting a pull request in the `master` branch. Thank you!
+For even more specific tests you can specify the package you want to run tests from:
+```bash
+make test TEST_PKG_LIST=<pkgPath>
+```
+`pkgPath` is a package list selector for example: `./pkg/xds/...` will run all tests in the `pkg/xds` subtree.
 
+There's a large set of integration tests that can be run with:
+
+```bash
+make test/e2e
+```
+
+These tests are big and slow, it is recommended to read [e2e-test-tips](docs/guides/e2e-test-tips.md) before running them.
 
 ## Building
 
-After you made some changes, you will need to re-build the binaries. You can build all binaries by running:
+To build all the binaries run:
 ```bash
 make build
 ```
-And similar to `make test`, you can appending the app name to the build command to build the binary of a specific app. For example, here is how you would build the binary for only `kumactl`:
+
+Like `make test`, you can append the app name to the target to build a specific binary. For example, here is how you would build the binary for only `kumactl`:
 ```bash
 make build/kumactl
 ```
 This could help expedite your development process if you only made changes to the `kumactl` files.
 
-## Running Control Plane on local machine
+## Debugging
+
+Like any other go program Kuma can be debugged using [dlv](https://github.com/go-delve/delve).
+In this section we'll go into how to trigger a breakpoint both in K8S and Universal.
+
+### K8S
+
+1. Disable k8s leader election (optional)
+2. Remove "-w -s" from LDFLAGS [here](https://github.com/kumahq/kuma/blob/7398d8901798d5cf1c2715e036204fc3632ec45d/mk/build.mk#L2) so that debugging symbols are not stripped
+3. Always add `EXTRA_GOFLAGS='-gcflags "all=-N -l"'` to build / deploy parameters to make sure debug info is in the binaries
+4. Run `make k3d/start`
+5. Run `make EXTRA_GOFLAGS='-gcflags "all=-N -l"' -j k3d/deploy/kuma`
+6. Change the Kuma deployment:
+   1. Remove readiness and Liveness probes (otherwise Kubernetes will kill the container if you stay in a breakpoint long enough)
+   2. set runAsNonRoot: false
+   3. Double the memory (debugger can make the container OOM)
+7. Check go version in `go.mod`, run `kubectl debug --profile=general -n kuma-system -it kuma-control-plane-POD_HASH --image=golang:1.GO_VERSION_FROM_GO_MOD-bookworm --target=control-plane -- bash`
+8. Install `dlv` [version that is closes](https://github.com/go-delve/delve/releases) to the `go.mod` version in the container, run: `go install github.com/go-delve/delve/cmd/dlv@vCLOSEST_DLV_VERSION`
+9. Run `dlv --listen=:4000 --headless=true --api-version=2 --accept-multiclient attach 1`
+10. Setup port forward for `4000`
+11. Run goland/vscode debugger with remote target on port `4000`
+12. Put a breakpoint where you want
+13. Enjoy!
 
 ### Universal
 
-Universal setup does not require Kubernetes to be present. It can be run in two modes.
+1. Add `4000` port in [UniversalApp](https://github.com/kumahq/kuma/blob/201413bdd532e92ff6e1fd017c4970073ba0c09f/test/framework/universal_app.go#L223) so that it's exposed, and the debugger can connect.
+2. Remove "-w -s" from LDFLAGS [here](https://github.com/kumahq/kuma/blob/7398d8901798d5cf1c2715e036204fc3632ec45d/mk/build.mk#L2) so that debugging symbols are not stripped
+3. Add a `time.Sleep` in a place where you want to debug the test
+4. Run the tests `make -j test/e2e/debug EXTRA_GOFLAGS='-gcflags "all=-N -l"' E2E_PKG_LIST=./test/e2e_env/universal/...`
+5. Wait to hit the `time.Sleep`
+6. Figure out the `kuma-cp` container id by running: `docker ps | grep kuma-cp`
+7. Exec into the container: `docker exec -it kuma-3_kuma-cp_3dkYrT bash`
+8. Download the same go as in `go.mod` - e.g. `curl -o golang https://dl.google.com/go/go1.23.2.linux-arm64.tar.gz`
+9. Extract using `tar xzf golang`
+10. Install `dlv` [version that is closes](https://github.com/go-delve/delve/releases) to the `go.mod` version in the container, run: `go install github.com/go-delve/delve/cmd/dlv@vCLOSEST_DLV_VERSION`
+11. Run `dlv --listen=:4000 --headless=true --api-version=2 --accept-multiclient attach 1`
+12. Figure out the port on the host machine `docker ps | grep kuma-3_kuma-cp_3dkYrT`, look for the port forward for `4000`
+13. Run goland/vscode debugger with remote target on port from point 12
+14. Enjoy!
 
-#### Universal without any external dependency (in-memory storage)
+## Running
 
-1. Run `Control Plane` on local machine:
+### Kubernetes
 
+Execute
 ```bash
-make run/universal/memory
+make -j k3d/restart
 ```
 
-#### Universal with Postgres as a storage
+To stop any existing Kuma K3D cluster, start a new K3D cluster, load images, deploy Kuma and Kuma counter demo. 
 
-1. Run Postgres with initial schema using docker-compose.
-It will run on port 15432 with username: `kuma`, password: `kuma` and db name: `kuma`.
+### GKE
+
+You can test development versions by first pushing to `gcr.io`:
 
 ```bash
-make start/postgres
+gcloud auth configure-docker
+make images/push DOCKER_REGISTRY=gcr.io/proj-123456
 ```
 
-2. Run `Control Plane` on local machine.
+then setting up `kubectl` to connect to your cluster and installing Kuma:
 
 ```bash
-make run/universal/postgres
-```
-
-#### Running a Dataplane (Envoy)
-
-1. Build a `kumactl`
-```bash
-make build/kumactl
-export PATH=`pwd`/build/artifacts-$(go env GOOS)-$(go env GOARCH)/kumactl:$PATH
-```
-
-2. Configure a `kumactl` with running Control Plane
-
-Check current config
-```bash
-kumactl config control-planes list
-
-ACTIVE   NAME    ADDRESS
-*        local   http://localhost:5681
-```
-
-If active control plane points to different address than http://localhost:5681, add a new one 
-```bash
-kumactl config control-planes add --name universal --address http://localhost:5681
-```
-
-3. Apply a Dataplane descriptor
-
-```bash
-kumactl apply -f dev/examples/universal/dataplanes/example.yaml
-```
-
-4. Run a Dataplane (requires `envoy` binary to be on your `PATH`)
-```bash
-make run/example/envoy/universal
-```
-
-5. List `Dataplanes` connected to the `Control Plane`:
-
-```bash
-kumactl inspect dataplanes
-
-MESH      NAME      TAGS                                     STATUS   LAST CONNECTED AGO   LAST UPDATED AGO   TOTAL UPDATES   TOTAL ERRORS
-default   example   env=production service=web version=2.0   Online   32s                  32s                2               0
-```
-
-6. Dump effective `Envoy` config:
-
-```bash
-make config_dump/example/envoy
-```
-
-
-## Kubernetes
-
-### Local Control Plane working with Kubernetes
-
-The following instructions are for folks who want to run `Control Plane` on their local machine. Local development is a viable path for people who are familiar with Kubernetes and understands trade-offs of out-off cluster deployment. If you want to run the `Control Plane` on Kubernetes instead, jump to the [Control Plane on Kubernetes](#Control-Plane-on-Kubernetes) section below.
-
-1. Run [KIND](https://kind.sigs.k8s.io/docs/user/quick-start) (Kubernetes IN Docker):
-
-```bash
-make kind/start
-
-# set KUBECONFIG for use by `kumactl` and `kubectl`
-export KUBECONFIG="$(kind get kubeconfig-path --name=kuma)"
-```
-
-2. Run `Control Plane` on local machine:
-
-```bash
-make run/k8s
-```
-
-#### Running Dataplane (Envoy)
-
-1. Run the instructions at "Pointing Envoy at Control Plane" section, so the Dataplane descriptor is available in the Control Plane.
-
-2. Start `Envoy` on local machine (requires `envoy` binary to be on your `PATH`):
-
-```bash
-make run/example/envoy/k8s
-```
-
-3. Dump effective `Envoy` config:
-
-```bash
-make config_dump/example/envoy
-```
-
-### Control Plane on Kubernetes
-
-To run the Kuma `Control Plane` on Kubernetes, follow these steps:
-
-1. Run [KIND](https://kind.sigs.k8s.io/docs/user/quick-start) (Kubernetes IN Docker):
-
-```bash
-make kind/start
-
-# set KUBECONFIG for use by `kubectl`
-export KUBECONFIG="$(kind get kubeconfig-path --name=kuma)"
-```
-
-2. Deploy `Control Plane` to [KIND](https://kind.sigs.k8s.io/docs/user/quick-start) (Kubernetes IN Docker):
-
-```bash
-make kind/deploy/kuma
-```
-
-3. Deploy the demo app (and get Kuma sidecar injected)
-
-```bash
-make kind/deploy/example-app
-```
-
-4. Build `kumactl`
-
-```bash
-make build/kumactl
-
-export PATH=`pwd`/build/artifacts/kumactl:$PATH
-```
-
-5. Forward the `Control Plane` port to `localhost`:
-```bash
-kubectl port-forward -n kuma-system $(kubectl get pods -n kuma-system -l app=kuma-control-plane -o=jsonpath='{.items[0].metadata.name}') 15681:5681
-```
-
-6. Add `Control Plane` to your `kumactl` config:
-
-```bash
-kumactl config control-planes add --name k8s --address http://localhost:15681
-```
-
-7. Verify that `Control Plane` has been added:
-
-```bash
-kumactl config control-planes list
-
-NAME   API SERVER
-k8s    http://localhost:15681
-```
-
-8. List `Dataplanes` connected to the `Control Plane`:
-
-```bash
-kumactl inspect dataplanes
-
-MESH      NAME                        TAGS                                                                          STATUS   LAST CONNECTED AGO   LAST UPDATED AGO   TOTAL UPDATES   TOTAL ERRORS
-default   demo-app-7cbbd658d5-dj9l6   app=demo-app pod-template-hash=7cbbd658d5 service=demo-app_kuma-demo_svc_80   Online   42m28s               42m28s             8               0
+gcloud container clusters get-credentials cluster-name
+kumactl install control-plane --registry=gcr.io/proj-123456 | kubectl apply -f -
 ```

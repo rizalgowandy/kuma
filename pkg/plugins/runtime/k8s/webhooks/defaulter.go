@@ -5,41 +5,37 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
+	"github.com/kumahq/kuma/pkg/core/resources/registry"
 	k8s_common "github.com/kumahq/kuma/pkg/plugins/common/k8s"
+	"github.com/kumahq/kuma/pkg/plugins/resources/k8s"
 )
 
-type Defaulter interface {
-	core_model.Resource
-	Default() error
-}
-
-func DefaultingWebhookFor(factory func() core_model.Resource, converter k8s_common.Converter) *admission.Webhook {
+func DefaultingWebhookFor(scheme *runtime.Scheme, converter k8s_common.Converter, checker ResourceAdmissionChecker) *admission.Webhook {
 	return &admission.Webhook{
 		Handler: &defaultingHandler{
-			factory:   factory,
-			converter: converter,
+			converter:                converter,
+			decoder:                  admission.NewDecoder(scheme),
+			ResourceAdmissionChecker: checker,
 		},
 	}
 }
 
 type defaultingHandler struct {
-	factory   func() core_model.Resource
+	ResourceAdmissionChecker
+
 	converter k8s_common.Converter
-	decoder   *admission.Decoder
+	decoder   admission.Decoder
 }
 
-var _ admission.DecoderInjector = &defaultingHandler{}
-
-func (h *defaultingHandler) InjectDecoder(d *admission.Decoder) error {
-	h.decoder = d
-	return nil
-}
-
-func (h *defaultingHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
-	resource := h.factory()
+func (h *defaultingHandler) Handle(_ context.Context, req admission.Request) admission.Response {
+	resource, err := registry.Global().NewObject(core_model.ResourceType(req.Kind.Kind))
+	if err != nil {
+		return admission.Errored(http.StatusBadRequest, err)
+	}
 
 	obj, err := h.converter.ToKubernetesObject(resource)
 	if err != nil {
@@ -55,7 +51,7 @@ func (h *defaultingHandler) Handle(ctx context.Context, req admission.Request) a
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
-	if defaulter, ok := resource.(Defaulter); ok {
+	if defaulter, ok := resource.(core_model.Defaulter); ok {
 		if err := defaulter.Default(); err != nil {
 			return admission.Errored(http.StatusInternalServerError, err)
 		}
@@ -65,6 +61,28 @@ func (h *defaultingHandler) Handle(ctx context.Context, req admission.Request) a
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
+
+	if resp := h.IsOperationAllowed(req.UserInfo, resource, req.Namespace); !resp.Allowed {
+		return resp
+	}
+
+	computed, err := core_model.ComputeLabels(
+		resource.Descriptor(),
+		resource.GetSpec(),
+		resource.GetMeta().GetLabels(),
+		core_model.GetNamespace(resource.GetMeta(), h.SystemNamespace),
+		resource.GetMeta().GetMesh(),
+		h.Mode,
+		true,
+		h.ZoneName,
+	)
+	if err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+	labels, annotations := k8s.SplitLabelsAndAnnotations(computed, obj.GetAnnotations())
+
+	obj.SetLabels(labels)
+	obj.SetAnnotations(annotations)
 
 	marshaled, err := json.Marshal(obj)
 	if err != nil {

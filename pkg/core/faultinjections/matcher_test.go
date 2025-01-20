@@ -4,8 +4,7 @@ import (
 	"context"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -84,19 +83,24 @@ var _ = Describe("Match", func() {
 
 			bestMatched, err := matcher.Match(context.Background(), given.dataplane, mesh)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(len(bestMatched)).To(Equal(len(given.expected)))
+			Expect(bestMatched).To(HaveLen(len(given.expected)))
 			for key := range bestMatched {
 				elements := []interface{}{}
 				for _, expected := range given.expected[key] {
-					elements = append(elements, MatchProto(expected))
+					elements = append(elements, MatchProto(expected.Spec))
 				}
-				Expect(bestMatched[key]).To(ConsistOf(elements...))
+				bestMatchedSpecs := make([]core_model.ResourceSpec, 0, len(bestMatched[key]))
+				for _, resource := range bestMatched[key] {
+					bestMatchedSpecs = append(bestMatchedSpecs, resource.GetSpec())
+				}
+				Expect(bestMatchedSpecs).To(ConsistOf(elements...))
 			}
 		},
 		Entry("1 inbound dataplane, 2 policies", testCase{
 			dataplane: dataplaneWithInboundsFunc([]*mesh_proto.Dataplane_Networking_Inbound{
 				{
-					ServicePort: 8080,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8080,
 					Tags: map[string]string{
 						"service":          "web",
 						"version":          "0.1",
@@ -125,7 +129,7 @@ var _ = Describe("Match", func() {
 			},
 			expected: core_xds.FaultInjectionMap{
 				mesh_proto.InboundInterface{
-					WorkloadIP:   "127.0.0.1",
+					WorkloadIP:   "1.2.3.4",
 					WorkloadPort: 8080,
 				}: {
 					policyWithDestinationsFunc("fi2", time.Unix(1, 0), []*mesh_proto.Selector{
@@ -135,13 +139,15 @@ var _ = Describe("Match", func() {
 								"kuma.io/protocol": "http",
 							},
 						},
-					}).Spec,
+					}),
 				},
-			}}),
+			},
+		}),
 		Entry("should apply policy only to the first inbound", testCase{
 			dataplane: dataplaneWithInboundsFunc([]*mesh_proto.Dataplane_Networking_Inbound{
 				{
-					ServicePort: 8080,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8080,
 					Tags: map[string]string{
 						"service":          "web",
 						"version":          "0.1",
@@ -150,7 +156,8 @@ var _ = Describe("Match", func() {
 					},
 				},
 				{
-					ServicePort: 8081,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8081,
 					Tags: map[string]string{
 						"service":          "web-api",
 						"version":          "0.1.2",
@@ -171,7 +178,7 @@ var _ = Describe("Match", func() {
 			},
 			expected: core_xds.FaultInjectionMap{
 				mesh_proto.InboundInterface{
-					WorkloadIP:   "127.0.0.1",
+					WorkloadIP:   "1.2.3.4",
 					WorkloadPort: 8081,
 				}: {
 					policyWithDestinationsFunc("fi1", time.Unix(1, 0), []*mesh_proto.Selector{
@@ -181,14 +188,15 @@ var _ = Describe("Match", func() {
 								"kuma.io/protocol": "http",
 							},
 						},
-					}).Spec,
+					}),
 				},
 			},
 		}),
 		Entry("should select all policies matched for the inbound", testCase{
 			dataplane: dataplaneWithInboundsFunc([]*mesh_proto.Dataplane_Networking_Inbound{
 				{
-					ServicePort: 8080,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8080,
 					Tags: map[string]string{
 						"service":          "web",
 						"version":          "0.1",
@@ -234,7 +242,7 @@ var _ = Describe("Match", func() {
 			},
 			expected: core_xds.FaultInjectionMap{
 				mesh_proto.InboundInterface{
-					WorkloadIP:   "127.0.0.1",
+					WorkloadIP:   "1.2.3.4",
 					WorkloadPort: 8080,
 				}: {
 					policyWithDestinationsFunc("fi1", time.Unix(1, 0), []*mesh_proto.Selector{
@@ -244,7 +252,7 @@ var _ = Describe("Match", func() {
 								"kuma.io/protocol": "http",
 							},
 						},
-					}).Spec,
+					}),
 					policyWithDestinationsFunc("fi2", time.Unix(1, 0), []*mesh_proto.Selector{
 						{
 							Match: map[string]string{
@@ -252,7 +260,7 @@ var _ = Describe("Match", func() {
 								"kuma.io/protocol": "http",
 							},
 						},
-					}).Spec,
+					}),
 					policyWithDestinationsFunc("fi3", time.Unix(1, 0), []*mesh_proto.Selector{
 						{
 							Match: map[string]string{
@@ -261,7 +269,7 @@ var _ = Describe("Match", func() {
 								"kuma.io/protocol": "http",
 							},
 						},
-					}).Spec,
+					}),
 				},
 			},
 		}),

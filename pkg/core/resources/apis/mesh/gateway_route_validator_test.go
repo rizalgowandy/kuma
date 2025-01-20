@@ -1,31 +1,18 @@
 package mesh_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 
 	. "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
-	"github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/validators"
 	_ "github.com/kumahq/kuma/pkg/plugins/runtime/gateway/register"
+	. "github.com/kumahq/kuma/pkg/test/resources/validators"
 )
 
-// GatewayRouteGenerator is a ResourceGenerator that creates GatewayResource objects.
-type GatewayRouteGenerator func() *GatewayRouteResource
-
-func (g GatewayRouteGenerator) New() model.Resource {
-	if g != nil {
-		return g()
-	}
-
-	return nil
-}
-
-var _ = Describe("GatewayRoute", func() {
-	DescribeValidCases(GatewayRouteGenerator(NewGatewayRouteResource),
-
+var _ = Describe("MeshGatewayRoute", func() {
+	DescribeValidCases(NewMeshGatewayRouteResource,
 		Entry("HTTP route", `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -42,6 +29,10 @@ conf:
           match: EXACT
           value: /
         headers:
+        - match: ABSENT
+          name: x-baz
+        - match: PRESENT
+          name: x-bar
         - match: EXACT
           name: x-foo
           value: "my great foo"
@@ -53,6 +44,8 @@ conf:
           name: customer
           value: kong
       filters:
+      - rewrite:
+          host_to_backend_hostname: true
       - request_header:
           set:
           - name: x-foo
@@ -80,7 +73,7 @@ conf:
           kuma.io/service: target-2
 `),
 		Entry("HTTP redirect", `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -114,14 +107,50 @@ conf:
          port: 80
          status_code: 307
 `),
+		Entry("redirect filter with empty scheme", `
+type: MeshGatewayRoute
+name: route
+mesh: default
+selectors:
+- match:
+    kuma.io/service: gateway
+conf:
+  http:
+    rules:
+    - matches:
+      - path:
+          value: /
+      filters:
+      - redirect:
+          hostname: example.com
+          status_code: 301
+`),
+		Entry("redirect filter with empty hostname", `
+type: MeshGatewayRoute
+name: route
+mesh: default
+selectors:
+- match:
+    kuma.io/service: gateway
+conf:
+  http:
+    rules:
+    - matches:
+      - path:
+          value: /
+      filters:
+      - redirect:
+          scheme: https
+          status_code: 301
+`),
 	)
 
-	DescribeErrorCases(GatewayRouteGenerator(NewGatewayRouteResource),
+	DescribeErrorCases(NewMeshGatewayRouteResource,
 		ErrorCase("missing conf", validators.Violation{
 			Field:   "conf",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -132,7 +161,7 @@ selectors:
 			Field:   "conf.http.rules",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -146,7 +175,7 @@ conf:
 			Field:   "conf.http.rules[0].matches",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -164,7 +193,7 @@ conf:
 			Field:   "conf.http.rules[0].backends",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -182,7 +211,7 @@ conf:
 			Field:   "conf.http.rules[0].backends[0]",
 			Message: `mandatory tag "kuma.io/service" is missing`,
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -204,7 +233,7 @@ conf:
 			Field:   "conf.http.rules[0].matches[0]",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -224,7 +253,7 @@ conf:
 			Field:   "conf.http.rules[0].matches[0].value",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -245,7 +274,7 @@ conf:
 			Field:   "conf.http.rules[0].matches[0].value",
 			Message: "must be an absolute path",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -266,7 +295,7 @@ conf:
 			Field:   "conf.http.rules[0].matches[0].headers[0].name",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -287,7 +316,7 @@ conf:
 			Field:   "conf.http.rules[0].matches[0].headers[0].value",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -304,11 +333,34 @@ conf:
         destination:
           kuma.io/service: target-2
 `),
+		ErrorCase("match with header value when using PRESENT", validators.Violation{
+			Field:   "conf.http.rules[0].matches[0].headers[0].value",
+			Message: "cannot be set",
+		}, `
+type: MeshGatewayRoute
+name: route
+mesh: default
+selectors:
+- match:
+    kuma.io/service: gateway
+conf:
+  http:
+    rules:
+    - matches:
+      - headers:
+        - name: value
+          value: foo
+          match: PRESENT
+      backends:
+      - weight: 5
+        destination:
+          kuma.io/service: target-2
+`),
 		ErrorCase("match with empty query name", validators.Violation{
 			Field:   "conf.http.rules[0].matches[0].query_parameters[0].name",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -329,7 +381,7 @@ conf:
 			Field:   "conf.http.rules[0].matches[0].query_parameters[0].value",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -350,7 +402,7 @@ conf:
 			Field:   "conf.http.rules[0].filters[0].request_header",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -373,7 +425,7 @@ conf:
 			Field:   "conf.http.rules[0].filters[0].request_header.set[0].value",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -403,7 +455,7 @@ conf:
 			Field:   "conf.http.rules[0].filters[0].request_header.add[0].name",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -433,7 +485,7 @@ conf:
 			Field:   "conf.http.rules[0].filters[0].request_header.remove[0]",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -460,11 +512,41 @@ conf:
         destination:
           kuma.io/service: target-2
 `),
+		ErrorCase("request header filter for 'host' header when all"+
+			" backends have 'rewrite.host_to_backend_hostname' set to true",
+			validators.Violation{
+				Field:   "conf.http.rules[0].filters[0].request_header.set[0]",
+				Message: "cannot modify 'host' header, when route has set 'rewrite.host_to_backend_hostname' option",
+			}, `
+type: MeshGatewayRoute
+name: route
+mesh: default
+selectors:
+- match:
+    kuma.io/service: gateway
+conf:
+  http:
+    rules:
+    - matches:
+      - path:
+          value: /
+      filters:
+      - rewrite:
+          host_to_backend_hostname: true
+      - request_header:
+          set:
+          - name: host
+            value: foo
+      backends:
+      - weight: 5
+        destination:
+          kuma.io/service: target-1
+`),
 		ErrorCase("empty mirror filter backend", validators.Violation{
 			Field:   "conf.http.rules[0].filters[0].mirror.backend",
 			Message: "cannot be empty",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -488,7 +570,7 @@ conf:
 			Field:   "conf.http.rules[0].filters[0].mirror.percentage",
 			Message: "has to be in [0.0 - 100.0] range",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -511,53 +593,11 @@ conf:
         destination:
           kuma.io/service: target-2
 `),
-		ErrorCase("redirect filter with empty scheme", validators.Violation{
-			Field:   "conf.http.rules[0].filters[0].redirect.scheme",
-			Message: "cannot be empty",
-		}, `
-type: GatewayRoute
-name: route
-mesh: default
-selectors:
-- match:
-    kuma.io/service: gateway
-conf:
-  http:
-    rules:
-    - matches:
-      - path:
-          value: /
-      filters:
-      - redirect:
-          hostname: example.com
-          status_code: 301
-`),
-		ErrorCase("redirect filter with empty hostname", validators.Violation{
-			Field:   "conf.http.rules[0].filters[0].redirect.hostname",
-			Message: "cannot be empty",
-		}, `
-type: GatewayRoute
-name: route
-mesh: default
-selectors:
-- match:
-    kuma.io/service: gateway
-conf:
-  http:
-    rules:
-    - matches:
-      - path:
-          value: /
-      filters:
-      - redirect:
-          scheme: https
-          status_code: 301
-`),
 		ErrorCase("redirect filter with invalid port", validators.Violation{
 			Field:   "conf.http.rules[0].filters[0].redirect.port",
 			Message: "port must be in the range [1, 65535]",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -580,7 +620,7 @@ conf:
 			Field:   "conf.http.rules[0].filters[0].redirect.status_code",
 			Message: "must be in the range [300, 308]",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -602,7 +642,7 @@ conf:
 			Field:   "conf.http.rules[0].backends",
 			Message: "must be empty when using redirect filters",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -628,7 +668,7 @@ conf:
 			Field:   "conf.http.rules[0].filters",
 			Message: "redirects cannot be used with other filters",
 		}, `
-type: GatewayRoute
+type: MeshGatewayRoute
 name: route
 mesh: default
 selectors:
@@ -650,6 +690,52 @@ conf:
         - weight: 5
           destination:
             kuma.io/service: target-2
+`),
+		ErrorCase("prefix without leading slash and with trailing slash", validators.Violation{
+			Field:   "conf.http.rules[0].matches[0].value",
+			Message: "must be an absolute path",
+		}, `
+type: MeshGatewayRoute
+name: route
+mesh: default
+selectors:
+- match:
+    kuma.io/service: gateway
+conf:
+  http:
+    rules:
+    - matches:
+      - path:
+          match: PREFIX
+          value: prefix/
+      backends:
+      - weight: 5
+        destination:
+          kuma.io/service: target-2
+`),
+		ErrorCase("prefix match replacement without prefix match filter", validators.Violation{
+			Field:   "conf.http.rules[0].filters[0].rewrite.replacePrefixMatch",
+			Message: "cannot be used without a match on path prefix",
+		}, `
+type: MeshGatewayRoute
+name: route
+mesh: default
+selectors:
+- match:
+    kuma.io/service: gateway
+conf:
+  http:
+    rules:
+    - matches:
+      - path:
+          value: /exact_path
+      filters:
+      - rewrite:
+          replacePrefixMatch: "/"
+      backends:
+      - weight: 5
+        destination:
+          kuma.io/service: target-2
 `),
 	)
 })

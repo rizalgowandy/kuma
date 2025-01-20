@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
@@ -12,7 +11,6 @@ import (
 )
 
 var _ = Describe("OriginalDstForwarderConfigurer", func() {
-
 	type testCase struct {
 		listenerName     string
 		listenerAddress  string
@@ -26,10 +24,10 @@ var _ = Describe("OriginalDstForwarderConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(OutboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
-					Configure(TcpProxy(given.statsName, given.clusters...)))).
+			listener, err := NewOutboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				WithOverwriteName(given.listenerName).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
+					Configure(TcpProxyDeprecated(given.statsName, given.clusters...)))).
 				Configure(OriginalDstForwarder()).
 				Build()
 			// then
@@ -68,5 +66,4 @@ var _ = Describe("OriginalDstForwarderConfigurer", func() {
 `,
 		}),
 	)
-
 })

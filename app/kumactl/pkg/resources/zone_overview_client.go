@@ -2,12 +2,13 @@ package resources
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/pkg/errors"
 
 	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
-	"github.com/kumahq/kuma/pkg/plugins/resources/remote"
+	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
 )
 
@@ -26,7 +27,7 @@ type httpZoneOverviewClient struct {
 }
 
 func (d *httpZoneOverviewClient) List(ctx context.Context) (*system.ZoneOverviewResourceList, error) {
-	req, err := http.NewRequest("GET", "/zones+insights", nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("/%s/_overview", system.ZoneResourceTypeDescriptor.WsPath), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +39,7 @@ func (d *httpZoneOverviewClient) List(ctx context.Context) (*system.ZoneOverview
 		return nil, errors.Errorf("(%d): %s", statusCode, string(b))
 	}
 	overviews := system.ZoneOverviewResourceList{}
-	if err := remote.UnmarshalList(b, &overviews); err != nil {
+	if err := rest.JSON.UnmarshalListToCore(b, &overviews); err != nil {
 		return nil, err
 	}
 	return &overviews, nil

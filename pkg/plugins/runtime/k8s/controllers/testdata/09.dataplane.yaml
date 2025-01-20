@@ -1,14 +1,25 @@
 mesh: default
 metadata:
   creationTimestamp: null
+  labels:
+    app: kuma-ingress
+    k8s.kuma.io/namespace: kuma-system
+    kuma.io/mesh: default
+    kuma.io/proxy-type: sidecar
+    pod-template-hash: 74c9b794cf
 spec:
   networking:
     address: 10.244.0.8
     inbound:
-      - port: 10001
-        tags:
-          app: kuma-ingress
-          kuma.io/protocol: tcp
-          kuma.io/service: kuma-ingress_kuma-system_svc_10001
-          kuma.io/zone: zone-1
-          pod-template-hash: 74c9b794cf
+    - health:
+        ready: true
+      port: 10001
+      tags:
+        app: kuma-ingress
+        k8s.kuma.io/namespace: kuma-system
+        k8s.kuma.io/service-name: kuma-ingress
+        k8s.kuma.io/service-port: "10001"
+        kuma.io/protocol: tcp
+        kuma.io/service: kuma-ingress_kuma-system_svc_10001
+        kuma.io/zone: zone-1
+        pod-template-hash: 74c9b794cf

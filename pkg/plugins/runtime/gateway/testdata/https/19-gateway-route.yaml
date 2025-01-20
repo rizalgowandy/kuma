@@ -1,16 +1,17 @@
 Clusters:
   Resources:
-    external-httpbin-241b25f6d3fc3b49:
+    external-http2-httpbin-b70cd456b09f96ac:
       circuitBreakers:
         thresholds:
         - maxConnections: 1024
           maxPendingRequests: 1024
           maxRequests: 1024
           maxRetries: 3
+          trackRemaining: true
       connectTimeout: 5s
       dnsLookupFamily: V4_ONLY
       loadAssignment:
-        clusterName: external-httpbin
+        clusterName: external-http2-httpbin
         endpoints:
         - lbEndpoints:
           - endpoint:
@@ -22,28 +23,22 @@ Clusters:
             metadata:
               filterMetadata:
                 envoy.lb:
-                  kuma.io/external-service-name: external-httpbin
+                  kuma.io/external-service-name: external-http2-httpbin
                   kuma.io/protocol: http2
                 envoy.transport_socket_match:
-                  kuma.io/external-service-name: external-httpbin
+                  kuma.io/external-service-name: external-http2-httpbin
                   kuma.io/protocol: http2
-      name: external-httpbin-241b25f6d3fc3b49
-      outlierDetection:
-        enforcingConsecutive5xx: 0
-        enforcingConsecutiveGatewayFailure: 0
-        enforcingConsecutiveLocalOriginFailure: 0
-        enforcingFailurePercentage: 0
-        enforcingSuccessRate: 0
+      name: external-http2-httpbin-b70cd456b09f96ac
+      perConnectionBufferLimitBytes: 32768
       transportSocketMatches:
       - match:
-          kuma.io/external-service-name: external-httpbin
+          kuma.io/external-service-name: external-http2-httpbin
           kuma.io/protocol: http2
         name: httpbin.com
         transportSocket:
           name: envoy.transport_sockets.tls
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-            commonTlsContext: {}
             sni: httpbin.com
       type: STRICT_DNS
       typedExtensionProtocolOptions:
@@ -51,8 +46,12 @@ Clusters:
           '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
           commonHttpProtocolOptions:
             idleTimeout: 3600s
+            maxConnectionDuration: 0s
+            maxStreamDuration: 0s
           explicitHttpConfig:
-            http2ProtocolOptions: {}
+            http2ProtocolOptions:
+              initialConnectionWindowSize: 1048576
+              initialStreamWindowSize: 65536
 Endpoints:
   Resources: {}
 Listeners:
@@ -62,11 +61,9 @@ Listeners:
         socketAddress:
           address: 192.168.1.1
           portValue: 8080
+      enableReusePort: true
       filterChains:
       - filterChainMatch:
-          applicationProtocols:
-          - h2
-          - http/1.1
           serverNames:
           - echo.example.com
           transportProtocol: tls
@@ -83,6 +80,10 @@ Listeners:
               initialStreamWindowSize: 65536
               maxConcurrentStreams: 100
             httpFilters:
+            - name: envoy.filters.http.local_ratelimit
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                statPrefix: rate_limit
             - name: gzip-compress
               typedConfig:
                 '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
@@ -93,18 +94,21 @@ Listeners:
                 responseDirectionConfig:
                   disableOnEtagHeader: true
             - name: envoy.filters.http.router
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
             mergeSlashes: true
             normalizePath: true
+            pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
             rds:
               configSource:
                 ads: {}
                 resourceApiVersion: V3
-              routeConfigName: edge-gateway:HTTPS:8080
+              routeConfigName: edge-gateway:HTTPS:8080:echo.example.com
             requestHeadersTimeout: 0.500s
             serverName: Kuma Gateway
             statPrefix: gateway-default
             streamIdleTimeout: 5s
-            stripAnyHostPort: true
+            useRemoteAddress: true
         transportSocket:
           name: envoy.transport_sockets.tls
           typedConfig:
@@ -127,36 +131,65 @@ Listeners:
           '@type': type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
       name: edge-gateway:HTTPS:8080
       perConnectionBufferLimitBytes: 32768
-      reusePort: true
       trafficDirection: INBOUND
 Routes:
   Resources:
-    edge-gateway:HTTPS:8080:
-      name: edge-gateway:HTTPS:8080
+    edge-gateway:HTTPS:8080:echo.example.com:
+      ignorePortInHostMatching: true
+      name: edge-gateway:HTTPS:8080:echo.example.com
       requestHeadersToRemove:
       - x-kuma-tags
       validateClusters: false
       virtualHosts:
       - domains:
         - echo.example.com
-        name: edge-gateway:HTTPS:8080:echo.example.com
+        name: echo.example.com
         requireTls: ALL
         responseHeadersToAdd:
-        - append: false
+        - appendAction: OVERWRITE_IF_EXISTS_OR_ADD
           header:
             key: Strict-Transport-Security
             value: max-age=31536000; includeSubDomains
         routes:
         - match:
-            prefix: /
+            path: /
           route:
+            clusterNotFoundResponseCode: INTERNAL_SERVER_ERROR
+            idleTimeout: 5s
+            retryPolicy:
+              numRetries: 5
+              perTryTimeout: 16s
+              retryBackOff:
+                baseInterval: 0.025s
+                maxInterval: 0.250s
+              retryOn: gateway-error,connect-failure,refused-stream
+            timeout: 15s
             weightedClusters:
               clusters:
-              - name: external-httpbin-241b25f6d3fc3b49
+              - name: external-http2-httpbin-b70cd456b09f96ac
                 weight: 1
-              totalWeight: 1
+        - match:
+            prefix: /
+          route:
+            clusterNotFoundResponseCode: INTERNAL_SERVER_ERROR
+            idleTimeout: 5s
+            retryPolicy:
+              numRetries: 5
+              perTryTimeout: 16s
+              retryBackOff:
+                baseInterval: 0.025s
+                maxInterval: 0.250s
+              retryOn: gateway-error,connect-failure,refused-stream
+            timeout: 15s
+            weightedClusters:
+              clusters:
+              - name: external-http2-httpbin-b70cd456b09f96ac
+                weight: 1
 Runtimes:
-  Resources: {}
+  Resources:
+    gateway.listeners:
+      layer: {}
+      name: gateway.listeners
 Secrets:
   Resources:
     cert.rsa:secret:echo-example-com-server-cert:

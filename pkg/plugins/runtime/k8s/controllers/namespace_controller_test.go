@@ -3,7 +3,7 @@ package controllers_test
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	kube_core "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -21,7 +21,6 @@ import (
 )
 
 var _ = Describe("NamespaceReconciler", func() {
-
 	var kubeClient kube_client.Client
 	var reconciler kube_reconcile.Reconciler
 
@@ -31,7 +30,7 @@ var _ = Describe("NamespaceReconciler", func() {
 				ObjectMeta: kube_meta.ObjectMeta{
 					Name:      "non-system-ns-with-sidecar-injection",
 					Namespace: "non-system-ns-with-sidecar-injection",
-					Annotations: map[string]string{
+					Labels: map[string]string{
 						"kuma.io/sidecar-injection": "enabled",
 					},
 				},
@@ -40,6 +39,15 @@ var _ = Describe("NamespaceReconciler", func() {
 				ObjectMeta: kube_meta.ObjectMeta{
 					Name:      "non-system-ns-without-sidecar-injection",
 					Namespace: "non-system-ns-without-sidecar-injection",
+				},
+			},
+			&kube_core.Namespace{
+				ObjectMeta: kube_meta.ObjectMeta{
+					Name:      "non-system-ns-with-sidecar-injection-disabled",
+					Namespace: "non-system-ns-with-sidecar-injection-disabled",
+					Labels: map[string]string{
+						"kuma.io/sidecar-injection": "disabled",
+					},
 				},
 			},
 		).Build()
@@ -85,6 +93,40 @@ var _ = Describe("NamespaceReconciler", func() {
 		Expect(nads.Items[0].Name).To(Equal("kuma-cni"))
 	})
 
+	It("should create NetworkAttachmentDefinition when injection is disabled", func() {
+		// setup CustomResourceDefinition
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: kube_meta.ObjectMeta{
+				Name: "network-attachment-definitions.k8s.cni.cncf.io",
+			},
+		}
+		err := kubeClient.Create(context.Background(), crd)
+		Expect(err).ToNot(HaveOccurred())
+
+		// given
+		req := kube_ctrl.Request{
+			NamespacedName: kube_types.NamespacedName{
+				Namespace: "non-system-ns-with-sidecar-injection-disabled",
+				Name:      "non-system-ns-with-sidecar-injection-disabled",
+			},
+		}
+
+		// when
+		result, err := reconciler.Reconcile(context.Background(), req)
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result).To(BeZero())
+
+		// and NetworkAttachmentDefinition is created
+		nads := &v1.NetworkAttachmentDefinitionList{}
+		err = kubeClient.List(context.Background(), nads)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(nads.Items).To(HaveLen(1))
+		Expect(nads.Items[0].Namespace).To(Equal("non-system-ns-with-sidecar-injection-disabled"))
+		Expect(nads.Items[0].Name).To(Equal("kuma-cni"))
+	})
+
 	It("should delete NetworkAttachmentDefinition when injection annotation is no longer on the namespace", func() {
 		// setup CustomResourceDefinition
 		crd := &apiextensionsv1.CustomResourceDefinition{
@@ -124,7 +166,7 @@ var _ = Describe("NamespaceReconciler", func() {
 		nads := &v1.NetworkAttachmentDefinitionList{}
 		err = kubeClient.List(context.Background(), nads)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(nads.Items).To(HaveLen(0))
+		Expect(nads.Items).To(BeEmpty())
 	})
 
 	It("should ignore namespace namespaces without label", func() {
@@ -147,7 +189,7 @@ var _ = Describe("NamespaceReconciler", func() {
 		nads := &v1.NetworkAttachmentDefinitionList{}
 		err = kubeClient.List(context.Background(), nads)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(nads.Items).To(HaveLen(0))
+		Expect(nads.Items).To(BeEmpty())
 	})
 
 	It("should skip creating NetworkAttachmentDefinition when CRD is absent in the cluster", func() {
@@ -170,7 +212,6 @@ var _ = Describe("NamespaceReconciler", func() {
 		nads := &v1.NetworkAttachmentDefinitionList{}
 		err = kubeClient.List(context.Background(), nads)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(nads.Items).To(HaveLen(0))
+		Expect(nads.Items).To(BeEmpty())
 	})
-
 })

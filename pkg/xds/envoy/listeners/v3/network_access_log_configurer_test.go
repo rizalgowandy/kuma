@@ -1,20 +1,19 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
+	"github.com/kumahq/kuma/pkg/test/resources/model"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	envoy_common "github.com/kumahq/kuma/pkg/xds/envoy"
 	. "github.com/kumahq/kuma/pkg/xds/envoy/listeners"
 )
 
 var _ = Describe("NetworkAccessLogConfigurer", func() {
-
 	type testCase struct {
 		listenerName     string
 		listenerAddress  string
@@ -33,8 +32,15 @@ var _ = Describe("NetworkAccessLogConfigurer", func() {
 			sourceService := "backend"
 			destinationService := "db"
 			proxy := &core_xds.Proxy{
-				Id: *core_xds.BuildProxyId("example", "backend"),
+				Id: *core_xds.BuildProxyId(meshName, "dataplane0"),
+				Metadata: &core_xds.DataplaneMetadata{
+					Features: core_xds.Features{core_xds.FeatureTCPAccessLogViaNamedPipe: true},
+					WorkDir:  "/tmp",
+				},
 				Dataplane: &core_mesh.DataplaneResource{
+					Meta: &model.ResourceMeta{
+						Name: "dataplane0",
+					},
 					Spec: &mesh_proto.Dataplane{
 						Networking: &mesh_proto.Dataplane_Networking{
 							Address: "192.168.0.1",
@@ -46,8 +52,10 @@ var _ = Describe("NetworkAccessLogConfigurer", func() {
 								},
 							}},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{{
-								Port:    15432,
-								Service: "db",
+								Port: 15432,
+								Tags: map[string]string{
+									mesh_proto.ServiceTag: "db",
+								},
 							}},
 						},
 					},
@@ -55,10 +63,10 @@ var _ = Describe("NetworkAccessLogConfigurer", func() {
 			}
 
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(OutboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
-					Configure(TcpProxy(given.statsName, given.clusters...)).
+			listener, err := NewOutboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				WithOverwriteName(given.listenerName).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
+					Configure(TcpProxyDeprecated(given.statsName, given.clusters...)).
 					Configure(NetworkAccessLog(meshName, envoy_common.TrafficDirectionUnspecified, sourceService, destinationService, given.backend, proxy)))).
 				Build()
 			// then
@@ -147,8 +155,8 @@ var _ = Describe("NetworkAccessLogConfigurer", func() {
 			)},
 			backend: &mesh_proto.LoggingBackend{
 				Name: "tcp",
-				Format: `[%START_TIME%] "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%REQ(ORIGIN)%" "%REQ(CONTENT-TYPE)%" "%KUMA_SOURCE_SERVICE%" "%KUMA_DESTINATION_SERVICE%" "%KUMA_SOURCE_ADDRESS%" "%KUMA_SOURCE_ADDRESS_WITHOUT_PORT%" "%UPSTREAM_HOST%
-"%RESP(SERVER):5%" "%TRAILER(GRPC-MESSAGE):7%" "DYNAMIC_METADATA(namespace:object:key):9" "FILTER_STATE(filter.state.key):12"
+				Format: `[%START_TIME%] "%REQ(x-request-id)%" "%REQ(:authority)%" "%REQ(origin)%" "%REQ(content-type)%" "%KUMA_SOURCE_SERVICE%" "%KUMA_DESTINATION_SERVICE%" "%KUMA_SOURCE_ADDRESS%" "%KUMA_SOURCE_ADDRESS_WITHOUT_PORT%" "%UPSTREAM_HOST%
+"%RESP(server):5%" "%TRAILER(grpc-message):7%" "DYNAMIC_METADATA(namespace:object:key):9" "FILTER_STATE(filter.state.key):12"
 `, // intentional newline at the end
 				Type: mesh_proto.LoggingTcpType,
 				Conf: util_proto.MustToStruct(&mesh_proto.TcpLoggingBackendConfig{
@@ -166,25 +174,16 @@ var _ = Describe("NetworkAccessLogConfigurer", func() {
                 typedConfig:
                   '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
                   accessLog:
-                  - name: envoy.access_loggers.http_grpc
+                  - name: envoy.access_loggers.file
                     typedConfig:
-                      '@type': type.googleapis.com/envoy.extensions.access_loggers.grpc.v3.HttpGrpcAccessLogConfig
-                      additionalRequestHeadersToLog:
-                      - origin
-                      - content-type
-                      additionalResponseHeadersToLog:
-                      - server
-                      additionalResponseTrailersToLog:
-                      - grpc-message
-                      commonConfig:
-                        grpcService:
-                          envoyGrpc:
-                            clusterName: access_log_sink
-                        logName: |+
-                          127.0.0.1:1234;[%START_TIME%] "%REQ(x-request-id)%" "%REQ(:authority)%" "%REQ(origin)%" "%REQ(content-type)%" "backend" "db" "192.168.0.1:0" "192.168.0.1" "%UPSTREAM_HOST%
-                          "%RESP(server):5%" "%TRAILER(grpc-message):7%" "DYNAMIC_METADATA(namespace:object:key):9" "FILTER_STATE(filter.state.key):12"
+                      '@type': type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      logFormat:
+                        textFormatSource:
+                          inlineString: |+
+                            127.0.0.1:1234;[%START_TIME%] "%REQ(x-request-id)%" "%REQ(:authority)%" "%REQ(origin)%" "%REQ(content-type)%" "backend" "db" "192.168.0.1:0" "192.168.0.1" "%UPSTREAM_HOST%
+                            "%RESP(server):5%" "%TRAILER(grpc-message):7%" "DYNAMIC_METADATA(namespace:object:key):9" "FILTER_STATE(filter.state.key):12"
 
-                        transportApiVersion: V3
+                      path: /tmp/kuma-al-dataplane0-demo.sock
                   cluster: db
                   statPrefix: db
             name: outbound:127.0.0.1:5432

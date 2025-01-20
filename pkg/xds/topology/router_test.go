@@ -4,9 +4,10 @@ import (
 	"context"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	"github.com/google/go-cmp/cmp"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
@@ -16,13 +17,14 @@ import (
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
 	memory_resources "github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	. "github.com/kumahq/kuma/pkg/test/matchers"
+	"github.com/kumahq/kuma/pkg/test/resources/builders"
 	test_model "github.com/kumahq/kuma/pkg/test/resources/model"
+	"github.com/kumahq/kuma/pkg/test/resources/samples"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	. "github.com/kumahq/kuma/pkg/xds/topology"
 )
 
 var _ = Describe("TrafficRoute", func() {
-
 	var ctx context.Context
 	var rm core_manager.ResourceManager
 
@@ -32,7 +34,6 @@ var _ = Describe("TrafficRoute", func() {
 	})
 
 	Describe("GetRoutes()", func() {
-
 		It("should pick the best matching Route for each outbound interface", func() {
 			// given
 			mesh := &core_mesh.MeshResource{ // mesh that is relevant to this test case
@@ -47,33 +48,15 @@ var _ = Describe("TrafficRoute", func() {
 				},
 				Spec: &mesh_proto.Mesh{},
 			}
-			backend := &core_mesh.DataplaneResource{ // dataplane that is a source of traffic
-				Meta: &test_model.ResourceMeta{
-					Mesh: "demo",
-					Name: "backend",
-				},
-				Spec: &mesh_proto.Dataplane{
-					Networking: &mesh_proto.Dataplane_Networking{
-						Address: "192.168.0.1",
-						Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-							{
-								Tags:        map[string]string{"kuma.io/service": "backend", "region": "eu"},
-								Port:        8080,
-								ServicePort: 18080,
-							},
-							{
-								Tags:        map[string]string{"kuma.io/service": "frontend", "region": "eu"},
-								Port:        7070,
-								ServicePort: 17070,
-							},
-						},
-						Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-							{Service: "redis", Port: 10001},
-							{Service: "elastic", Port: 10002},
-						},
-					},
-				},
-			}
+			// dataplane that is a source of traffic
+			backend := builders.Dataplane().
+				WithName("backend").
+				WithMesh("demo").
+				WithAddress("192.168.0.1").
+				AddInboundOfTags("kuma.io/service", "backend", "region", "eu").
+				AddInboundOfTags("kuma.io/service", "frontend", "region", "eu").
+				AddOutboundsToServices("redis", "elastic").
+				Build()
 			routeRedis := &core_mesh.TrafficRouteResource{ // traffic route for `redis` service
 				Meta: &test_model.ResourceMeta{
 					Mesh: "demo",
@@ -249,8 +232,10 @@ var _ = Describe("TrafficRoute", func() {
 							},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
 								{
-									Port:    1234,
-									Service: "redis",
+									Port: 1234,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
 								},
 							},
 						},
@@ -314,21 +299,10 @@ var _ = Describe("TrafficRoute", func() {
 				},
 			}),
 			Entry("TrafficRoute with a `source` selector by 2 tags should win over a TrafficRoute with a `source` selector by 1 tag", testCase{
-				dataplane: &core_mesh.DataplaneResource{
-					Spec: &mesh_proto.Dataplane{
-						Networking: &mesh_proto.Dataplane_Networking{
-							Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-								{Tags: map[string]string{"kuma.io/service": "backend", "region": "eu"}},
-							},
-							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{
-									Port:    1234,
-									Service: "redis",
-								},
-							},
-						},
-					},
-				},
+				dataplane: samples.DataplaneBackendBuilder().
+					WithInboundOfTags(mesh_proto.ServiceTag, "backend", "region", "eu").
+					AddOutboundToService("redis").
+					Build(),
 				routes: []*core_mesh.TrafficRouteResource{
 					{
 						Meta: &test_model.ResourceMeta{
@@ -376,7 +350,7 @@ var _ = Describe("TrafficRoute", func() {
 				expected: core_xds.RouteMap{
 					mesh_proto.OutboundInterface{
 						DataplaneIP:   "127.0.0.1",
-						DataplanePort: 1234,
+						DataplanePort: builders.FirstOutboundPort,
 					}: &core_mesh.TrafficRouteResource{
 						Meta: &test_model.ResourceMeta{
 							Name: "more-specific",
@@ -393,8 +367,10 @@ var _ = Describe("TrafficRoute", func() {
 							},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
 								{
-									Port:    1234,
-									Service: "redis",
+									Port: 1234,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
 								},
 							},
 						},
@@ -464,8 +440,10 @@ var _ = Describe("TrafficRoute", func() {
 							},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
 								{
-									Port:    1234,
-									Service: "redis",
+									Port: 1234,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
 								},
 							},
 						},
@@ -535,8 +513,10 @@ var _ = Describe("TrafficRoute", func() {
 							},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
 								{
-									Port:    1234,
-									Service: "redis",
+									Port: 1234,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
 								},
 							},
 						},
@@ -605,7 +585,7 @@ var _ = Describe("TrafficRoute", func() {
 				// when
 				routes := BuildRouteMap(given.dataplane, given.routes)
 				// expect
-				Expect(routes).Should(Equal(given.expected))
+				Expect(routes).Should(BeComparableTo(given.expected, cmp.Comparer(proto.Equal)))
 			},
 			Entry("if an outbound interface has no matching TrafficRoute, the default route should be used", testCase{
 				dataplane: &core_mesh.DataplaneResource{
@@ -616,12 +596,16 @@ var _ = Describe("TrafficRoute", func() {
 							},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
 								{
-									Port:    1234,
-									Service: "redis",
+									Port: 1234,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
 								},
 								{
-									Port:    1235,
-									Service: "elastic",
+									Port: 1235,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "elastic",
+									},
 								},
 							},
 						},
@@ -629,23 +613,26 @@ var _ = Describe("TrafficRoute", func() {
 				},
 				routes: []*core_mesh.TrafficRouteResource{
 					{
-						Meta: &PseudoMeta{
+						Meta: &test_model.ResourceMeta{
 							Name: "route-all-default",
 						},
 						Spec: &mesh_proto.TrafficRoute{
-							Sources: []*mesh_proto.Selector{{
-								Match: mesh_proto.MatchAnyService(),
+							Sources: []*mesh_proto.Selector{
+								{
+									Match: mesh_proto.MatchAnyService(),
+								},
 							},
-							},
-							Destinations: []*mesh_proto.Selector{{
-								Match: mesh_proto.MatchAnyService(),
-							},
+							Destinations: []*mesh_proto.Selector{
+								{
+									Match: mesh_proto.MatchAnyService(),
+								},
 							},
 							Conf: &mesh_proto.TrafficRoute_Conf{
-								Split: []*mesh_proto.TrafficRoute_Split{{
-									Weight:      util_proto.UInt32(100),
-									Destination: mesh_proto.MatchAnyService(),
-								},
+								Split: []*mesh_proto.TrafficRoute_Split{
+									{
+										Weight:      util_proto.UInt32(100),
+										Destination: mesh_proto.MatchAnyService(),
+									},
 								},
 							},
 						},
@@ -656,7 +643,7 @@ var _ = Describe("TrafficRoute", func() {
 						DataplaneIP:   "127.0.0.1",
 						DataplanePort: 1234,
 					}: &core_mesh.TrafficRouteResource{
-						Meta: &PseudoMeta{
+						Meta: &test_model.ResourceMeta{
 							Name: "route-all-default",
 						},
 						Spec: &mesh_proto.TrafficRoute{
@@ -680,7 +667,7 @@ var _ = Describe("TrafficRoute", func() {
 						DataplaneIP:   "127.0.0.1",
 						DataplanePort: 1235,
 					}: &core_mesh.TrafficRouteResource{
-						Meta: &PseudoMeta{
+						Meta: &test_model.ResourceMeta{
 							Name: "route-all-default",
 						},
 						Spec: &mesh_proto.TrafficRoute{
@@ -711,12 +698,16 @@ var _ = Describe("TrafficRoute", func() {
 							},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
 								{
-									Port:    1234,
-									Service: "redis",
+									Port: 1234,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
 								},
 								{
-									Port:    1235,
-									Service: "elastic",
+									Port: 1235,
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "elastic",
+									},
 								},
 							},
 						},
@@ -724,23 +715,26 @@ var _ = Describe("TrafficRoute", func() {
 				},
 				routes: []*core_mesh.TrafficRouteResource{
 					{
-						Meta: &PseudoMeta{
+						Meta: &test_model.ResourceMeta{
 							Name: "route-all-default",
 						},
 						Spec: &mesh_proto.TrafficRoute{
-							Sources: []*mesh_proto.Selector{{
-								Match: mesh_proto.MatchAnyService(),
+							Sources: []*mesh_proto.Selector{
+								{
+									Match: mesh_proto.MatchAnyService(),
+								},
 							},
-							},
-							Destinations: []*mesh_proto.Selector{{
-								Match: mesh_proto.MatchAnyService(),
-							},
+							Destinations: []*mesh_proto.Selector{
+								{
+									Match: mesh_proto.MatchAnyService(),
+								},
 							},
 							Conf: &mesh_proto.TrafficRoute_Conf{
-								Split: []*mesh_proto.TrafficRoute_Split{{
-									Weight:      util_proto.UInt32(100),
-									Destination: mesh_proto.MatchAnyService(),
-								},
+								Split: []*mesh_proto.TrafficRoute_Split{
+									{
+										Weight:      util_proto.UInt32(100),
+										Destination: mesh_proto.MatchAnyService(),
+									},
 								},
 							},
 						},
@@ -772,7 +766,7 @@ var _ = Describe("TrafficRoute", func() {
 						DataplaneIP:   "127.0.0.1",
 						DataplanePort: 1234,
 					}: &core_mesh.TrafficRouteResource{
-						Meta: &PseudoMeta{
+						Meta: &test_model.ResourceMeta{
 							Name: "route-all-default",
 						},
 						Spec: &mesh_proto.TrafficRoute{
@@ -832,7 +826,7 @@ var _ = Describe("TrafficRoute", func() {
 				// when
 				destinations := BuildDestinationMap(given.dataplane, given.routes)
 				// expect
-				Expect(destinations).Should(Equal(given.expected))
+				Expect(destinations).Should(BeComparableTo(given.expected, cmp.Comparer(proto.Equal)))
 			},
 			Entry("Dataplane without outbound interfaces", testCase{
 				dataplane: core_mesh.NewDataplaneResource(),
@@ -844,8 +838,18 @@ var _ = Describe("TrafficRoute", func() {
 					Spec: &mesh_proto.Dataplane{
 						Networking: &mesh_proto.Dataplane_Networking{
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis", Port: 10001},
-								{Service: "elastic", Port: 10002},
+								{
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
+									Port: 10001,
+								},
+								{
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "elastic",
+									},
+									Port: 10002,
+								},
 							},
 						},
 					},
@@ -865,8 +869,18 @@ var _ = Describe("TrafficRoute", func() {
 					Spec: &mesh_proto.Dataplane{
 						Networking: &mesh_proto.Dataplane_Networking{
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis", Port: 10001},
-								{Service: "elastic", Port: 10002},
+								{
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
+									Port: 10001,
+								},
+								{
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "elastic",
+									},
+									Port: 10002,
+								},
 							},
 						},
 					},

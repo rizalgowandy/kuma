@@ -1,7 +1,7 @@
 package clusters_test
 
 import (
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
@@ -11,7 +11,6 @@ import (
 )
 
 var _ = Describe("EdsClusterConfigurer", func() {
-
 	It("should generate proper Envoy config", func() {
 		// given
 		clusterName := "test:cluster"
@@ -26,9 +25,9 @@ var _ = Describe("EdsClusterConfigurer", func() {
         type: EDS`
 
 		// when
-		cluster, err := clusters.NewClusterBuilder(envoy.APIV3).
-			Configure(clusters.EdsCluster(clusterName)).
-			Configure(clusters.Timeout(core_mesh.ProtocolTCP, DefaultTimeout())).
+		cluster, err := clusters.NewClusterBuilder(envoy.APIV3, clusterName).
+			Configure(clusters.EdsCluster()).
+			Configure(clusters.Timeout(DefaultTimeout(), core_mesh.ProtocolTCP)).
 			Build()
 
 		// then

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kumahq/kuma/pkg/plugins/runtime/k8s/metadata"
+
 	"github.com/pkg/errors"
 	kube_core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -31,12 +33,18 @@ func (p KumaProbe) ToReal(virtualPort uint32) (KumaProbe, error) {
 	if len(segments) < 2 || segments[0] != "" {
 		return KumaProbe{}, errors.New("not enough segments in probe's path")
 	}
+
+	// application probe proxy also supports TCP and gRPC probes, we skip them by returning an empty probe object
+	if segments[1] == "tcp" || segments[1] == "grpc" {
+		return KumaProbe{}, nil
+	}
+
 	vport, err := strconv.ParseInt(segments[1], 10, 32)
 	if err != nil {
 		return KumaProbe{}, errors.Errorf("invalid port value %s", segments[1])
 	}
 	return KumaProbe{
-		Handler: kube_core.Handler{
+		ProbeHandler: kube_core.ProbeHandler{
 			HTTPGet: &kube_core.HTTPGetAction{
 				Port: intstr.FromInt(int(vport)),
 				Path: fmt.Sprintf("/%s", strings.Join(segments[2:], "/")),
@@ -55,7 +63,7 @@ func (p KumaProbe) ToVirtual(virtualPort uint32) (KumaProbe, error) {
 		probePath = fmt.Sprintf("/%s", p.Path())
 	}
 	return KumaProbe{
-		Handler: kube_core.Handler{
+		ProbeHandler: kube_core.ProbeHandler{
 			HTTPGet: &kube_core.HTTPGetAction{
 				Port: intstr.FromInt(int(virtualPort)),
 				Path: fmt.Sprintf("/%d%s", p.Port(), probePath),
@@ -70,4 +78,37 @@ func (p KumaProbe) Port() uint32 {
 
 func (p KumaProbe) Path() string {
 	return p.HTTPGet.Path
+}
+
+func SetVirtualProbesEnabledAnnotation(annotations metadata.Annotations, podAnnotations map[string]string, cfgVirtualProbesEnabled bool) error {
+	str := func(b bool) string {
+		if b {
+			return metadata.AnnotationEnabled
+		}
+		return metadata.AnnotationDisabled
+	}
+
+	vpEnabled, vpExist, err := metadata.Annotations(podAnnotations).GetEnabled(metadata.KumaVirtualProbesAnnotation)
+	if err != nil {
+		return err
+	}
+	gwEnabled, _, err := metadata.Annotations(podAnnotations).GetEnabled(metadata.KumaGatewayAnnotation)
+	if err != nil {
+		return err
+	}
+
+	if gwEnabled {
+		if vpEnabled {
+			return errors.New("virtual probes can't be enabled in gateway mode")
+		}
+		annotations[metadata.KumaVirtualProbesAnnotation] = metadata.AnnotationDisabled
+		return nil
+	}
+
+	if vpExist {
+		annotations[metadata.KumaVirtualProbesAnnotation] = str(vpEnabled)
+		return nil
+	}
+	annotations[metadata.KumaVirtualProbesAnnotation] = str(cfgVirtualProbesEnabled)
+	return nil
 }

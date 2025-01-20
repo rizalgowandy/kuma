@@ -1,11 +1,11 @@
 package universal_test
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/config"
@@ -13,7 +13,6 @@ import (
 )
 
 var _ = Describe("Config", func() {
-
 	It("should be loadable from configuration file", func() {
 		// given
 		cfg := universal.UniversalRuntimeConfig{}
@@ -24,7 +23,8 @@ var _ = Describe("Config", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// and
-		Expect(cfg.DataplaneCleanupAge).To(Equal(5 * time.Hour))
+		Expect(cfg.DataplaneCleanupAge.Duration).To(Equal(5 * time.Hour))
+		Expect(cfg.VIPRefreshInterval.Duration).To(Equal(5 * time.Second))
 	})
 
 	It("should have consistent defaults", func() {
@@ -37,7 +37,7 @@ var _ = Describe("Config", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
-		expected, err := ioutil.ReadFile(filepath.Join("testdata", "default-config.golden.yaml"))
+		expected, err := os.ReadFile(filepath.Join("testdata", "default-config.golden.yaml"))
 		// then
 		Expect(err).ToNot(HaveOccurred())
 		// and
@@ -53,6 +53,6 @@ var _ = Describe("Config", func() {
 
 		// then
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal(`Invalid configuration: .DataplaneCleanupAge must be positive`))
+		Expect(err.Error()).To(Equal("parsing configuration from file 'testdata/invalid-config.input.yaml' failed: configuration validation failed: .DataplaneCleanupAge must be positive; .VIPRefreshInterval must be positive"))
 	})
 })

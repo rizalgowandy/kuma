@@ -1,15 +1,13 @@
 package v1alpha1_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	. "github.com/kumahq/kuma/api/mesh/v1alpha1"
 )
 
 var _ = Describe("MultiValueTagSet", func() {
-
 	Describe("HostnameEntries()", func() {
 		type testCase struct {
 			value    MultiValueTagSet
@@ -34,7 +32,6 @@ var _ = Describe("MultiValueTagSet", func() {
 })
 
 var _ = Describe("Dataplane_Networking", func() {
-
 	Describe("GetOutboundInterfaces()", func() {
 		Context("valid input values", func() {
 			type testCase struct {
@@ -45,10 +42,8 @@ var _ = Describe("Dataplane_Networking", func() {
 			DescribeTable("should parse valid input values",
 				func(given testCase) {
 					// when
-					ofaces, err := given.input.GetOutboundInterfaces()
+					ofaces := given.input.GetOutboundInterfaces()
 					// then
-					Expect(err).ToNot(HaveOccurred())
-					// and
 					Expect(ofaces).To(Equal(given.expected))
 				},
 				Entry("nil", testCase{
@@ -98,7 +93,6 @@ var _ = Describe("Dataplane_Networking", func() {
 	})
 
 	Describe("GetInboundInterfaces()", func() {
-
 		Context("valid input values", func() {
 			type testCase struct {
 				input    *Dataplane_Networking
@@ -108,10 +102,8 @@ var _ = Describe("Dataplane_Networking", func() {
 			DescribeTable("should parse valid input values",
 				func(given testCase) {
 					// when
-					ifaces, err := given.input.GetInboundInterfaces()
+					ifaces := given.input.GetInboundInterfaces()
 					// then
-					Expect(err).ToNot(HaveOccurred())
-					// and
 					Expect(ifaces).To(ConsistOf(given.expected))
 				},
 				Entry("nil", testCase{
@@ -138,7 +130,7 @@ var _ = Describe("Dataplane_Networking", func() {
 						},
 					},
 					expected: []InboundInterface{
-						{DataplaneAdvertisedIP: "192.168.0.1", DataplaneIP: "192.168.0.1", DataplanePort: 80, WorkloadIP: "127.0.0.1", WorkloadPort: 80},
+						{DataplaneAdvertisedIP: "192.168.0.1", DataplaneIP: "192.168.0.1", DataplanePort: 80, WorkloadIP: "192.168.0.1", WorkloadPort: 80},
 						{DataplaneAdvertisedIP: "192.168.0.2", DataplaneIP: "192.168.0.2", DataplanePort: 443, WorkloadIP: "192.168.0.3", WorkloadPort: 8443},
 					},
 				}),
@@ -147,12 +139,10 @@ var _ = Describe("Dataplane_Networking", func() {
 	})
 
 	Describe("GetHealthyInbounds()", func() {
-
 		It("should return only healty inbounds", func() {
 			networking := &Dataplane_Networking{
 				Inbound: []*Dataplane_Networking_Inbound{
 					{
-						Health:      nil,
 						Port:        8080,
 						ServicePort: 80,
 					},
@@ -162,15 +152,30 @@ var _ = Describe("Dataplane_Networking", func() {
 						ServicePort: 90,
 					},
 					{
+						State:       Dataplane_Networking_Inbound_Ready,
+						Port:        9091,
+						ServicePort: 91,
+					},
+					{
 						Health:      &Dataplane_Networking_Inbound_Health{Ready: false},
 						Port:        7070,
 						ServicePort: 70,
+					},
+					{
+						State:       Dataplane_Networking_Inbound_NotReady,
+						Port:        9092,
+						ServicePort: 92,
+					},
+					{
+						State:       Dataplane_Networking_Inbound_Ignored,
+						Port:        9093,
+						ServicePort: 93,
 					},
 				},
 			}
 
 			actual := networking.GetHealthyInbounds()
-			Expect(actual).To(HaveLen(2))
+			Expect(actual).To(HaveLen(3))
 			Expect(actual).To(ConsistOf(
 				&Dataplane_Networking_Inbound{
 					Health:      &Dataplane_Networking_Inbound_Health{Ready: true},
@@ -178,60 +183,21 @@ var _ = Describe("Dataplane_Networking", func() {
 					ServicePort: 90,
 				},
 				&Dataplane_Networking_Inbound{
+					State:       Dataplane_Networking_Inbound_Ready,
+					Port:        9091,
+					ServicePort: 91,
+				},
+				&Dataplane_Networking_Inbound{
 					Port:        8080,
 					ServicePort: 80,
-				}))
+				}),
+			)
 		})
 	})
 })
 
-var _ = Describe("Dataplane_Networking_Outbound", func() {
-	type testCase struct {
-		serviceTag    string
-		selector      TagSelector
-		expectedMatch bool
-	}
-	DescribeTable("MatchTags()",
-		func(given testCase) {
-			// given
-			outbound := Dataplane_Networking_Outbound{
-				Service: given.serviceTag,
-			}
-
-			// when
-			matched := outbound.MatchTags(given.selector)
-
-			// then
-			Expect(matched).To(Equal(given.expectedMatch))
-		},
-		Entry("it should match *", testCase{
-			serviceTag: "backend",
-			selector: map[string]string{
-				"kuma.io/service": "*",
-			},
-			expectedMatch: true,
-		}),
-		Entry("it should match service", testCase{
-			serviceTag: "backend",
-			selector: map[string]string{
-				"kuma.io/service": "backend",
-			},
-			expectedMatch: true,
-		}),
-		Entry("it shouldn't match tag other than service", testCase{
-			serviceTag: "backend",
-			selector: map[string]string{
-				"version": "1.0",
-			},
-			expectedMatch: false,
-		}),
-	)
-})
-
 var _ = Describe("Dataplane_Networking_Inbound", func() {
-
-	DescribeTable("GetService()", func() {
-
+	Describe("GetService()", func() {
 		type testCase struct {
 			inbound  *Dataplane_Networking_Inbound
 			expected string
@@ -260,8 +226,7 @@ var _ = Describe("Dataplane_Networking_Inbound", func() {
 		)
 	})
 
-	DescribeTable("GetProtocol()", func() {
-
+	Describe("GetProtocol()", func() {
 		type testCase struct {
 			inbound  *Dataplane_Networking_Inbound
 			expected string
@@ -282,7 +247,7 @@ var _ = Describe("Dataplane_Networking_Inbound", func() {
 			Entry("inbound has `protocol` tag with a known value", testCase{
 				inbound: &Dataplane_Networking_Inbound{
 					Tags: map[string]string{
-						"protocol": "http",
+						"kuma.io/protocol": "http",
 					},
 				},
 				expected: "http",
@@ -290,7 +255,7 @@ var _ = Describe("Dataplane_Networking_Inbound", func() {
 			Entry("inbound has `protocol` tag with an unknown value", testCase{
 				inbound: &Dataplane_Networking_Inbound{
 					Tags: map[string]string{
-						"protocol": "not-yet-supported-protocol",
+						"kuma.io/protocol": "not-yet-supported-protocol",
 					},
 				},
 				expected: "not-yet-supported-protocol",
@@ -331,29 +296,6 @@ var _ = Describe("Dataplane with inbound", func() {
 			Expect(tags.Values("role")).To(Equal([]string{"metrics"}))
 		})
 	})
-
-	Describe("MatchTags()", func() {
-		It("should match any inbound", func() {
-			// when
-			selector := TagSelector{
-				"kuma.io/service": "backend",
-				"version":         "v1",
-			}
-
-			// then
-			Expect(d.MatchTags(selector)).To(BeTrue())
-		})
-
-		It("should not match if all inbounds did not match", func() {
-			// when
-			selector := TagSelector{
-				"kuma.io/service": "unknown",
-			}
-
-			// then
-			Expect(d.MatchTags(selector)).To(BeFalse())
-		})
-	})
 })
 
 var _ = Describe("Dataplane classification", func() {
@@ -364,7 +306,6 @@ var _ = Describe("Dataplane classification", func() {
 			}
 			Expect(dp.IsDelegatedGateway()).To(BeFalse())
 			Expect(dp.IsBuiltinGateway()).To(BeFalse())
-			Expect(dp.IsIngress()).To(BeFalse())
 		})
 	})
 
@@ -377,7 +318,6 @@ var _ = Describe("Dataplane classification", func() {
 			}
 			Expect(gw.IsDelegatedGateway()).To(BeTrue())
 			Expect(gw.IsBuiltinGateway()).To(BeFalse())
-			Expect(gw.IsIngress()).To(BeFalse())
 		})
 	})
 
@@ -392,7 +332,6 @@ var _ = Describe("Dataplane classification", func() {
 			}
 			Expect(gw.IsDelegatedGateway()).To(BeTrue())
 			Expect(gw.IsBuiltinGateway()).To(BeFalse())
-			Expect(gw.IsIngress()).To(BeFalse())
 		})
 	})
 
@@ -407,20 +346,6 @@ var _ = Describe("Dataplane classification", func() {
 			}
 			Expect(gw.IsDelegatedGateway()).To(BeFalse())
 			Expect(gw.IsBuiltinGateway()).To(BeTrue())
-			Expect(gw.IsIngress()).To(BeFalse())
-		})
-	})
-
-	Describe("with ingress networking", func() {
-		It("should be an ingress gateway", func() {
-			in := Dataplane{
-				Networking: &Dataplane_Networking{
-					Ingress: &Dataplane_Networking_Ingress{},
-				},
-			}
-			Expect(in.IsDelegatedGateway()).To(BeFalse())
-			Expect(in.IsBuiltinGateway()).To(BeFalse())
-			Expect(in.IsIngress()).To(BeTrue())
 		})
 	})
 })
@@ -446,33 +371,9 @@ var _ = Describe("Dataplane with gateway", func() {
 			Expect(tags.Values("kuma.io/service")).To(Equal([]string{"backend"}))
 		})
 	})
-
-	Describe("MatchTags()", func() {
-		It("should match gateway", func() {
-			// when
-			selector := TagSelector{
-				"kuma.io/service": "backend",
-				"version":         "v1",
-			}
-
-			// then
-			Expect(d.MatchTags(selector)).To(BeTrue())
-		})
-
-		It("should not match if gateway did not match", func() {
-			// when
-			selector := TagSelector{
-				"kuma.io/service": "unknown",
-			}
-
-			// then
-			Expect(d.MatchTags(selector)).To(BeFalse())
-		})
-	})
 })
 
 var _ = Describe("TagSelector", func() {
-
 	Describe("Matches()", func() {
 		type testCase struct {
 			tags  map[string]string
@@ -599,7 +500,6 @@ var _ = Describe("Tags", func() {
 })
 
 var _ = Describe("TagSelectorRank", func() {
-
 	Describe("CompareTo()", func() {
 		type testCase struct {
 			rank1    TagSelectorRank

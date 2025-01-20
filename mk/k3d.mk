@@ -1,28 +1,157 @@
-CI_K3D_VERSION ?= v4.4.5
+CI_K3S_VERSION ?= $(K8S_MIN_VERSION)
+METALLB_VERSION ?= v0.13.9
+K3D_VERSION ?= $(shell $(TOP)/$(KUMA_DIR)/mk/dependencies/k3d.sh - get-version)
 
-K3D_PATH := $(CI_TOOLS_DIR)/k3d
-
-KUMA_MODE ?= standalone
+KUMA_MODE ?= zone
 KUMA_NAMESPACE ?= kuma-system
-PORT_PREFIX := $$(( $(subst kuma-,30,$(KIND_CLUSTER_NAME)) - 1 ))
+# Comment about PORT_PREFIX generation
+#
+# First step: $(KIND_CLUSTER_NAME:kuma%=300%) will replace a string "kuma" from
+# the $(KIND_CLUSTER_NAME) variable with the string "300" (default/initial
+# prefix):
+#
+#  Initial value				Step#1
+#  KIND_CLUSTER_NAME(kuma) ->	300
+#  KIND_CLUSTER_NAME(kuma-1) ->	300-1
+#  KIND_CLUSTER_NAME(kuma-2) ->	300-2
+#  KIND_CLUSTER_NAME(kuma-3) ->	300-3
+#  [...etc]
+#
+# The next step - $(patsubst 300-%,300+%-1,...) will replace string
+# "300-[1,2,3...]" with string "300+[1,2,3...]-1" ("-1" is necessary to preserve
+# the current overflow, so when the KIND_CLUSTER_NAME is equal "kuma", OR
+# "kuma-1" when value of the port will be equal "300"):
+#
+#  Initial value				Step#1		Step#2
+#  KIND_CLUSTER_NAME(kuma) ->	300 ->		300
+#  KIND_CLUSTER_NAME(kuma-1) ->	300-1 ->	300+1-1
+#  KIND_CLUSTER_NAME(kuma-2) ->	300-2 ->	300+2-1
+#  KIND_CLUSTER_NAME(kuma-3) ->	300-3 ->	300+3-1
+#  [...etc]
+#
+# The last step $$((...)) will call the shell to use the expression we generated
+# earlier and calculate it's arithmetic value:
+#
+#  Initial value				Step#1		Step#2		Step#3	Result
+#  KIND_CLUSTER_NAME(kuma) ->	300 ->		300 ->		300 ->	PORT_PREFIX(300)
+#  KIND_CLUSTER_NAME(kuma-1) ->	300-1 ->	300+1-1 ->	300 ->	PORT_PREFIX(300)
+#  KIND_CLUSTER_NAME(kuma-2) ->	300-2 ->	300+2-1 ->	301 ->	PORT_PREFIX(301)
+#  KIND_CLUSTER_NAME(kuma-3) ->	300-3 ->	300+3-1 ->	302 ->	PORT_PREFIX(302)
+#  [...etc]
+PORT_PREFIX := $$(($(patsubst 300-%,300+%-1,$(KIND_CLUSTER_NAME:kuma%=300%))))
+
+K3D_NETWORK_CNI ?= flannel
+K3D_REGISTRY_FILE ?=
+K3D_CLUSTER_CREATE_OPTS ?= -i rancher/k3s:$(CI_K3S_VERSION) \
+	--k3s-arg '--disable=traefik@server:0' \
+	--k3s-arg '--disable=metrics-server@server:0' \
+	--k3s-arg '--kubelet-arg=image-gc-high-threshold=100@server:0' \
+	--k3s-arg '--disable=servicelb@server:0' \
+    --volume '$(subst @,\@,$(TOP)/$(KUMA_DIR))/test/framework/deployments:/tmp/deployments@server:0' \
+	--network kind \
+	--port "$(PORT_PREFIX)80-$(PORT_PREFIX)99:30080-30099@server:0" \
+	--registry-config "/tmp/.kuma-dev/k3d-registry.yaml" \
+	--timeout 120s
+
+ifeq ($(K3D_NETWORK_CNI),calico)
+	K3D_CLUSTER_CREATE_OPTS += --volume "$(TOP)/$(KUMA_DIR)/test/k3d/calico.$(K3D_VERSION).yaml:/var/lib/rancher/k3s/server/manifests/calico.yaml" \
+		--k3s-arg '--flannel-backend=none@server:*' --k3s-arg '--disable-network-policy@server:*'
+endif
+
+ifdef CI
+ifeq ($(GOOS),linux)
+ifneq (,$(findstring legacy,$(CIRCLE_JOB)))
+	K3D_CLUSTER_CREATE_OPTS += --volume "/sys/fs/bpf:/sys/fs/bpf:shared"
+endif
+endif
+endif
+
+ifeq ($(GOOS),linux)
+ifndef CI
+	K3D_CLUSTER_CREATE_OPTS += --volume "/sys/fs/bpf:/sys/fs/bpf:shared"
+endif
+endif
+
+KIND_NETWORK_OPTS =  -o com.docker.network.bridge.enable_ip_masquerade=true
+ifdef IPV6
+    KIND_NETWORK_OPTS += --ipv6 --subnet "fd00:fd12:3456::0/64"
+endif
+
+K3D_HELM_DEPLOY_OPTS = \
+	--set global.image.registry="$(DOCKER_REGISTRY)"
+
+ifeq ($(BUILD_INFO_VERSION),0.0.0-preview.vlocal-build)
+	K3D_HELM_DEPLOY_OPTS += \
+		--set global.image.tag="$(BUILD_INFO_VERSION)"
+else
+	K3D_HELM_DEPLOY_OPTS += \
+		--set controlPlane.image.tag="$(BUILD_INFO_VERSION)" \
+		--set cni.image.tag="$(BUILD_INFO_VERSION)" \
+		--set dataPlane.image.tag="$(BUILD_INFO_VERSION)" \
+		--set dataPlane.initImage.tag="$(BUILD_INFO_VERSION)" \
+		--set kumactl.image.tag="$(BUILD_INFO_VERSION)"
+endif
+
+ifndef K3D_HELM_DEPLOY_NO_CNI
+	K3D_HELM_DEPLOY_OPTS += \
+		--set cni.enabled=true \
+		--set cni.chained=true \
+		--set cni.netDir=/var/lib/rancher/k3s/agent/etc/cni/net.d/ \
+		--set cni.binDir=/bin/ \
+		--set cni.confName=10-flannel.conflist
+endif
+
+ifdef K3D_HELM_DEPLOY_ADDITIONAL_OPTS
+	K3D_HELM_DEPLOY_OPTS += $(K3D_HELM_DEPLOY_ADDITIONAL_OPTS)
+endif
+
+define maybe_with_flock
+  if which flock >/dev/null 2>&1; then \
+    SHELL=bash flock -x $(BUILD_DIR)/k3d_network.lock -c $(1); \
+  else \
+    bash -c $(1); \
+  fi
+endef
+
+.PHONY: k3d/network/create
+k3d/network/create:
+	@touch $(BUILD_DIR)/k3d_network.lock && \
+		$(call maybe_with_flock,"if ! docker network inspect kind >/dev/null 2>&1; then \
+		  docker network create -d=bridge $(KIND_NETWORK_OPTS) kind >/dev/null; \
+		fi; \
+		echo 'Using docker network: '; \
+		docker network inspect kind --format='{{ .Id }}'")
+	@rm -f $(BUILD_DIR)/k3d_network.lock
+
+DOCKERHUB_PULL_CREDENTIAL ?=
+.PHONY: k3d/setup-docker-credentials
+k3d/setup-docker-credentials:
+	@mkdir -p /tmp/.kuma-dev ; \
+	echo '{"configs": {}}' > /tmp/.kuma-dev/k3d-registry.yaml ; \
+	if [[ "$(DOCKERHUB_PULL_CREDENTIAL)" != "" ]]; then \
+  		DOCKER_USER=$$(echo "$(DOCKERHUB_PULL_CREDENTIAL)" | cut -d ':' -f 1); \
+  		DOCKER_PWD=$$(echo "$(DOCKERHUB_PULL_CREDENTIAL)" | cut -d ':' -f 2); \
+  		echo "{\"configs\": {\"registry-1.docker.io\": {\"auth\": {\"username\": \"$${DOCKER_USER}\",\"password\":\"$${DOCKER_PWD}\"}}}}" > /tmp/.kuma-dev/k3d-registry.yaml ; \
+  	fi
+
+.PHONY: k3d/cleanup-docker-credentials
+k3d/cleanup-docker-credentials:
+	@rm -f /tmp/.kuma-dev/k3d-registry.yaml
+
+$(TOP)/$(KUMA_DIR)/test/k3d/calico.$(K3D_VERSION).yaml:
+	@mkdir -p $(TOP)/$(KUMA_DIR)/test/k3d
+	curl --location --fail --silent --retry 5 \
+		-o $(TOP)/$(KUMA_DIR)/test/k3d/calico.$(K3D_VERSION).yaml \
+		https://k3d.io/v$(K3D_VERSION)/usage/advanced/calico.yaml
 
 .PHONY: k3d/start
-k3d/start: ${KIND_KUBECONFIG_DIR}
-	@docker network create \
-		-d=bridge -o com.docker.network.bridge.enable_ip_masquerade=true \
-		--ipv6 --subnet "fd00:fd12:3456::0/64" kind || true
-	@k3d cluster list | grep $(KIND_CLUSTER_NAME) >/dev/null 2>&1 && echo "K3d cluster already running." && exit 0 || \
-		(KUBECONFIG=$(KIND_KUBECONFIG)  \
-		  k3d cluster create "$(KIND_CLUSTER_NAME)" \
-		  	--k3s-server-arg '--no-deploy=traefik' \
-		  	--k3s-server-arg '--disable=metrics-server' \
-		  	--no-lb --no-hostip \
-		  	--network kind \
-		  	--port "$(PORT_PREFIX)80-$(PORT_PREFIX)89:30080-30089" \
-		  	--timeout 120s && \
-		until \
-			KUBECONFIG=$(KIND_KUBECONFIG) kubectl wait -n kube-system --timeout=5s --for condition=Ready --all pods ; \
-		do echo "Waiting for the cluster to come up" && sleep 1; done )
+k3d/start: ${KIND_KUBECONFIG_DIR} k3d/network/create k3d/setup-docker-credentials \
+	$(if $(findstring calico,$(K3D_NETWORK_CNI)),$(TOP)/$(KUMA_DIR)/test/k3d/calico.$(K3D_VERSION).yaml)
+
+	@echo "PORT_PREFIX=$(PORT_PREFIX)"
+	@KUBECONFIG=$(KIND_KUBECONFIG) \
+		$(K3D_BIN) cluster create "$(KIND_CLUSTER_NAME)" $(K3D_CLUSTER_CREATE_OPTS)
+	$(MAKE) k3d/wait
 	@echo
 	@echo '>>> You need to manually run the following command in your shell: >>>'
 	@echo
@@ -30,58 +159,94 @@ k3d/start: ${KIND_KUBECONFIG_DIR}
 	@echo
 	@echo '<<< ------------------------------------------------------------- <<<'
 	@echo
+	$(MAKE) k3d/configure/ebpf
+	$(MAKE) k3d/configure/metallb
+
+.PHONY: k3d/configure/ebpf
+k3d/configure/ebpf:
+ifeq ($(GOOS),darwin)
+	docker exec k3d-$(KIND_CLUSTER_NAME)-server-0 mount bpffs /sys/fs/bpf -t bpf && \
+	docker exec k3d-$(KIND_CLUSTER_NAME)-server-0 mount --make-shared /sys/fs/bpf
+endif
+
+.PHONY: k3d/configure/metallb
+k3d/configure/metallb:
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) apply -f https://raw.githubusercontent.com/metallb/metallb/$(METALLB_VERSION)/config/manifests/metallb-native.yaml
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) wait --timeout=120s --for=condition=Ready -n metallb-system --all pods
+	@# Construct a valid address space from the docker network and the template IPAddressPool
+	@# Make sure we only take an IPv4 network
+	@IFS=. read -ra NETWORK_ADDR_SPACE <<< "$$(docker network inspect kind --format json | jq -r '.[0].IPAM.Config[].Subnet | select(. | contains(":") | not)')"; \
+		IFS=/ read -r _byte prefix <<< "$${NETWORK_ADDR_SPACE[3]}"; \
+		    if [[ "$${prefix}" -gt 16 ]]; then echo "Unexpected docker network, expecting a prefix of at most 16 bits"; exit 1; fi; \
+		IFS=. read -ra BASE_ADDR_SPACE <<< "$$($(YQ) 'select(.kind == "IPAddressPool") | .spec.addresses[0]' $(KUMA_DIR)/mk/metallb-k3d-$(KIND_CLUSTER_NAME).yaml)"; \
+		ADDR_SPACE="$${NETWORK_ADDR_SPACE[0]}.$${NETWORK_ADDR_SPACE[1]}.$${BASE_ADDR_SPACE[2]}.$${BASE_ADDR_SPACE[3]}" \
+	      $(YQ) '(select(.kind == "IPAddressPool") | .spec.addresses[0]) = env(ADDR_SPACE)' $(KUMA_DIR)/mk/metallb-k3d-$(KIND_CLUSTER_NAME).yaml | \
+		KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) apply -f -
+
+.PHONY: k3d/wait
+k3d/wait:
+	@TIMES_TRIED=0; \
+	MAX_ALLOWED_TRIES=30; \
+	until KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) wait -n kube-system --timeout=5s --for condition=Ready --all pods; do \
+    	echo "Waiting for the cluster to come up" && sleep 1; \
+  		TIMES_TRIED=$$((TIMES_TRIED+1)); \
+  		if [[ $$TIMES_TRIED -ge $$MAX_ALLOWED_TRIES ]]; then KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) get pods -n kube-system -o Name | KUBECONFIG=$(KIND_KUBECONFIG) xargs -I % $(KUBECTL) -n kube-system describe %; exit 1; fi \
+    done
 
 .PHONY: k3d/stop
-k3d/stop:
-	@KUBECONFIG=$(KIND_KUBECONFIG) k3d cluster delete "$(KIND_CLUSTER_NAME)"
+k3d/stop: k3d/cleanup-docker-credentials
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(K3D_BIN) cluster delete "$(KIND_CLUSTER_NAME)"
 
 .PHONY: k3d/stop/all
 k3d/stop/all:
-	@KUBECONFIG=$(KIND_KUBECONFIG) k3d cluster delete --all
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(K3D_BIN) cluster delete --all
 
 .PHONY: k3d/load/images
 k3d/load/images:
-	@k3d image import \
-    	$(KUMA_CP_DOCKER_IMAGE) $(KUMA_DP_DOCKER_IMAGE) \
-    	$(KUMA_INIT_DOCKER_IMAGE) $(KUMA_PROMETHEUS_SD_DOCKER_IMAGE) \
-    	$(KUMACTL_DOCKER_IMAGE) kuma-universal:latest \
-    	--cluster=$(KIND_CLUSTER_NAME) --verbose
+	# https://github.com/k3d-io/k3d/issues/900 can cause failures that simple retry will fix
+	for i in 1 2 3 4 5; do $(K3D_BIN) image import --mode=direct $(KUMA_IMAGES) --cluster=$(KIND_CLUSTER_NAME) --verbose && s=0 && break || s=$$? && echo "Image import failed. Retrying..."; done; (exit $$s)
 
 .PHONY: k3d/load
-k3d/load: image/kuma-cp image/kuma-dp image/kuma-init image/kuma-prometheus-sd image/kumactl docker/build/kuma-universal k3d/load/images
+k3d/load:
+ifndef K3D_DONT_LOAD
+	$(MAKE) images
+	$(MAKE) docker/tag
+	$(MAKE) k3d/load/images
+endif
 
 .PHONY: k3d/deploy/kuma
 k3d/deploy/kuma: build/kumactl k3d/load
-	@KUBECONFIG=$(KIND_KUBECONFIG) $(BUILD_ARTIFACTS_DIR)/kumactl/kumactl install --mode $(KUMA_MODE) control-plane $(KUMACTL_INSTALL_CONTROL_PLANE_IMAGES) | KUBECONFIG=$(KIND_KUBECONFIG)  kubectl apply -f -
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl wait --timeout=60s --for=condition=Available -n $(KUMA_NAMESPACE) deployment/kuma-control-plane
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl wait --timeout=60s --for=condition=Ready -n $(KUMA_NAMESPACE) pods -l app=kuma-control-plane
-	@KUBECONFIG=$(KIND_KUBECONFIG) kumactl install dns | kubectl apply -f -
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl delete -n $(EXAMPLE_NAMESPACE) pod -l app=example-app
-	@until \
-	KUBECONFIG=$(KIND_KUBECONFIG) kubectl wait -n kube-system --timeout=5s --for condition=Ready --all pods ; \
-    do \
-    	echo "Waiting for the cluster to come up" && sleep 1; \
-    done
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(BUILD_ARTIFACTS_DIR)/kumactl/kumactl install --mode $(KUMA_MODE) control-plane $(KUMACTL_INSTALL_CONTROL_PLANE_IMAGES) | KUBECONFIG=$(KIND_KUBECONFIG)  $(KUBECTL) apply -f -
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) wait --timeout=60s --for=condition=Available -n $(KUMA_NAMESPACE) deployment/kuma-control-plane
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) wait --timeout=60s --for=condition=Ready -n $(KUMA_NAMESPACE) pods -l app=kuma-control-plane
+	until \
+		 KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) get mesh default ; \
+	do echo "Waiting for default mesh to be present" && sleep 1; done
 
 .PHONY: k3d/deploy/helm
 k3d/deploy/helm: k3d/load
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl delete namespace $(KUMA_NAMESPACE) | true
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl create namespace $(KUMA_NAMESPACE)
-	@KUBECONFIG=$(KIND_KUBECONFIG) helm install --namespace $(KUMA_NAMESPACE) \
-                --set global.image.registry="$(DOCKER_REGISTRY)" \
-                --set global.image.tag="$(BUILD_INFO_GIT_TAG)" \
-                --set cni.enabled=true \
-                --set cni.chained=true \
-                --set cni.netDir=/var/lib/rancher/k3s/agent/etc/cni/net.d/ \
-                --set cni.binDir=/bin/ \
-                --set cni.confName=10-flannel.conflist \
-                kuma ./deployments/charts/kuma
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl wait --timeout=60s --for=condition=Available -n $(KUMA_NAMESPACE) deployment/kuma-control-plane
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl wait --timeout=60s --for=condition=Ready -n $(KUMA_NAMESPACE) pods -l app=kuma-control-plane
+ifndef K3D_DEPLOY_HELM_DONT_DELETE_NS
+	@KUBECONFIG=$(KIND_KUBECONFIG) helm delete --wait --ignore-not-found --namespace $(KUMA_NAMESPACE) kuma 2>/dev/null
+	@until \
+	    ! @KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) get pods -n $(KUMA_NAMESPACE) --selector app=kuma-control-plane 2>/dev/null ; \
+	do sleep 1; done
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) delete namespace $(KUMA_NAMESPACE) --force --wait --ignore-not-found 2>/dev/null
+	@until \
+	    ! @KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) get namespace $(KUMA_NAMESPACE) 2>/dev/null ; \
+	do sleep 1; done
+endif
+	KUBECONFIG=$(KIND_KUBECONFIG) helm upgrade --install --namespace $(KUMA_NAMESPACE) --create-namespace $(K3D_HELM_DEPLOY_OPTS) kuma ./deployments/charts/kuma
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) wait --timeout=60s --for=condition=Available -n $(KUMA_NAMESPACE) deployment/kuma-control-plane
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) wait --timeout=60s --for=condition=Ready -n $(KUMA_NAMESPACE) pods -l app=kuma-control-plane
 
-.PHONY: k3d/deploy/example-app
-k3d/deploy/example-app:
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl create namespace $(EXAMPLE_NAMESPACE) || true
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl annotate namespace $(EXAMPLE_NAMESPACE) kuma.io/sidecar-injection=enabled --overwrite
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl apply -n $(EXAMPLE_NAMESPACE) -f dev/examples/k8s/example-app/example-app.yaml
-	@KUBECONFIG=$(KIND_KUBECONFIG) kubectl wait --timeout=60s --for=condition=Available -n $(EXAMPLE_NAMESPACE) pods -l app=example-app
+.PHONY: k3d/deploy/demo
+k3d/deploy/demo: build/kumactl
+	@$(BUILD_ARTIFACTS_DIR)/kumactl/kumactl install demo | KUBECONFIG=$(KIND_KUBECONFIG)  $(KUBECTL) apply -f -
+	@KUBECONFIG=$(KIND_KUBECONFIG) $(KUBECTL) wait --timeout=60s --for=condition=Ready -n kuma-demo --all pods
+
+.PHONY: k3d/restart
+k3d/restart:
+	$(MAKE) k3d/stop
+	$(MAKE) k3d/start
+	$(MAKE) k3d/deploy/kuma
+	$(MAKE) k3d/deploy/demo

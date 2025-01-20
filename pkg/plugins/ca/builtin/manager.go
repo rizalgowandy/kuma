@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/asaskevich/govalidator"
 	"github.com/pkg/errors"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	system_proto "github.com/kumahq/kuma/api/system/v1alpha1"
+	"github.com/kumahq/kuma/pkg/core"
 	core_ca "github.com/kumahq/kuma/pkg/core/ca"
 	ca_issuer "github.com/kumahq/kuma/pkg/core/ca/issuer"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
@@ -19,6 +21,10 @@ import (
 	"github.com/kumahq/kuma/pkg/plugins/ca/builtin/config"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
+
+var log = core.Log.WithName("ca").WithName("builtin")
+
+const MaxBackendNameLength = 255
 
 type builtinCaManager struct {
 	secretManager manager.ResourceManager
@@ -32,10 +38,12 @@ func NewBuiltinCaManager(secretManager manager.ResourceManager) core_ca.Manager 
 
 var _ core_ca.Manager = &builtinCaManager{}
 
-func (b *builtinCaManager) EnsureBackends(ctx context.Context, mesh string, backends []*mesh_proto.CertificateAuthorityBackend) error {
+func (b *builtinCaManager) EnsureBackends(ctx context.Context, mesh core_model.Resource, backends []*mesh_proto.CertificateAuthorityBackend) error {
 	for _, backend := range backends {
-		_, err := b.getCa(ctx, mesh, backend.Name)
-		if err == nil { // CA is there, nothing to ensure
+		meshName := mesh.GetMeta().GetName()
+		_, err := b.getCa(ctx, meshName, backend.Name)
+		if err == nil {
+			log.V(1).Info("CA secrets already exist. Nothing to create", "mesh", mesh, "backend", backend.Name)
 			continue
 		}
 
@@ -46,6 +54,7 @@ func (b *builtinCaManager) EnsureBackends(ctx context.Context, mesh string, back
 		if err := b.create(ctx, mesh, backend); err != nil {
 			return errors.Wrapf(err, "failed to create CA for mesh %q and backend %q", mesh, backend.Name)
 		}
+		log.Info("CA created", "mesh", meshName)
 	}
 	return nil
 }
@@ -55,9 +64,15 @@ func (b *builtinCaManager) ValidateBackend(ctx context.Context, mesh string, bac
 	cfg := &config.BuiltinCertificateAuthorityConfig{}
 	if err := util_proto.ToTyped(backend.Conf, cfg); err != nil {
 		verr.AddViolation("", "could not convert backend config: "+err.Error())
-		return verr.OrNil()
 	}
-	return nil
+	backendNameWithPrefix := createSecretName(mesh, backend.Name, "cert")
+	if len(backendNameWithPrefix) > MaxBackendNameLength {
+		verr.AddViolationAt(core_validators.RootedAt("mtls").Field("backends").Field("name"), fmt.Sprintf("Backend name is too long. Max length: %d", MaxBackendNameLength))
+	}
+	if !govalidator.IsDNSName(backendNameWithPrefix) || !govalidator.IsLowerCase(backendNameWithPrefix) {
+		verr.AddViolationAt(core_validators.RootedAt("mtls").Field("backends").Field("name"), fmt.Sprintf("%q name must be valid dns name", backend.Name))
+	}
+	return verr.OrNil()
 }
 
 func (b *builtinCaManager) UsedSecrets(mesh string, backend *mesh_proto.CertificateAuthorityBackend) ([]string, error) {
@@ -67,7 +82,8 @@ func (b *builtinCaManager) UsedSecrets(mesh string, backend *mesh_proto.Certific
 	}, nil
 }
 
-func (b *builtinCaManager) create(ctx context.Context, mesh string, backend *mesh_proto.CertificateAuthorityBackend) error {
+func (b *builtinCaManager) create(ctx context.Context, mesh core_model.Resource, backend *mesh_proto.CertificateAuthorityBackend) error {
+	meshName := mesh.GetMeta().GetName()
 	cfg := &config.BuiltinCertificateAuthorityConfig{}
 	if err := util_proto.ToTyped(backend.Conf, cfg); err != nil {
 		return errors.Wrap(err, "could not convert backend config to BuiltinCertificateAuthorityConfig")
@@ -81,9 +97,9 @@ func (b *builtinCaManager) create(ctx context.Context, mesh string, backend *mes
 		}
 		opts = append(opts, withExpirationTime(duration))
 	}
-	keyPair, err := newRootCa(mesh, int(cfg.GetCaCert().GetRSAbits().GetValue()), opts...)
+	keyPair, err := newRootCa(meshName, int(cfg.GetCaCert().GetRSAbits().GetValue()), opts...)
 	if err != nil {
-		return errors.Wrapf(err, "failed to generate a Root CA cert for Mesh %q", mesh)
+		return errors.Wrapf(err, "failed to generate a Root CA cert for Mesh %q", meshName)
 	}
 
 	certSecret := &core_system.SecretResource{
@@ -91,8 +107,11 @@ func (b *builtinCaManager) create(ctx context.Context, mesh string, backend *mes
 			Data: util_proto.Bytes(keyPair.CertPEM),
 		},
 	}
-	if err := b.secretManager.Create(ctx, certSecret, core_store.CreateBy(certSecretResKey(mesh, backend.Name))); err != nil {
-		return err
+	if err := b.secretManager.Create(ctx, certSecret, core_store.CreateWithOwner(mesh), core_store.CreateBy(certSecretResKey(meshName, backend.Name))); err != nil {
+		if !errors.Is(err, &core_store.ResourceConflictError{}) {
+			return err
+		}
+		log.V(1).Info("CA certificate already exists. Nothing to create", "mesh", meshName, "backend", backend.Name)
 	}
 
 	keySecret := &core_system.SecretResource{
@@ -100,8 +119,11 @@ func (b *builtinCaManager) create(ctx context.Context, mesh string, backend *mes
 			Data: util_proto.Bytes(keyPair.KeyPEM),
 		},
 	}
-	if err := b.secretManager.Create(ctx, keySecret, core_store.CreateBy(keySecretResKey(mesh, backend.Name))); err != nil {
-		return err
+	if err := b.secretManager.Create(ctx, keySecret, core_store.CreateWithOwner(mesh), core_store.CreateBy(keySecretResKey(meshName, backend.Name))); err != nil {
+		if !errors.Is(err, &core_store.ResourceConflictError{}) {
+			return err
+		}
+		log.V(1).Info("CA secret key already exists. Nothing to create", "mesh", meshName, "backend", backend.Name)
 	}
 	return nil
 }
@@ -109,15 +131,19 @@ func (b *builtinCaManager) create(ctx context.Context, mesh string, backend *mes
 func certSecretResKey(mesh string, backendName string) core_model.ResourceKey {
 	return core_model.ResourceKey{
 		Mesh: mesh,
-		Name: fmt.Sprintf("%s.ca-builtin-cert-%s", mesh, backendName), // we add mesh as a prefix to have uniqueness of Secret names on K8S
+		Name: createSecretName(mesh, backendName, "cert"),
 	}
 }
 
 func keySecretResKey(mesh string, backendName string) core_model.ResourceKey {
 	return core_model.ResourceKey{
 		Mesh: mesh,
-		Name: fmt.Sprintf("%s.ca-builtin-key-%s", mesh, backendName), // we add mesh as a prefix to have uniqueness of Secret names on K8S
+		Name: createSecretName(mesh, backendName, "key"),
 	}
+}
+
+func createSecretName(mesh string, backendName string, secretType string) string {
+	return fmt.Sprintf("%s.ca-builtin-%s-%s", mesh, secretType, backendName) // we add mesh as a prefix to have uniqueness of Secret names on K8S
 }
 
 func (b *builtinCaManager) GetRootCert(ctx context.Context, mesh string, backend *mesh_proto.CertificateAuthorityBackend) ([]core_ca.Cert, error) {

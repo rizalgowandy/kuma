@@ -5,24 +5,24 @@ import (
 	"context"
 	"path/filepath"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/app/kumactl/cmd"
 	kumactl_cmd "github.com/kumahq/kuma/app/kumactl/pkg/cmd"
+	"github.com/kumahq/kuma/app/kumactl/pkg/resources"
+	"github.com/kumahq/kuma/app/kumactl/pkg/test"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	memory_resources "github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	test_model "github.com/kumahq/kuma/pkg/test/resources/model"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
-	"github.com/kumahq/kuma/pkg/util/test"
 )
 
 var _ = Describe("kumactl delete mesh", func() {
-
 	sampleMeshes := []*mesh.MeshResource{
 		{
 			Meta: &test_model.ResourceMeta{
@@ -47,7 +47,9 @@ var _ = Describe("kumactl delete mesh", func() {
 		BeforeEach(func() {
 			// setup
 			rootCtx = kumactl_cmd.DefaultRootContext()
-			rootCtx.Runtime.NewAPIServerClient = test.GetMockNewAPIServerClient()
+			rootCtx.Runtime.NewAPIServerClient = func(client util_http.Client) resources.ApiServerClient {
+				return resources.NewStaticApiServiceClient(test.DummyIndexResponse)
+			}
 			rootCtx.Runtime.NewResourceStore = func(util_http.Client) core_store.ResourceStore {
 				return store
 			}
@@ -76,7 +78,8 @@ var _ = Describe("kumactl delete mesh", func() {
 			// given
 			rootCmd.SetArgs([]string{
 				"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-				"delete", "mesh"})
+				"delete", "mesh",
+			})
 
 			// when
 			err := rootCmd.Execute()
@@ -93,7 +96,8 @@ var _ = Describe("kumactl delete mesh", func() {
 			// given
 			rootCmd.SetArgs([]string{
 				"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-				"delete", "mesh", "some-non-existing-mesh"})
+				"delete", "mesh", "some-non-existing-mesh",
+			})
 
 			// when
 			err := rootCmd.Execute()
@@ -111,7 +115,8 @@ var _ = Describe("kumactl delete mesh", func() {
 			// given
 			rootCmd.SetArgs([]string{
 				"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-				"delete", "mesh", "mesh2"})
+				"delete", "mesh", "mesh2",
+			})
 
 			// when
 			err := rootCmd.Execute()

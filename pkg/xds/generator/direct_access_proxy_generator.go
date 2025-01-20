@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -26,10 +27,13 @@ const OriginDirectAccess = "direct-access"
 //
 // Second approach to consider was to use FilterChainMatch on catch_all listener with list of all direct access endpoints
 // instead of generating outbound listener, but it seemed to not work with Listener#UseOriginalDst
-type DirectAccessProxyGenerator struct {
+type DirectAccessProxyGenerator struct{}
+
+func DirectAccessEndpointName(endpoint Endpoint) string {
+	return fmt.Sprintf("direct_access_%s:%d", endpoint.Address, endpoint.Port)
 }
 
-func (_ DirectAccessProxyGenerator) Generate(ctx xds_context.Context, proxy *core_xds.Proxy) (*core_xds.ResourceSet, error) {
+func (_ DirectAccessProxyGenerator) Generate(ctx context.Context, _ *core_xds.ResourceSet, xdsCtx xds_context.Context, proxy *core_xds.Proxy) (*core_xds.ResourceSet, error) {
 	tproxy := proxy.Dataplane.Spec.Networking.GetTransparentProxying()
 	resources := core_xds.NewResourceSet()
 	if tproxy.GetRedirectPortOutbound() == 0 || tproxy.GetRedirectPortInbound() == 0 || len(tproxy.GetDirectAccessServices()) == 0 {
@@ -37,20 +41,27 @@ func (_ DirectAccessProxyGenerator) Generate(ctx xds_context.Context, proxy *cor
 	}
 
 	sourceService := proxy.Dataplane.Spec.GetIdentifyingService()
-	meshName := ctx.Mesh.Resource.GetMeta().GetName()
+	meshName := xdsCtx.Mesh.Resource.GetMeta().GetName()
 
-	endpoints, err := directAccessEndpoints(proxy.Dataplane, ctx.Mesh.Dataplanes, ctx.Mesh.Resource)
+	endpoints, err := directAccessEndpoints(proxy.Dataplane, xdsCtx.Mesh.Resources.Dataplanes(), xdsCtx.Mesh.Resource)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, endpoint := range endpoints {
-		name := fmt.Sprintf("direct_access_%s:%d", endpoint.Address, endpoint.Port)
-		listener, err := envoy_listeners.NewListenerBuilder(proxy.APIVersion).
-			Configure(envoy_listeners.OutboundListener(name, endpoint.Address, endpoint.Port, core_xds.SocketAddressProtocolTCP)).
-			Configure(envoy_listeners.FilterChain(envoy_listeners.NewFilterChainBuilder(proxy.APIVersion).
-				Configure(envoy_listeners.TcpProxy(name, envoy_common.NewCluster(envoy_common.WithService("direct_access")))).
-				Configure(envoy_listeners.NetworkAccessLog(meshName, envoy_common.TrafficDirectionOutbound, sourceService, name, proxy.Policies.Logs[core_mesh.PassThroughService], proxy)))).
+		name := DirectAccessEndpointName(endpoint)
+		listener, err := envoy_listeners.NewOutboundListenerBuilder(proxy.APIVersion, endpoint.Address, endpoint.Port, core_xds.SocketAddressProtocolTCP).
+			WithOverwriteName(name).
+			Configure(envoy_listeners.FilterChain(envoy_listeners.NewFilterChainBuilder(proxy.APIVersion, envoy_common.AnonymousResource).
+				Configure(envoy_listeners.TcpProxyDeprecated(name, envoy_common.NewCluster(envoy_common.WithService("direct_access")))).
+				Configure(envoy_listeners.NetworkAccessLog(
+					meshName,
+					envoy_common.TrafficDirectionOutbound,
+					sourceService,
+					name,
+					xdsCtx.Mesh.GetLoggingBackend(proxy.Policies.TrafficLogs[core_mesh.PassThroughService]),
+					proxy,
+				)))).
 			Configure(envoy_listeners.TransparentProxying(proxy.Dataplane.Spec.Networking.GetTransparentProxying())).
 			Build()
 		if err != nil {
@@ -63,9 +74,10 @@ func (_ DirectAccessProxyGenerator) Generate(ctx xds_context.Context, proxy *cor
 		})
 	}
 
-	directAccessCluster, err := envoy_clusters.NewClusterBuilder(proxy.APIVersion).
-		Configure(envoy_clusters.PassThroughCluster("direct_access")).
-		Configure(envoy_clusters.UnknownDestinationClientSideMTLS(ctx)).
+	directAccessCluster, err := envoy_clusters.NewClusterBuilder(proxy.APIVersion, "direct_access").
+		Configure(envoy_clusters.PassThroughCluster()).
+		Configure(envoy_clusters.UnknownDestinationClientSideMTLS(proxy.SecretsTracker, xdsCtx.Mesh.Resource)).
+		Configure(envoy_clusters.DefaultTimeout()).
 		Build()
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not generate cluster: direct_access")
@@ -80,10 +92,7 @@ func (_ DirectAccessProxyGenerator) Generate(ctx xds_context.Context, proxy *cor
 
 func directAccessEndpoints(dataplane *core_mesh.DataplaneResource, other *core_mesh.DataplaneResourceList, mesh *core_mesh.MeshResource) (Endpoints, error) {
 	// collect endpoints that are already created so we don't create 2 listeners with same IP:PORT
-	takenEndpoints, err := takenEndpoints(dataplane)
-	if err != nil {
-		return nil, err
-	}
+	takenEndpoints := takenEndpoints(dataplane)
 
 	services := map[string]bool{}
 	for _, service := range dataplane.Spec.Networking.TransparentProxying.DirectAccessServices {
@@ -93,11 +102,6 @@ func directAccessEndpoints(dataplane *core_mesh.DataplaneResource, other *core_m
 	endpoints := map[Endpoint]bool{}
 	for _, dp := range other.Items {
 		if dp.Meta.GetName() == dataplane.Meta.GetName() { // skip itself
-			continue
-		}
-		// ingress doesn't have inbounds[0].Tags[ServiceTag] set, so right now
-		// there is no way to create direct access outbound to ingress
-		if dp.Spec.IsIngress() {
 			continue
 		}
 		inbounds, err := manager_dataplane.AdditionalInbounds(dp, mesh)
@@ -121,20 +125,16 @@ func directAccessEndpoints(dataplane *core_mesh.DataplaneResource, other *core_m
 	return fromMap(endpoints), nil
 }
 
-func takenEndpoints(dataplane *core_mesh.DataplaneResource) (map[Endpoint]bool, error) {
-	ofaces, err := dataplane.Spec.GetNetworking().GetOutboundInterfaces()
-	if err != nil {
-		return nil, err
-	}
+func takenEndpoints(dataplane *core_mesh.DataplaneResource) map[Endpoint]bool {
 	takenEndpoints := map[Endpoint]bool{}
-	for _, oface := range ofaces {
+	for _, oface := range dataplane.Spec.GetNetworking().GetOutboundInterfaces() {
 		endpoint := Endpoint{
 			Address: oface.DataplaneIP,
 			Port:    oface.DataplanePort,
 		}
 		takenEndpoints[endpoint] = true
 	}
-	return takenEndpoints, nil
+	return takenEndpoints
 }
 
 type Endpoint struct {

@@ -11,10 +11,17 @@ resources:
         - endpoint:
             address:
               socketAddress:
-                address: 127.0.0.1
+                address: 192.168.0.2
                 portValue: 8080
     name: localhost:8080
     type: STATIC
+    typedExtensionProtocolOptions:
+      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+        '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+        commonHttpProtocolOptions:
+          idleTimeout: 7200s
+        explicitHttpConfig:
+          httpProtocolOptions: {}
 - name: localhost:8443
   resource:
     '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
@@ -27,7 +34,7 @@ resources:
         - endpoint:
             address:
               socketAddress:
-                address: 127.0.0.1
+                address: 192.168.0.2
                 portValue: 8443
     name: localhost:8443
     type: STATIC
@@ -38,6 +45,7 @@ resources:
       socketAddress:
         address: 192.168.0.1
         portValue: 443
+    enableReusePort: false
     filterChains:
     - filters:
       - name: envoy.filters.network.rbac
@@ -49,6 +57,7 @@ resources:
         typedConfig:
           '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
           cluster: localhost:8443
+          idleTimeout: 7200s
           statPrefix: localhost_8443
       transportSocket:
         name: envoy.transport_sockets.tls
@@ -57,19 +66,25 @@ resources:
           commonTlsContext:
             combinedValidationContext:
               defaultValidationContext:
-                matchSubjectAltNames:
-                - prefix: spiffe://default/
+                matchTypedSubjectAltNames:
+                - matcher:
+                    prefix: spiffe://default/
+                  sanType: URI
               validationContextSdsSecretConfig:
-                name: mesh_ca
+                name: mesh_ca:secret:default
                 sdsConfig:
                   ads: {}
                   resourceApiVersion: V3
             tlsCertificateSdsSecretConfigs:
-            - name: identity_cert
+            - name: identity_cert:secret:default
               sdsConfig:
                 ads: {}
                 resourceApiVersion: V3
           requireClientCertificate: true
+    metadata:
+      filterMetadata:
+        io.kuma.tags:
+          kuma.io/service: backend2
     name: inbound:192.168.0.1:443
     trafficDirection: INBOUND
 - name: inbound:192.168.0.1:80
@@ -79,6 +94,7 @@ resources:
       socketAddress:
         address: 192.168.0.1
         portValue: 80
+    enableReusePort: false
     filterChains:
     - filters:
       - name: envoy.filters.network.rbac
@@ -102,6 +118,8 @@ resources:
       - name: envoy.filters.network.http_connection_manager
         typedConfig:
           '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          commonHttpProtocolOptions:
+            idleTimeout: 7200s
           forwardClientCertDetails: SANITIZE_SET
           httpFilters:
           - name: envoy.filters.http.fault
@@ -114,13 +132,14 @@ resources:
               headers:
               - name: x-kuma-tags
                 safeRegexMatch:
-                  googleRe2: {}
                   regex: .*&kuma.io/service=[^&]*frontend[,&].*
           - name: envoy.filters.http.local_ratelimit
             typedConfig:
               '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
               statPrefix: rate_limit
           - name: envoy.filters.http.router
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           routeConfig:
             name: inbound:backend1
             requestHeadersToRemove:
@@ -135,11 +154,11 @@ resources:
                   headers:
                   - name: x-kuma-tags
                     safeRegexMatch:
-                      googleRe2: {}
                       regex: .*&kuma.io/service=[^&]*frontend[,&].*
                   prefix: /
                 route:
                   cluster: localhost:8080
+                  timeout: 0s
                 typedPerFilterConfig:
                   envoy.filters.http.local_ratelimit:
                     '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
@@ -160,11 +179,11 @@ resources:
                   headers:
                   - name: x-kuma-tags
                     safeRegexMatch:
-                      googleRe2: {}
                       regex: .*&kuma.io/service=.*
                   prefix: /
                 route:
                   cluster: localhost:8080
+                  timeout: 0s
                 typedPerFilterConfig:
                   envoy.filters.http.local_ratelimit:
                     '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
@@ -177,7 +196,7 @@ resources:
                         numerator: 100
                       runtimeKey: local_rate_limit_enforced
                     responseHeadersToAdd:
-                    - append: false
+                    - appendAction: OVERWRITE_IF_EXISTS_OR_ADD
                       header:
                         key: x-rate-limited
                         value: "true"
@@ -192,9 +211,11 @@ resources:
                   prefix: /
                 route:
                   cluster: localhost:8080
+                  timeout: 0s
           setCurrentClientCertDetails:
             uri: true
           statPrefix: localhost_8080
+          streamIdleTimeout: 3600s
       transportSocket:
         name: envoy.transport_sockets.tls
         typedConfig:
@@ -202,19 +223,26 @@ resources:
           commonTlsContext:
             combinedValidationContext:
               defaultValidationContext:
-                matchSubjectAltNames:
-                - prefix: spiffe://default/
+                matchTypedSubjectAltNames:
+                - matcher:
+                    prefix: spiffe://default/
+                  sanType: URI
               validationContextSdsSecretConfig:
-                name: mesh_ca
+                name: mesh_ca:secret:default
                 sdsConfig:
                   ads: {}
                   resourceApiVersion: V3
             tlsCertificateSdsSecretConfigs:
-            - name: identity_cert
+            - name: identity_cert:secret:default
               sdsConfig:
                 ads: {}
                 resourceApiVersion: V3
           requireClientCertificate: true
+    metadata:
+      filterMetadata:
+        io.kuma.tags:
+          kuma.io/protocol: http
+          kuma.io/service: backend1
     name: inbound:192.168.0.1:80
     trafficDirection: INBOUND
 - name: inbound:192.168.0.2:443
@@ -224,6 +252,7 @@ resources:
       socketAddress:
         address: 192.168.0.2
         portValue: 443
+    enableReusePort: false
     filterChains:
     - filters:
       - name: envoy.filters.network.rbac
@@ -235,6 +264,7 @@ resources:
         typedConfig:
           '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
           cluster: localhost:8443
+          idleTimeout: 7200s
           statPrefix: localhost_8443
       transportSocket:
         name: envoy.transport_sockets.tls
@@ -243,19 +273,25 @@ resources:
           commonTlsContext:
             combinedValidationContext:
               defaultValidationContext:
-                matchSubjectAltNames:
-                - prefix: spiffe://default/
+                matchTypedSubjectAltNames:
+                - matcher:
+                    prefix: spiffe://default/
+                  sanType: URI
               validationContextSdsSecretConfig:
-                name: mesh_ca
+                name: mesh_ca:secret:default
                 sdsConfig:
                   ads: {}
                   resourceApiVersion: V3
             tlsCertificateSdsSecretConfigs:
-            - name: identity_cert
+            - name: identity_cert:secret:default
               sdsConfig:
                 ads: {}
                 resourceApiVersion: V3
           requireClientCertificate: true
+    metadata:
+      filterMetadata:
+        io.kuma.tags:
+          kuma.io/service: backend4
     name: inbound:192.168.0.2:443
     trafficDirection: INBOUND
 - name: inbound:192.168.0.2:80
@@ -265,6 +301,7 @@ resources:
       socketAddress:
         address: 192.168.0.2
         portValue: 80
+    enableReusePort: false
     filterChains:
     - filters:
       - name: envoy.filters.network.rbac
@@ -275,9 +312,13 @@ resources:
       - name: envoy.filters.network.http_connection_manager
         typedConfig:
           '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          commonHttpProtocolOptions:
+            idleTimeout: 7200s
           forwardClientCertDetails: SANITIZE_SET
           httpFilters:
           - name: envoy.filters.http.router
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           routeConfig:
             name: inbound:backend3
             requestHeadersToRemove:
@@ -292,9 +333,11 @@ resources:
                   prefix: /
                 route:
                   cluster: localhost:8080
+                  timeout: 0s
           setCurrentClientCertDetails:
             uri: true
           statPrefix: localhost_8080
+          streamIdleTimeout: 3600s
       transportSocket:
         name: envoy.transport_sockets.tls
         typedConfig:
@@ -302,18 +345,25 @@ resources:
           commonTlsContext:
             combinedValidationContext:
               defaultValidationContext:
-                matchSubjectAltNames:
-                - prefix: spiffe://default/
+                matchTypedSubjectAltNames:
+                - matcher:
+                    prefix: spiffe://default/
+                  sanType: URI
               validationContextSdsSecretConfig:
-                name: mesh_ca
+                name: mesh_ca:secret:default
                 sdsConfig:
                   ads: {}
                   resourceApiVersion: V3
             tlsCertificateSdsSecretConfigs:
-            - name: identity_cert
+            - name: identity_cert:secret:default
               sdsConfig:
                 ads: {}
                 resourceApiVersion: V3
           requireClientCertificate: true
+    metadata:
+      filterMetadata:
+        io.kuma.tags:
+          kuma.io/protocol: http
+          kuma.io/service: backend3
     name: inbound:192.168.0.2:80
     trafficDirection: INBOUND

@@ -1,10 +1,11 @@
 package gateway
 
 import (
-	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kumahq/kuma/pkg/core/xds"
+	"github.com/kumahq/kuma/pkg/plugins/runtime/gateway/metadata"
 	"github.com/kumahq/kuma/pkg/xds/envoy"
 )
 
@@ -30,51 +31,17 @@ func BuildResourceSet(b ResourceBuilder) (*xds.ResourceSet, error) {
 	set := xds.NewResourceSet()
 	set.Add(&xds.Resource{
 		Name:     resource.GetName(),
-		Origin:   OriginGateway,
+		Origin:   metadata.OriginGateway,
 		Resource: resource,
 	})
 
 	return set, nil
 }
 
-// ResourceAggregator is a convenience wrapper over ResourceSet that
-// simplifies code that accumulates resources from xDS generators.
-type ResourceAggregator struct{ *xds.ResourceSet }
-
-func (r *ResourceAggregator) Get() *xds.ResourceSet {
-	return r.ResourceSet
-}
-
-func (r *ResourceAggregator) Add(resource *xds.Resource, err error) error {
-	if err != nil {
-		return err
-	}
-
-	if r.ResourceSet == nil {
-		r.ResourceSet = xds.NewResourceSet()
-	}
-
-	r.ResourceSet.Add(resource)
-	return nil
-}
-
-func (r *ResourceAggregator) AddSet(set *xds.ResourceSet, err error) error {
-	if err != nil {
-		return err
-	}
-
-	if r.ResourceSet == nil {
-		r.ResourceSet = xds.NewResourceSet()
-	}
-
-	r.ResourceSet.AddSet(set)
-	return nil
-}
-
 func NewResource(name string, resource proto.Message) *xds.Resource {
 	return &xds.Resource{
 		Name:     name,
-		Origin:   OriginGateway,
+		Origin:   metadata.OriginGateway,
 		Resource: resource,
 	}
 }

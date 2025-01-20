@@ -1,27 +1,14 @@
 package completion_test
 
 import (
-	"bytes"
-	"path/filepath"
-
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kumahq/kuma/app/kumactl/pkg/test"
 	. "github.com/kumahq/kuma/pkg/test/matchers"
-	"github.com/kumahq/kuma/pkg/util/test"
 )
 
 var _ = Describe("kumactl completion", func() {
-
-	var stdout *bytes.Buffer
-	var stderr *bytes.Buffer
-
-	BeforeEach(func() {
-		stdout = &bytes.Buffer{}
-		stderr = &bytes.Buffer{}
-	})
-
 	type testCase struct {
 		extraArgs  []string
 		goldenFile string
@@ -30,10 +17,8 @@ var _ = Describe("kumactl completion", func() {
 	DescribeTable("should generate completion code",
 		func(given testCase) {
 			// given
-			rootCmd := test.DefaultTestingRootCmd()
-			rootCmd.SetArgs(append([]string{"completion"}, given.extraArgs...))
-			rootCmd.SetOut(stdout)
-			rootCmd.SetErr(stderr)
+			args := append([]string{"completion"}, given.extraArgs...)
+			stdout, stderr, rootCmd := test.DefaultTestingRootCmd(args...)
 
 			// when
 			err := rootCmd.Execute()
@@ -44,7 +29,7 @@ var _ = Describe("kumactl completion", func() {
 
 			// and
 			actual := stdout.Bytes()
-			Expect(actual).To(MatchGoldenEqual(filepath.Join("testdata", given.goldenFile)))
+			Expect(actual).To(MatchGoldenEqual("testdata", given.goldenFile))
 		},
 		Entry("should generate bash completion code", testCase{
 			extraArgs: []string{

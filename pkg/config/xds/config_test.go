@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/config"
@@ -26,12 +26,11 @@ var _ = Describe("XdsServerConfig", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// and
-		Expect(cfg.DataplaneConfigurationRefreshInterval).To(Equal(3 * time.Second))
-		Expect(cfg.DataplaneStatusFlushInterval).To(Equal(5 * time.Second))
+		Expect(cfg.DataplaneConfigurationRefreshInterval.Duration).To(Equal(3 * time.Second))
+		Expect(cfg.DataplaneStatusFlushInterval.Duration).To(Equal(5 * time.Second))
 	})
 
 	Context("with modified environment variables", func() {
-
 		var backupEnvVars []string
 
 		BeforeEach(func() {
@@ -66,8 +65,8 @@ var _ = Describe("XdsServerConfig", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// and
-			Expect(cfg.DataplaneConfigurationRefreshInterval).To(Equal(3 * time.Second))
-			Expect(cfg.DataplaneStatusFlushInterval).To(Equal(5 * time.Second))
+			Expect(cfg.DataplaneConfigurationRefreshInterval.Duration).To(Equal(3 * time.Second))
+			Expect(cfg.DataplaneStatusFlushInterval.Duration).To(Equal(5 * time.Second))
 		})
 	})
 
@@ -91,6 +90,6 @@ var _ = Describe("XdsServerConfig", func() {
 		err := config.Load(filepath.Join("testdata", "invalid-config.input.yaml"), &cfg)
 
 		// then
-		Expect(err).To(MatchError(`Invalid configuration: DataplaneConfigurationRefreshInterval must be positive`))
+		Expect(err).To(MatchError("parsing configuration from file 'testdata/invalid-config.input.yaml' failed: configuration validation failed: DataplaneConfigurationRefreshInterval must be positive"))
 	})
 })

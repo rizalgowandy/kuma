@@ -3,8 +3,8 @@ package webhooks_test
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	jsonpatch "github.com/evanphx/json-patch/v5"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	admissionv1 "k8s.io/api/admission/v1"
 	kube_meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -12,72 +12,65 @@ import (
 	kube_types "k8s.io/apimachinery/pkg/types"
 	kube_admission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
+	"github.com/kumahq/kuma/pkg/config/core"
+	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	k8s_common "github.com/kumahq/kuma/pkg/plugins/common/k8s"
+	"github.com/kumahq/kuma/pkg/plugins/policies/meshtrafficpermission/api/v1alpha1"
 	k8s_resources "github.com/kumahq/kuma/pkg/plugins/resources/k8s"
-	k8s_registry "github.com/kumahq/kuma/pkg/plugins/resources/k8s/native/pkg/registry"
-	sample_k8s "github.com/kumahq/kuma/pkg/plugins/resources/k8s/native/test/api/sample/v1alpha1"
 	. "github.com/kumahq/kuma/pkg/plugins/runtime/k8s/webhooks"
-	sample_proto "github.com/kumahq/kuma/pkg/test/apis/sample/v1alpha1"
-	sample_core "github.com/kumahq/kuma/pkg/test/resources/apis/sample"
 )
 
 var _ = Describe("Defaulter", func() {
-
-	var factory func() core_model.Resource
-
-	BeforeEach(func() {
-		factory = func() core_model.Resource {
-			return sample_core.NewTrafficRouteResource()
-		}
-	})
-
 	var converter k8s_common.Converter
 
 	BeforeEach(func() {
-		kubeTypes := k8s_registry.NewTypeRegistry()
-		err := kubeTypes.RegisterObjectType(&sample_proto.TrafficRoute{}, &sample_k8s.SampleTrafficRoute{
-			TypeMeta: kube_meta.TypeMeta{
-				APIVersion: sample_k8s.GroupVersion.String(),
-				Kind:       "SampleTrafficRoute",
-			},
-		})
-		Expect(err).ToNot(HaveOccurred())
-
-		converter = &k8s_resources.SimpleConverter{
-			KubeFactory: &k8s_resources.SimpleKubeFactory{
-				KubeTypes: kubeTypes,
-			},
-		}
-	})
-
-	var scheme *kube_runtime.Scheme
-
-	BeforeEach(func() {
-		scheme = kube_runtime.NewScheme()
-		Expect(sample_k8s.AddToScheme(scheme)).To(Succeed())
-	})
-
-	var handler *kube_admission.Webhook
-
-	BeforeEach(func() {
-		handler = DefaultingWebhookFor(factory, converter)
-		Expect(handler.InjectScheme(scheme)).To(Succeed())
+		converter = k8s_resources.NewSimpleConverter()
 	})
 
 	type testCase struct {
-		inputObject   string
-		expectedPatch string
+		inputObject string
+		expected    string
+		kind        string
+		checker     ResourceAdmissionChecker
+	}
+
+	allowedUsers := []string{"system:serviceaccount:kube-system:generic-garbage-collector", "system:serviceaccount:kuma-system:kuma-control-plane"}
+
+	globalChecker := func() ResourceAdmissionChecker {
+		return ResourceAdmissionChecker{
+			AllowedUsers:                 allowedUsers,
+			Mode:                         core.Global,
+			FederatedZone:                false,
+			DisableOriginLabelValidation: false,
+			SystemNamespace:              "kuma-system",
+		}
+	}
+
+	zoneChecker := func(federatedZone, originValidation bool) ResourceAdmissionChecker {
+		return ResourceAdmissionChecker{
+			AllowedUsers:                 allowedUsers,
+			Mode:                         core.Zone,
+			FederatedZone:                federatedZone,
+			DisableOriginLabelValidation: !originValidation,
+			SystemNamespace:              "kuma-system",
+			ZoneName:                     "zone-1",
+		}
 	}
 
 	DescribeTable("should apply defaults on a target object",
 		func(given testCase) {
 			// given
+			handler := DefaultingWebhookFor(scheme, converter, given.checker)
+
 			req := kube_admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID: kube_types.UID("12345"),
+					Namespace: "kuma-system",
+					UID:       kube_types.UID("12345"),
 					Object: kube_runtime.RawExtension{
 						Raw: []byte(given.inputObject),
+					},
+					Kind: kube_meta.GroupVersionKind{
+						Kind: given.kind,
 					},
 				},
 			}
@@ -88,75 +81,487 @@ var _ = Describe("Defaulter", func() {
 			// then
 			Expect(resp.UID).To(Equal(kube_types.UID("12345")))
 			Expect(resp.Result.Message).To(Equal(""))
-			Expect(resp.Allowed).To(Equal(true))
-			if given.expectedPatch != "" {
-				Expect(*resp.PatchType).To(Equal(admissionv1.PatchTypeJSONPatch))
-				Expect(string(resp.Patch)).To(MatchJSON(given.expectedPatch))
+			Expect(resp.Allowed).To(BeTrue())
+
+			var actual []byte
+			if len(resp.Patch) == 0 {
+				actual = []byte(given.inputObject)
 			} else {
-				Expect(resp.PatchType).To(BeNil())
-				Expect(string(resp.Patch)).To(BeZero())
+				patch, err := jsonpatch.DecodePatch(resp.Patch)
+				Expect(err).ToNot(HaveOccurred())
+				actual, err = patch.Apply([]byte(given.inputObject))
+				Expect(err).ToNot(HaveOccurred())
 			}
+			Expect(actual).To(MatchJSON(given.expected))
 		},
-		Entry("should apply defaults to empty spec fields", testCase{
+		Entry("should apply defaults to empty conf", testCase{
+			checker: globalChecker(),
+			kind:    string(mesh.MeshType),
 			inputObject: `
             {
-              "apiVersion": "sample.test.kuma.io/v1alpha1",
-              "kind": "SampleTrafficRoute",
-              "mesh": "demo",
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "Mesh",
               "metadata": {
-                "namespace": "example",
 				"name": "empty",
 				"creationTimestamp": null
               },
               "spec": {
+				"metrics": {
+				  "backends": [
+					{
+					  "type": "prometheus"
+					}
+				  ]
+				}
               }
             }
 `,
-			expectedPatch: `
-            [
-              {
-                "op": "add",
-                "path": "/spec/path",
-                "value": "/default"
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "Mesh",
+              "metadata": {
+				"name": "empty",
+				"creationTimestamp": null,
+				"annotations": {
+				  "kuma.io/display-name": "empty"
+				}
+              },
+              "spec": {
+				"metrics": {
+				  "backends": [
+					{
+					  "type": "prometheus",
+					  "conf": {
+						"path": "/metrics",
+						"port": 5670,
+						"tags": {
+						  "kuma.io/service": "dataplane-metrics"
+						},
+						"tls": {}
+					  }
+					}
+				  ]
+				}
               }
-            ]
+            }
 `,
 		}),
 		Entry("should not override non-empty spec fields", testCase{
+			checker: globalChecker(),
+			kind:    string(mesh.MeshType),
 			inputObject: `
             {
-              "apiVersion": "sample.test.kuma.io/v1alpha1",
-              "kind": "SampleTrafficRoute",
-              "mesh": "demo",
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "Mesh",
               "metadata": {
-                "namespace": "example",
-                "name": "empty",
-                "creationTimestamp": null
+				"name": "empty",
+				"creationTimestamp": null
               },
               "spec": {
-                "path": "anything"
+				"metrics": {
+				  "backends": [
+					{
+					  "type": "prometheus",
+					  "conf": {
+						"path": "/dont/override"
+					  }
+					}
+				  ]
+				}
               }
             }
 `,
-			expectedPatch: ``,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "Mesh",
+              "metadata": {
+				"name": "empty",
+				"creationTimestamp": null,
+				"annotations": {
+				  "kuma.io/display-name": "empty"
+				}
+              },
+              "spec": {
+				"metrics": {
+				  "backends": [
+					{
+					  "type": "prometheus",
+					  "conf": {
+						"path": "/dont/override",
+						"port": 5670,
+						"tags": {
+						  "kuma.io/service": "dataplane-metrics"
+						},
+						"tls": {}
+					  }
+					}
+				  ]
+				}
+              }
+            }
+`,
 		}),
-		Entry("should not override spec fields already set to default value", testCase{
+		Entry("should not override mesh label if it's already set", testCase{
+			checker: globalChecker(),
+			kind:    string(mesh.TrafficRouteType),
 			inputObject: `
             {
-              "apiVersion": "sample.test.kuma.io/v1alpha1",
-              "kind": "SampleTrafficRoute",
-              "mesh": "demo",
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "TrafficRoute",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/mesh": "my-mesh-1"
+                }
+              },
+              "spec": {}
+            }
+`,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "TrafficRoute",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/mesh": "my-mesh-1",
+                  "k8s.kuma.io/namespace": "example"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec": {}
+            }
+`,
+		}),
+		Entry("should set mesh label when apply new policy on Zone", testCase{
+			checker: zoneChecker(true, true),
+			kind:    string(v1alpha1.MeshTrafficPermissionType),
+			inputObject: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/origin": "zone"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/origin": "zone",
+                  "kuma.io/zone": "zone-1",
+                  "kuma.io/mesh": "default",
+                  "kuma.io/env": "kubernetes",
+                  "kuma.io/policy-role": "workload-owner",
+                  "k8s.kuma.io/namespace": "example"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+		}),
+		Entry("should set mesh and origin label when origin validation is disabled, federated zone", testCase{
+			checker: zoneChecker(true, false),
+			kind:    string(v1alpha1.MeshTrafficPermissionType),
+			inputObject: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
               "metadata": {
                 "namespace": "example",
                 "name": "empty",
                 "creationTimestamp": null
               },
               "spec": {
-                "path": "/default"
+                "targetRef": {}
               }
             }
 `,
-			expectedPatch: ``,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "k8s.kuma.io/namespace": "example",
+                  "kuma.io/mesh": "default",
+                  "kuma.io/env": "kubernetes",
+                  "kuma.io/origin": "zone",
+                  "kuma.io/zone": "zone-1",
+                  "kuma.io/policy-role": "workload-owner"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+		}),
+		Entry("should not set zone label when origin is set to global, federated zone", testCase{
+			checker: zoneChecker(true, false),
+			kind:    string(v1alpha1.MeshTrafficPermissionType),
+			inputObject: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/origin": "global"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/mesh": "default",
+                  "kuma.io/origin": "global"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+		}),
+		Entry("should set mesh and origin label when origin validation is disabled, non-federated zone", testCase{
+			checker: zoneChecker(false, false),
+			kind:    string(v1alpha1.MeshTrafficPermissionType),
+			inputObject: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "k8s.kuma.io/namespace": "example",
+                  "kuma.io/mesh": "default",
+                  "kuma.io/env": "kubernetes",
+                  "kuma.io/origin": "zone",
+                  "kuma.io/zone": "zone-1",
+                  "kuma.io/policy-role": "workload-owner"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+		}),
+		Entry("should set mesh and origin label on DPP", testCase{
+			checker: zoneChecker(true, true),
+			kind:    string(mesh.DataplaneType),
+			inputObject: `
+            {
+              "apiVersion":"kuma.io/v1alpha1",
+              "kind":"Dataplane",
+              "mesh":"demo",
+              "metadata":{
+                "namespace":"example",
+                "name":"empty",
+                "creationTimestamp":null
+              },
+              "spec":{
+                "networking": {
+                  "address": "127.0.0.1",
+                  "inbound": [
+                    {
+                      "port": 11011,
+                      "tags": {
+                        "kuma.io/service": "backend"
+                      }
+                    }
+                  ]
+                }
+              }
+            }`,
+			expected: `
+            {
+              "apiVersion":"kuma.io/v1alpha1",
+              "kind":"Dataplane",
+              "mesh":"demo",
+              "metadata":{
+                "namespace":"example",
+                "name":"empty",
+                "creationTimestamp":null,
+                "labels": {
+                  "k8s.kuma.io/namespace": "example",
+                  "kuma.io/mesh": "demo",
+                  "kuma.io/env": "kubernetes",
+                  "kuma.io/origin": "zone",
+                  "kuma.io/proxy-type": "sidecar",
+                  "kuma.io/zone": "zone-1"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec":{
+                "networking": {
+                  "address": "127.0.0.1",
+                  "inbound": [
+                    {
+                      "port": 11011,
+                      "tags": {
+                        "kuma.io/service": "backend"
+                      }
+                    }
+                  ]
+                }
+              }
+            }`,
+		}),
+		Entry("should not add origin label on Global", testCase{
+			checker: globalChecker(),
+			kind:    string(v1alpha1.MeshTrafficPermissionType),
+			inputObject: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "example",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "k8s.kuma.io/namespace": "example",
+                  "kuma.io/mesh": "default",
+                  "kuma.io/policy-role": "workload-owner"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+		}),
+		Entry("should not add namespace label when resource originates from universal zone", testCase{
+			checker: globalChecker(),
+			kind:    string(v1alpha1.MeshTrafficPermissionType),
+			inputObject: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "kuma-system",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/mesh": "default",
+                  "kuma.io/origin": "zone",
+                  "kuma.io/zone": "zone-1"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
+			expected: `
+            {
+              "apiVersion": "kuma.io/v1alpha1",
+              "kind": "MeshTrafficPermission",
+              "metadata": {
+                "namespace": "kuma-system",
+                "name": "empty",
+                "creationTimestamp": null,
+                "labels": {
+                  "kuma.io/mesh": "default",
+                  "kuma.io/origin": "zone",
+                  "kuma.io/zone": "zone-1"
+                },
+                "annotations": {
+                  "kuma.io/display-name": "empty"
+                }
+              },
+              "spec": {
+                "targetRef": {}
+              }
+            }
+`,
 		}),
 	)
 })

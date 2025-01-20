@@ -6,8 +6,14 @@ resources:
       socketAddress:
         address: 10.0.0.1
         portValue: 10001
+    enableReusePort: false
     filterChains:
-    - {}
+    - filters:
+      - name: envoy.filters.network.direct_response
+        typedConfig:
+          '@type': type.googleapis.com/envoy.extensions.filters.network.direct_response.v3.Config
+          response:
+            inlineBytes: eyJwcm94eSI6ImRlZmF1bHQuaW5ncmVzcyIsInpvbmUiOiJ6b25lLW1haW4ifQ==
     listenerFilters:
     - name: envoy.filters.listener.tls_inspector
       typedConfig:

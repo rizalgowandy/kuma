@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	envoy_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -14,29 +15,26 @@ import (
 	"github.com/kumahq/kuma/pkg/util/envoy"
 )
 
-var availableProfiles map[string]bool
-var availableProfilesMsg string
+var AvailableProfiles map[string]struct{}
 
 func init() {
-	profiles := []string{}
-	availableProfiles = map[string]bool{}
-	for _, profile := range AvailableProfiles {
-		availableProfiles[profile] = true
-		profiles = append(profiles, profile)
-	}
-	availableProfilesMsg = strings.Join(profiles, ",")
+	AvailableProfiles = map[string]struct{}{}
 }
 
 func (t *ProxyTemplateResource) Validate() error {
+	return t.ValidateWithProfiles(AvailableProfiles)
+}
+
+func (t *ProxyTemplateResource) ValidateWithProfiles(profiles map[string]struct{}) error {
 	var verr validators.ValidationError
 	verr.Add(validateSelectors(t.Spec.Selectors))
-	verr.AddError("conf", validateConfig(t.Spec.Conf))
+	verr.AddError("conf", validateConfig(t.Spec.Conf, profiles))
 	return verr.OrNil()
 }
 
-func validateConfig(conf *mesh_proto.ProxyTemplate_Conf) validators.ValidationError {
+func validateConfig(conf *mesh_proto.ProxyTemplate_Conf, profiles map[string]struct{}) validators.ValidationError {
 	var verr validators.ValidationError
-	verr.Add(validateImports(conf.GetImports()))
+	verr.Add(validateImports(conf.GetImports(), profiles))
 	verr.Add(validateResources(conf.GetResources()))
 	for i, modification := range conf.GetModifications() {
 		verr.AddErrorAt(validators.RootedAt("modifications").Index(i), validateModification(modification))
@@ -196,15 +194,20 @@ func validateNetworkFilterModification(networkFilterMod *mesh_proto.ProxyTemplat
 	return verr
 }
 
-func validateImports(imports []string) validators.ValidationError {
+func validateImports(imports []string, availableProfiles map[string]struct{}) validators.ValidationError {
 	var verr validators.ValidationError
 	for i, imp := range imports {
 		if imp == "" {
 			verr.AddViolationAt(validators.RootedAt("imports").Index(i), "cannot be empty")
 			continue
 		}
-		if !availableProfiles[imp] {
-			verr.AddViolationAt(validators.RootedAt("imports").Index(i), fmt.Sprintf("profile not found. Available profiles: %s", availableProfilesMsg))
+		if _, ok := availableProfiles[imp]; !ok {
+			var profiles []string
+			for profile := range availableProfiles {
+				profiles = append(profiles, profile)
+			}
+			sort.StringSlice(profiles).Sort()
+			verr.AddViolationAt(validators.RootedAt("imports").Index(i), fmt.Sprintf("profile not found. Available profiles: %s", strings.Join(profiles, ",")))
 		}
 	}
 	return verr
@@ -230,7 +233,7 @@ func validateResources(resources []*mesh_proto.ProxyTemplateRawResource) validat
 
 func validateSelectors(selectors []*mesh_proto.Selector) validators.ValidationError {
 	return ValidateSelectors(validators.RootedAt("selectors"), selectors, ValidateSelectorsOpts{
-		ValidateSelectorOpts: ValidateSelectorOpts{
+		ValidateTagsOpts: ValidateTagsOpts{
 			RequireService:       true,
 			RequireAtLeastOneTag: true,
 		},

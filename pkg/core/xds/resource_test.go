@@ -3,20 +3,18 @@ package xds_test
 import (
 	envoy_cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	. "github.com/kumahq/kuma/pkg/core/xds"
 )
 
 var _ = Describe("ResourceSet", func() {
-
 	It("empty set should return empty list", func() {
 		// when
 		resources := NewResourceSet()
 		// then
-		Expect(len(resources.List())).To(Equal(0))
+		Expect(resources.List()).To(BeEmpty())
 	})
 
 	It("set of 1 element should return a list of 1 element", func() {
@@ -116,9 +114,7 @@ var _ = Describe("ResourceSet", func() {
 })
 
 var _ = Describe("ResourceList", func() {
-
 	Describe("ToIndex()", func() {
-
 		type testCase struct {
 			input    ResourceList
 			expected map[string]ResourcePayload

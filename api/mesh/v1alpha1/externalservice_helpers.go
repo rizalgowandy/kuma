@@ -17,6 +17,10 @@ func (es *ExternalService) MatchTags(selector TagSelector) bool {
 	return selector.Matches(es.Tags)
 }
 
+func (es *ExternalService) MatchTagsFuzzy(selector TagSelector) bool {
+	return selector.MatchesFuzzy(es.Tags)
+}
+
 func (es *ExternalService) GetService() string {
 	if es == nil {
 		return ""
@@ -55,7 +59,7 @@ func (es *ExternalService) GetPort() string {
 
 func (es *ExternalService) GetPortUInt32() uint32 {
 	port := es.GetPort()
-	iport, err := strconv.Atoi(port)
+	iport, err := strconv.ParseInt(port, 10, 32)
 	if err != nil {
 		return 0
 	}

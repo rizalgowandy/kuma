@@ -4,17 +4,21 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 
 	"github.com/asaskevich/govalidator"
 
+	common_api "github.com/kumahq/kuma/api/common/v1alpha1"
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/validators"
+	"github.com/kumahq/kuma/pkg/util/maps"
 )
 
-// allowBuiltinGateways specifies whether the dataplanes of builtin
-// gateway type are allowed. This is controlled by the +gateway build
-// conditional.
-var allowBuiltinGateways = false
+var allowedKinds = map[string]struct{}{
+	string(common_api.MeshService):          {},
+	string(common_api.MeshExternalService):  {},
+	string(common_api.MeshMultiZoneService): {},
+}
 
 func (d *DataplaneResource) Validate() error {
 	var err validators.ValidationError
@@ -26,11 +30,18 @@ func (d *DataplaneResource) Validate() error {
 		return err.OrNil()
 	}
 
-	switch {
-	case d.Spec.IsIngress():
-		err.Add(validateIngressNetworking(d.Spec.GetNetworking()))
-		err.Add(validateIngress(net.Field("ingress"), d.Spec.GetNetworking().GetIngress()))
+	if admin := d.Spec.GetNetworking().GetAdmin(); admin != nil {
+		adminPort := net.Field("admin").Field("port")
 
+		if d.UsesInboundInterface(IPv4Loopback, admin.GetPort()) {
+			err.AddViolationAt(adminPort, "must differ from inbound")
+		}
+		if d.UsesOutboundInterface(IPv4Loopback, admin.GetPort()) {
+			err.AddViolationAt(adminPort, "must differ from outbound")
+		}
+	}
+
+	switch {
 	case d.Spec.IsDelegatedGateway():
 		if len(d.Spec.GetNetworking().GetInbound()) > 0 {
 			err.AddViolationAt(net.Field("inbound"),
@@ -42,11 +53,6 @@ func (d *DataplaneResource) Validate() error {
 		err.Add(validateProbes(d.Spec.GetProbes()))
 
 	case d.Spec.IsBuiltinGateway():
-		if !allowBuiltinGateways {
-			err.AddViolationAt(net.Field("gateway"), "unsupported gateway type")
-			return err.OrNil()
-		}
-
 		if len(d.Spec.GetNetworking().GetInbound()) > 0 {
 			err.AddViolationAt(net.Field("inbound"), "inbound cannot be defined for builtin gateways")
 		}
@@ -68,13 +74,16 @@ func (d *DataplaneResource) Validate() error {
 		}
 		err.Add(validateNetworking(d.Spec.GetNetworking()))
 		err.Add(validateProbes(d.Spec.GetProbes()))
+		if d.Spec.GetMetrics() != nil {
+			err.Add(validateMetricsBackend(d.Spec.GetMetrics()))
+		}
 	}
 
 	return err.OrNil()
 }
 
 // For networking section validation we need to take into account our legacy model.
-// Legacy model is detected by having interface defined on inbound listeners.
+// Sotw model is detected by having interface defined on inbound listeners.
 // We do not allow networking.address with the old format. Instead, we recommend switching to the new format.
 // When we've got dataplane in the new format, we require networking.address field to be defined.
 func validateNetworking(networking *mesh_proto.Dataplane_Networking) validators.ValidationError {
@@ -93,6 +102,7 @@ func validateNetworking(networking *mesh_proto.Dataplane_Networking) validators.
 		result := validateOutbound(outbound)
 		err.AddErrorAt(path.Field("outbound").Index(i), result)
 	}
+	err.AddErrorAt(path.Field("transparentProxing"), validateTransparentProxying(networking.GetTransparentProxying()))
 	return err
 }
 
@@ -116,75 +126,27 @@ func validateProbes(probes *mesh_proto.Dataplane_Probes) validators.ValidationEr
 	return err
 }
 
+func validateMetricsBackend(metrics *mesh_proto.MetricsBackend) validators.ValidationError {
+	var verr validators.ValidationError
+	if metrics.GetType() != mesh_proto.MetricsPrometheusType {
+		verr.AddViolationAt(validators.RootedAt("metrics").Field("type"), fmt.Sprintf("unknown backend type. Available backends: %q", mesh_proto.MetricsPrometheusType))
+	} else {
+		verr.AddErrorAt(validators.RootedAt("metrics").Field("conf"), validatePrometheusConfig(metrics.GetConf()))
+	}
+	return verr
+}
+
 func validateAddress(path validators.PathBuilder, address string) validators.ValidationError {
 	var err validators.ValidationError
 	if address == "" {
 		err.AddViolationAt(path.Field("address"), "address can't be empty")
 		return err
 	}
+	if address == "0.0.0.0" || address == "::" {
+		err.AddViolationAt(path.Field("address"), "must not be 0.0.0.0 or ::")
+	}
 	if !govalidator.IsIP(address) && !govalidator.IsDNSName(address) {
 		err.AddViolationAt(path.Field("address"), "address has to be valid IP address or domain name")
-	}
-	return err
-}
-
-func validateIngressNetworking(networking *mesh_proto.Dataplane_Networking) validators.ValidationError {
-	var err validators.ValidationError
-	path := validators.RootedAt("networking")
-	if networking.Gateway != nil {
-		err.AddViolationAt(path, "gateway cannot be defined in the ingress mode")
-	}
-	if len(networking.GetOutbound()) != 0 {
-		err.AddViolationAt(path, "dataplane cannot have outbounds in the ingress mode")
-	}
-	if len(networking.GetInbound()) != 1 {
-		err.AddViolationAt(path, "dataplane must have one inbound interface")
-	}
-	for i, inbound := range networking.GetInbound() {
-		p := path.Field("inbound").Index(i)
-		err.Add(ValidatePort(p.Field("port"), inbound.GetPort()))
-		if inbound.ServicePort != 0 {
-			err.AddViolationAt(p.Field("servicePort"), `cannot be defined in the ingress mode`)
-		}
-		if inbound.ServiceAddress != "" {
-			err.AddViolationAt(p.Field("serviceAddress"), `cannot be defined in the ingress mode`)
-		}
-		if inbound.Address != "" {
-			err.AddViolationAt(p.Field("address"), `cannot be defined in the ingress mode`)
-		}
-		err.AddErrorAt(p.Field("tags"), validateTags(inbound.Tags))
-		if protocol, exist := inbound.Tags[mesh_proto.ProtocolTag]; exist {
-			if protocol != ProtocolTCP {
-				err.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ProtocolTag), `other values than TCP are not allowed`)
-			}
-		}
-	}
-	return err
-}
-
-func validateIngress(path validators.PathBuilder, ingress *mesh_proto.Dataplane_Networking_Ingress) validators.ValidationError {
-	if ingress == nil {
-		return validators.ValidationError{}
-	}
-	var err validators.ValidationError
-	if ingress.GetPublicAddress() == "" && ingress.GetPublicPort() != 0 {
-		err.AddViolationAt(path.Field("publicAddress"), `has to be defined with publicPort`)
-	}
-	if ingress.GetPublicPort() == 0 && ingress.GetPublicAddress() != "" {
-		err.AddViolationAt(path.Field("publicPort"), `has to be defined with publicAddress`)
-	}
-	if ingress.GetPublicAddress() != "" {
-		err.Add(validateAddress(path.Field("publicAddress"), ingress.GetPublicAddress()))
-	}
-	if ingress.GetPublicPort() != 0 {
-		err.Add(ValidatePort(path.Field("publicPort"), ingress.GetPublicPort()))
-	}
-	for i, ingressInterface := range ingress.GetAvailableServices() {
-		p := path.Field("availableService").Index(i)
-		if _, ok := ingressInterface.Tags[mesh_proto.ServiceTag]; !ok {
-			err.AddViolationAt(p.Field("tags").Key(mesh_proto.ServiceTag), "cannot be empty")
-		}
-		err.AddErrorAt(p.Field("tags"), validateTags(ingressInterface.GetTags()))
 	}
 	return err
 }
@@ -215,19 +177,31 @@ func validateInbound(inbound *mesh_proto.Dataplane_Networking_Inbound, dpAddress
 			}
 		}
 	}
-	if value, exist := inbound.Tags[mesh_proto.ProtocolTag]; exist {
-		if ParseProtocol(value) == ProtocolUnknown {
-			result.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ProtocolTag), fmt.Sprintf("tag %q has an invalid value %q. %s", mesh_proto.ProtocolTag, value, AllowedValuesHint(SupportedProtocols.Strings()...)))
+
+	validateProtocol := func(path validators.PathBuilder, selector map[string]string) validators.ValidationError {
+		var result validators.ValidationError
+		if value, exist := selector[mesh_proto.ProtocolTag]; exist {
+			if ParseProtocol(value) == ProtocolUnknown {
+				result.AddViolationAt(
+					path.Key(mesh_proto.ProtocolTag), fmt.Sprintf("tag %q has an invalid value %q. %s", mesh_proto.ProtocolTag, value, AllowedValuesHint(SupportedProtocols.Strings()...)),
+				)
+			}
 		}
+		return result
 	}
-	result.Add(validateTags(inbound.Tags))
+	result.Add(ValidateTags(validators.RootedAt("tags"), inbound.Tags, ValidateTagsOpts{
+		ExtraTagsValidators: []TagsValidatorFunc{validateProtocol},
+	}))
+
 	result.Add(validateServiceProbe(inbound.ServiceProbe))
+
 	return result
 }
 
-func validateServiceProbe(serviceProbe *mesh_proto.Dataplane_Networking_Inbound_ServiceProbe) (err validators.ValidationError) {
+func validateServiceProbe(serviceProbe *mesh_proto.Dataplane_Networking_Inbound_ServiceProbe) validators.ValidationError {
+	var err validators.ValidationError
 	if serviceProbe == nil {
-		return
+		return err
 	}
 	path := validators.RootedAt("serviceProbe")
 	if serviceProbe.Interval != nil {
@@ -242,7 +216,7 @@ func validateServiceProbe(serviceProbe *mesh_proto.Dataplane_Networking_Inbound_
 	if serviceProbe.HealthyThreshold != nil {
 		err.Add(ValidateThreshold(path.Field("healthyThreshold"), serviceProbe.HealthyThreshold.GetValue()))
 	}
-	return
+	return err
 }
 
 func validateOutbound(outbound *mesh_proto.Dataplane_Networking_Outbound) validators.ValidationError {
@@ -254,47 +228,80 @@ func validateOutbound(outbound *mesh_proto.Dataplane_Networking_Outbound) valida
 		result.AddViolation("address", "address has to be valid IP address")
 	}
 
-	if len(outbound.Tags) == 0 {
+	switch {
+	case outbound.BackendRef != nil:
+		if _, allowed := allowedKinds[outbound.BackendRef.Kind]; !allowed {
+			result.AddViolation("backendRef.kind", fmt.Sprintf("invalid value. Available values are: %s", strings.Join(maps.SortedKeys(allowedKinds), ",")))
+		}
+		if outbound.BackendRef.Name == "" && len(outbound.BackendRef.Labels) == 0 {
+			result.AddViolation("backendRef", "either 'name' or 'labels' should be specified")
+		}
+		// for MeshExternalService the port does not matter because it's taken from endpoints
+		if outbound.BackendRef.Kind != string(common_api.MeshExternalService) {
+			result.Add(ValidatePort(validators.RootedAt("backendRef").Field("port"), outbound.BackendRef.Port))
+		}
+	case len(outbound.Tags) == 0:
 		// nolint:staticcheck
-		if outbound.Service == "" {
-			result.AddViolation("kuma.io/service", "cannot be empty")
+		if outbound.GetService() == "" {
+			result.AddViolationAt(validators.RootedAt("tags"), `mandatory tag "kuma.io/service" is missing`)
 		}
-	} else {
-		if _, exist := outbound.Tags[mesh_proto.ServiceTag]; !exist {
-			result.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ServiceTag), `tag has to exist`)
-		}
-		result.Add(validateTags(outbound.Tags))
+	default:
+		result.Add(ValidateTags(validators.RootedAt("tags"), outbound.Tags, ValidateTagsOpts{
+			RequireService: true,
+		}))
 	}
 
+	if outbound.BackendRef != nil && (len(outbound.Tags) != 0 || outbound.GetService() != "") {
+		result.AddViolationAt(validators.RootedAt("backendRef"), "both backendRef and tags/service cannot be defined")
+	}
+
+	return result
+}
+
+func validateTransparentProxying(tp *mesh_proto.Dataplane_Networking_TransparentProxying) validators.ValidationError {
+	var result validators.ValidationError
+	path := validators.RootedAt("reachableBackends.refs")
+	if tp != nil && tp.ReachableBackends != nil {
+		for i, backendRef := range tp.ReachableBackends.Refs {
+			switch backendRef.Kind {
+			case string(common_api.MeshMultiZoneService), string(common_api.MeshService), string(common_api.MeshExternalService):
+			default:
+				result.AddViolationAt(path.Index(i).Field("kind"), fmt.Sprintf("invalid value. Available values are: %s", strings.Join(maps.SortedKeys(allowedKinds), ",")))
+			}
+			if backendRef.Name != "" {
+				result.AddErrorAt(path.Index(i).Field("name"), validateIdentifier(backendRef.Name, identifierRegexp, identifierErrMsg))
+			}
+			if backendRef.Name == "" && backendRef.Namespace == "" && len(backendRef.Labels) == 0 {
+				result.AddViolationAt(path.Index(i).Field("name"), "name or labels are required")
+			}
+			if backendRef.Name == "" && backendRef.Namespace != "" {
+				result.AddViolationAt(path.Index(i).Field("name"), "name is required, when namespace is defined")
+			}
+			if (backendRef.Name != "" || backendRef.Namespace != "") && len(backendRef.Labels) > 0 {
+				result.AddViolationAt(path.Index(i).Field("labels"), "labels cannot be defined when name is specified")
+			}
+		}
+	}
 	return result
 }
 
 func validateGateway(gateway *mesh_proto.Dataplane_Networking_Gateway) validators.ValidationError {
 	var result validators.ValidationError
-	if _, exist := gateway.Tags[mesh_proto.ServiceTag]; !exist {
-		result.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ServiceTag), `tag has to exist`)
-	}
-	if protocol, exist := gateway.Tags[mesh_proto.ProtocolTag]; exist {
-		if protocol != ProtocolTCP {
-			result.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ProtocolTag), `other values than TCP are not allowed`)
-		}
-	}
-	result.Add(validateTags(gateway.Tags))
-	return result
-}
 
-func validateTags(tags map[string]string) validators.ValidationError {
-	var result validators.ValidationError
-	for name, value := range tags {
-		if value == "" {
-			result.AddViolationAt(validators.RootedAt("tags").Key(name), `tag value cannot be empty`)
+	validateProtocol := func(path validators.PathBuilder, selector map[string]string) validators.ValidationError {
+		var result validators.ValidationError
+		if protocol, exist := selector[mesh_proto.ProtocolTag]; exist {
+			if protocol != ProtocolTCP {
+				result.AddViolationAt(path.Key(mesh_proto.ProtocolTag), fmt.Sprintf(`other values than tcp are not allowed, provided value "%s"`, protocol))
+			}
 		}
-		if !tagNameCharacterSet.MatchString(name) {
-			result.AddViolationAt(validators.RootedAt("tags").Key(name), `tag name must consist of alphanumeric characters, dots, dashes, slashes and underscores`)
-		}
-		if !tagValueCharacterSet.MatchString(value) {
-			result.AddViolationAt(validators.RootedAt("tags").Key(name), `tag value must consist of alphanumeric characters, dots, dashes and underscores`)
-		}
+		return result
 	}
+	result.Add(ValidateTags(validators.RootedAt("tags"), gateway.Tags, ValidateTagsOpts{
+		RequireService:      true,
+		ExtraTagsValidators: []TagsValidatorFunc{validateProtocol},
+	}),
+	)
+
 	return result
 }

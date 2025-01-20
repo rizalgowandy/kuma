@@ -3,8 +3,7 @@ package validators_test
 import (
 	"fmt"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/core/validators"
@@ -36,7 +35,7 @@ var _ = Describe("Validation Error", func() {
 		// when
 		err := validationErr.OrNil()
 
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	Describe("Append()", func() {
@@ -95,6 +94,42 @@ var _ = Describe("Validation Error", func() {
 			Expect(err).To(Equal(validators.ValidationError{
 				Violations: []validators.Violation{
 					{Field: `sources[0].match["service"]`, Message: "unknown error"},
+				},
+			}))
+		})
+	})
+
+	Describe("AddErrorAt()", func() {
+		It("properly concatenates paths with index/keys", func() {
+			// given
+			path := validators.RootedAt("spec").Field("fields")
+			err := validators.ValidationError{}
+			subErr := validators.ValidationError{}
+			subErr.AddViolationAt(validators.Root().Index(2), "something bad")
+
+			// when
+			err.AddErrorAt(path, subErr)
+			// then
+			Expect(err).To(Equal(validators.ValidationError{
+				Violations: []validators.Violation{
+					{Field: "spec.fields[2]", Message: "something bad"},
+				},
+			}))
+		})
+
+		It("properly concatenates paths with Root().Field()", func() {
+			// given
+			path := validators.RootedAt("thing.spec")
+			err := validators.ValidationError{}
+			subErr := validators.ValidationError{}
+			subErr.AddViolationAt(validators.Root().Field("field"), "something bad")
+
+			// when
+			err.AddErrorAt(path, subErr)
+			// then
+			Expect(err).To(Equal(validators.ValidationError{
+				Violations: []validators.Violation{
+					{Field: "thing.spec.field", Message: "something bad"},
 				},
 			}))
 		})
@@ -175,7 +210,7 @@ var _ = Describe("Validation Error", func() {
 
 var _ = Describe("PathBuilder", func() {
 	It("should produce empty path by default", func() {
-		Expect(validators.PathBuilder{}.String()).To(Equal(""))
+		Expect(validators.Root().String()).To(Equal(""))
 	})
 
 	It("should produce valid root path", func() {
@@ -192,5 +227,9 @@ var _ = Describe("PathBuilder", func() {
 
 	It("should produce valid array index", func() {
 		Expect(validators.RootedAt("spec").Field("sources").Index(0).Field("match").Key("service").String()).To(Equal(`spec.sources[0].match["service"]`))
+	})
+
+	It("works with Root().Field() or RootedAt()", func() {
+		Expect(validators.Root().Field("field").String()).To(Equal(validators.RootedAt("field").String()))
 	})
 })

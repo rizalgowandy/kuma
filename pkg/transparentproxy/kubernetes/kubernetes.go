@@ -18,117 +18,239 @@ package kubernetes
 
 import (
 	"fmt"
-	"strconv"
-
-	kube_core "k8s.io/api/core/v1"
+	"slices"
+	"strings"
 
 	"github.com/kumahq/kuma/pkg/plugins/runtime/k8s/metadata"
-	"github.com/kumahq/kuma/pkg/transparentproxy/config"
+	tproxy_config "github.com/kumahq/kuma/pkg/transparentproxy/config"
+	tproxy_consts "github.com/kumahq/kuma/pkg/transparentproxy/consts"
 )
 
+// Deprecated
 type PodRedirect struct {
-	BuiltinDNSEnabled     bool
-	BuiltinDNSPort        uint32
-	ExcludeOutboundPorts  string
-	RedirectPortOutbound  uint32
-	RedirectInbound       bool
-	ExcludeInboundPorts   string
-	RedirectPortInbound   uint32
-	RedirectPortInboundV6 uint32
-	UID                   string
+	// while https://github.com/kumahq/kuma/issues/8324 is not implemented, when changing the config,
+	// keep in mind to update all other places listed in the issue
+
+	BuiltinDNSEnabled                        bool
+	BuiltinDNSPort                           uint32
+	ExcludeOutboundPorts                     string
+	RedirectPortOutbound                     uint32
+	RedirectInbound                          bool
+	ExcludeInboundPorts                      string
+	RedirectPortInbound                      uint32
+	IpFamilyMode                             string
+	UID                                      string
+	TransparentProxyEnableEbpf               bool
+	TransparentProxyEbpfBPFFSPath            string
+	TransparentProxyEbpfCgroupPath           string
+	TransparentProxyEbpfTCAttachIface        string
+	TransparentProxyEbpfInstanceIPEnvVarName string
+	TransparentProxyEbpfProgramsSourcePath   string
+	ExcludeOutboundPortsForUIDs              []string
+	DropInvalidPackets                       bool
+	IptablesLogs                             bool
+	ExcludeInboundIPs                        string
+	ExcludeOutboundIPs                       string
 }
 
-func NewPodRedirectForPod(pod *kube_core.Pod) (*PodRedirect, error) {
+// Deprecated
+func NewPodRedirectFromAnnotations(annotations metadata.Annotations) (*PodRedirect, error) {
 	var err error
-	podRedirect := &PodRedirect{}
+	var pr PodRedirect
 
-	podRedirect.BuiltinDNSEnabled, _, err = metadata.Annotations(pod.Annotations).GetEnabled(metadata.KumaBuiltinDNS)
+	pr.BuiltinDNSEnabled, _, err = annotations.GetEnabled(metadata.KumaBuiltinDNS)
 	if err != nil {
 		return nil, err
 	}
 
-	podRedirect.BuiltinDNSPort, _, err = metadata.Annotations(pod.Annotations).GetUint32(metadata.KumaBuiltinDNSPort)
+	pr.BuiltinDNSPort, _, err = annotations.GetUint32(metadata.KumaBuiltinDNSPort)
 	if err != nil {
 		return nil, err
 	}
 
-	podRedirect.ExcludeOutboundPorts, _ = metadata.Annotations(pod.Annotations).GetString(metadata.KumaTrafficExcludeOutboundPorts)
+	pr.ExcludeOutboundPorts, _ = annotations.GetString(metadata.KumaTrafficExcludeOutboundPorts)
+	excludeOutboundPortsForUIDs, exists := annotations.GetString(metadata.KumaTrafficExcludeOutboundPortsForUIDs)
+	if exists {
+		pr.ExcludeOutboundPortsForUIDs = strings.Split(excludeOutboundPortsForUIDs, ";")
+	}
 
-	podRedirect.RedirectPortOutbound, _, err = metadata.Annotations(pod.Annotations).GetUint32(metadata.KumaTransparentProxyingOutboundPortAnnotation)
+	pr.RedirectPortOutbound, _, err = annotations.GetUint32(metadata.KumaTransparentProxyingOutboundPortAnnotation)
 	if err != nil {
 		return nil, err
 	}
 
-	podRedirect.RedirectInbound = true
-	enabled, exist, err := metadata.Annotations(pod.Annotations).GetEnabled(metadata.KumaGatewayAnnotation)
+	pr.RedirectInbound = true
+	enabled, exist, err := annotations.GetEnabled(metadata.KumaGatewayAnnotation)
 	if err != nil {
 		return nil, err
 	}
 	if exist && enabled {
-		podRedirect.RedirectInbound = false
+		pr.RedirectInbound = false
 	}
 
-	podRedirect.ExcludeInboundPorts, _ = metadata.Annotations(pod.Annotations).GetString(metadata.KumaTrafficExcludeInboundPorts)
-
-	podRedirect.RedirectPortInbound, _, err = metadata.Annotations(pod.Annotations).GetUint32(metadata.KumaTransparentProxyingInboundPortAnnotation)
+	pr.ExcludeInboundPorts = excludeApplicationProbeProxyPort(annotations)
+	pr.RedirectPortInbound, _, err = annotations.GetUint32(metadata.KumaTransparentProxyingInboundPortAnnotation)
 	if err != nil {
 		return nil, err
 	}
 
-	podRedirect.RedirectPortInboundV6, _, err = metadata.Annotations(pod.Annotations).GetUint32(metadata.KumaTransparentProxyingInboundPortAnnotationV6)
-	if err != nil {
+	pr.IpFamilyMode, _ = annotations.GetStringWithDefault(metadata.IpFamilyModeDualStack, metadata.KumaTransparentProxyingIPFamilyMode)
+
+	pr.DropInvalidPackets, _, _ = annotations.GetBoolean(metadata.KumaTrafficDropInvalidPackets)
+
+	pr.IptablesLogs, _, _ = annotations.GetBoolean(metadata.KumaTrafficIptablesLogs)
+
+	pr.UID, _ = annotations.GetString(metadata.KumaSidecarUID)
+
+	if value, exists, err := annotations.GetEnabled(metadata.KumaTransparentProxyingEbpf); err != nil {
 		return nil, err
+	} else if exists {
+		pr.TransparentProxyEnableEbpf = value
 	}
 
-	podRedirect.UID, _ = metadata.Annotations(pod.Annotations).GetString(metadata.KumaSidecarUID)
+	if value, exists := annotations.GetString(metadata.KumaTransparentProxyingEbpfBPFFSPath); exists {
+		pr.TransparentProxyEbpfBPFFSPath = value
+	}
 
-	return podRedirect, nil
+	if value, exists := annotations.GetString(metadata.KumaTransparentProxyingEbpfCgroupPath); exists {
+		pr.TransparentProxyEbpfCgroupPath = value
+	}
+
+	if value, exists := annotations.GetString(metadata.KumaTransparentProxyingEbpfTCAttachIface); exists {
+		pr.TransparentProxyEbpfTCAttachIface = value
+	}
+
+	if value, exists := annotations.GetString(metadata.KumaTransparentProxyingEbpfInstanceIPEnvVarName); exists {
+		pr.TransparentProxyEbpfInstanceIPEnvVarName = value
+	}
+
+	if value, exists := annotations.GetString(metadata.KumaTransparentProxyingEbpfProgramsSourcePath); exists {
+		pr.TransparentProxyEbpfProgramsSourcePath = value
+	}
+
+	if value, exists := annotations.GetString(
+		metadata.KumaTrafficExcludeInboundIPs,
+	); exists {
+		var addresses []string
+
+		for _, address := range strings.Split(value, ",") {
+			if trimmed := strings.TrimSpace(address); trimmed != "" {
+				addresses = append(addresses, trimmed)
+			}
+		}
+
+		pr.ExcludeInboundIPs = strings.Join(addresses, ",")
+	}
+
+	if value, exists := annotations.GetString(
+		metadata.KumaTrafficExcludeOutboundIPs,
+	); exists {
+		var addresses []string
+
+		for _, address := range strings.Split(value, ",") {
+			if trimmed := strings.TrimSpace(address); trimmed != "" {
+				addresses = append(addresses, trimmed)
+			}
+		}
+
+		pr.ExcludeOutboundIPs = strings.Join(addresses, ",")
+	}
+
+	return &pr, nil
 }
 
-func (pr *PodRedirect) AsTransparentProxyConfig() *config.TransparentProxyConfig {
-	return &config.TransparentProxyConfig{
-		DryRun:                 false,
-		Verbose:                true,
-		RedirectPortOutBound:   fmt.Sprintf("%d", pr.RedirectPortOutbound),
-		RedirectInBound:        pr.RedirectInbound,
-		RedirectPortInBound:    fmt.Sprintf("%d", pr.RedirectPortInbound),
-		RedirectPortInBoundV6:  fmt.Sprintf("%d", pr.RedirectPortInboundV6),
-		ExcludeInboundPorts:    pr.ExcludeInboundPorts,
-		ExcludeOutboundPorts:   pr.ExcludeOutboundPorts,
-		UID:                    pr.UID,
-		GID:                    pr.UID, // TODO: shall we have a separate annotation here?
-		RedirectDNS:            pr.BuiltinDNSEnabled,
-		RedirectAllDNSTraffic:  false,
-		AgentDNSListenerPort:   fmt.Sprintf("%d", pr.BuiltinDNSPort),
-		DNSUpstreamTargetChain: "",
+// Deprecated
+func excludeApplicationProbeProxyPort(annotations map[string]string) string {
+	// the annotations are validated/defaulted in a previous step in injector.NewAnnotations, so we can safely ignore the errors here
+	inboundPortsToExclude, _ := metadata.Annotations(annotations).GetString(metadata.KumaTrafficExcludeInboundPorts)
+	appProbeProxyPort, _ := metadata.Annotations(annotations).GetString(metadata.KumaApplicationProbeProxyPortAnnotation)
+	if appProbeProxyPort == "0" || appProbeProxyPort == "" {
+		return inboundPortsToExclude
 	}
+
+	if inboundPortsToExclude == "" {
+		return appProbeProxyPort
+	}
+
+	return fmt.Sprintf("%s,%s", inboundPortsToExclude, appProbeProxyPort)
 }
 
-func (pr *PodRedirect) AsKumactlCommandLine() []string {
-	result := []string{
-		"--redirect-outbound-port",
-		fmt.Sprintf("%d", pr.RedirectPortOutbound),
-		"--redirect-inbound=" + fmt.Sprintf("%t", pr.RedirectInbound),
-		"--redirect-inbound-port",
-		fmt.Sprintf("%d", pr.RedirectPortInbound),
-		"--redirect-inbound-port-v6",
-		fmt.Sprintf("%d", pr.RedirectPortInboundV6),
-		"--kuma-dp-uid",
-		pr.UID,
-		"--exclude-inbound-ports",
-		pr.ExcludeInboundPorts,
-		"--exclude-outbound-ports",
-		pr.ExcludeOutboundPorts,
-		"--verbose",
-		"--skip-resolv-conf",
-	}
+// Deprecated
+func flag[T string | bool | uint32](name string, values ...T) []string {
+	var result []string
 
-	if pr.BuiltinDNSEnabled {
-		result = append(result,
-			"--redirect-all-dns-traffic",
-			"--redirect-dns-port", strconv.FormatInt(int64(pr.BuiltinDNSPort), 10),
-		)
+	for _, value := range values {
+		boolValue, isBool := any(value).(bool)
+		switch {
+		case isBool && boolValue:
+			result = append(result, fmt.Sprintf("--%s", name))
+		case value != *new(T):
+			result = append(result, fmt.Sprintf("--%s=%v", name, value))
+		}
 	}
 
 	return result
+}
+
+// Deprecated
+func flagsIf[T string | bool](condition T, flags ...[]string) []string {
+	if condition == *new(T) {
+		return nil
+	}
+
+	return slices.Concat(flags...)
+}
+
+// Deprecated
+func (pr *PodRedirect) AsKumactlCommandLine() []string {
+	defaultConfig := tproxy_config.DefaultConfig()
+
+	return slices.Concat(
+		flagsIf(pr.UID != tproxy_consts.OwnerDefaultUID,
+			flag("kuma-dp-user", pr.UID),
+		),
+		flagsIf(pr.IpFamilyMode != string(defaultConfig.IPFamilyMode),
+			flag("ip-family-mode", pr.IpFamilyMode),
+		),
+		// outbound
+		flagsIf(pr.RedirectPortOutbound != uint32(defaultConfig.Redirect.Outbound.Port),
+			flag("redirect-outbound-port", pr.RedirectPortOutbound),
+		),
+		flag("exclude-outbound-ports", pr.ExcludeOutboundPorts),
+		flag("exclude-outbound-ips", pr.ExcludeOutboundIPs),
+		flag("exclude-outbound-ports-for-uids", pr.ExcludeOutboundPortsForUIDs...),
+		// inbound
+		flagsIf(!pr.RedirectInbound,
+			flag("redirect-inbound", "false"),
+		),
+		flagsIf(pr.RedirectInbound,
+			flagsIf(pr.RedirectPortInbound != uint32(defaultConfig.Redirect.Inbound.Port),
+				flag("redirect-inbound-port", pr.RedirectPortInbound),
+			),
+			flag("exclude-inbound-ports", pr.ExcludeInboundPorts),
+			flag("exclude-inbound-ips", pr.ExcludeInboundIPs),
+		),
+		// dns
+		flagsIf(pr.BuiltinDNSEnabled,
+			flag("redirect-all-dns-traffic", pr.BuiltinDNSEnabled),
+			flagsIf(pr.BuiltinDNSPort != uint32(defaultConfig.Redirect.DNS.Port),
+				flag("redirect-dns-port", pr.BuiltinDNSPort),
+			),
+		),
+		// ebpf
+		flagsIf(pr.TransparentProxyEnableEbpf,
+			flag("ebpf-enabled", pr.TransparentProxyEnableEbpf),
+			flag("ebpf-bpffs-path", pr.TransparentProxyEbpfBPFFSPath),
+			flag("ebpf-cgroup-path", pr.TransparentProxyEbpfCgroupPath),
+			flag("ebpf-tc-attach-iface", pr.TransparentProxyEbpfTCAttachIface),
+			flag("ebpf-programs-source-path", pr.TransparentProxyEbpfProgramsSourcePath),
+			flagsIf(pr.TransparentProxyEbpfInstanceIPEnvVarName,
+				flag("ebpf-instance-ip", fmt.Sprintf("$(%s)", pr.TransparentProxyEbpfInstanceIPEnvVarName)),
+			),
+		),
+		// other
+		flag("drop-invalid-packets", pr.DropInvalidPackets),
+		flag("iptables-logs", pr.IptablesLogs),
+		flag("verbose", true),
+	)
 }

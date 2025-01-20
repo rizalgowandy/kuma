@@ -2,15 +2,15 @@ package service
 
 import (
 	"context"
-	"io/ioutil"
 	"net/http"
 	"time"
 
-	"github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful/v3"
 	v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	cache_types "github.com/envoyproxy/go-control-plane/pkg/cache/types"
-	"github.com/golang/protobuf/jsonpb"
+	"github.com/golang/protobuf/jsonpb" // nolint: depguard
 
+	"github.com/kumahq/kuma/pkg/core"
 	rest_errors "github.com/kumahq/kuma/pkg/core/rest/errors"
 	rest_error_types "github.com/kumahq/kuma/pkg/core/rest/errors/types"
 	mads_v1 "github.com/kumahq/kuma/pkg/mads/v1"
@@ -31,20 +31,11 @@ func (s *service) RegisterRoutes(ws *restful.WebService) {
 }
 
 func (s *service) handleDiscovery(req *restful.Request, res *restful.Response) {
-	body, err := ioutil.ReadAll(req.Request.Body)
-	if err != nil {
-		writeBadRequestError(res, rest_error_types.Error{
-			Title:   "Could not read request body",
-			Details: err.Error(),
-		})
-		return
-	}
-
 	discoveryReq := &v3.DiscoveryRequest{}
-	err = jsonpb.UnmarshalString(string(body), discoveryReq)
-	if err != nil {
+	if err := jsonpb.Unmarshal(req.Request.Body, discoveryReq); err != nil {
 		writeBadRequestError(res, rest_error_types.Error{
 			Title:   "Could not parse request body",
+			Detail:  err.Error(),
 			Details: err.Error(),
 		})
 		return
@@ -56,6 +47,7 @@ func (s *service) handleDiscovery(req *restful.Request, res *restful.Response) {
 	if err != nil {
 		writeBadRequestError(res, rest_error_types.Error{
 			Title:   "Could not parse fetch-timeout",
+			Detail:  err.Error(),
 			Details: err.Error(),
 		})
 		return
@@ -79,20 +71,14 @@ func (s *service) handleDiscovery(req *restful.Request, res *restful.Response) {
 			s.log.V(1).Info("no update needed")
 			res.WriteHeader(http.StatusNotModified)
 		} else {
-			rest_errors.HandleError(res, err, "Could not fetch MonitoringAssignments")
+			rest_errors.HandleError(req.Request.Context(), res, err, "Could not fetch MonitoringAssignments")
 		}
 		return
 	}
 
 	marshaller := &jsonpb.Marshaler{OrigName: true}
-	resStr, err := marshaller.MarshalToString(discoveryRes)
-	if err != nil {
-		rest_errors.HandleError(res, err, "Could encode DiscoveryResponse")
-		return
-	}
-
-	if _, err = res.Write([]byte(resStr)); err != nil {
-		rest_errors.HandleError(res, err, "Could write DiscoveryResponse")
+	if err := marshaller.Marshal(res, discoveryRes); err != nil {
+		rest_errors.HandleError(req.Request.Context(), res, err, "Could write DiscoveryResponse")
 		return
 	}
 }
@@ -101,7 +87,7 @@ func (s *service) handleDiscovery(req *restful.Request, res *restful.Response) {
 // Any errors during that process are handled by errors.HandleError
 func writeBadRequestError(res *restful.Response, err rest_error_types.Error) {
 	if writeErr := res.WriteHeaderAndJson(http.StatusBadRequest, err, restful.MIME_JSON); writeErr != nil {
-		rest_errors.HandleError(res, writeErr, "Could encode error")
+		core.Log.Error(writeErr, "Could not write the error response")
 		return
 	}
 }
@@ -110,7 +96,7 @@ func writeBadRequestError(res *restful.Response, err rest_error_types.Error) {
 // or, if no timeout value was supplied, returns the configured default
 func (s *service) parseFetchTimeout(timeoutStr string) (time.Duration, error) {
 	if timeoutStr == "" {
-		return s.config.DefaultFetchTimeout, nil
+		return s.config.DefaultFetchTimeout.Duration, nil
 	}
 
 	return time.ParseDuration(timeoutStr)

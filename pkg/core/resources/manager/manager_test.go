@@ -3,21 +3,20 @@ package manager_test
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
-	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
+	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
+	"github.com/kumahq/kuma/pkg/core/resources/apis/meshservice/api/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/plugins/resources/memory"
-	"github.com/kumahq/kuma/pkg/test/apis/sample/v1alpha1"
-	"github.com/kumahq/kuma/pkg/test/resources/apis/sample"
+	"github.com/kumahq/kuma/pkg/test/resources/samples"
 )
 
 var _ = Describe("Resource Manager", func() {
-
 	var resStore store.ResourceStore
 	var resManager manager.ResourceManager
 
@@ -27,16 +26,27 @@ var _ = Describe("Resource Manager", func() {
 	})
 
 	createSampleMesh := func(name string) error {
-		meshRes := mesh.MeshResource{
+		meshRes := core_mesh.MeshResource{
 			Spec: &mesh_proto.Mesh{},
 		}
 		return resManager.Create(context.Background(), &meshRes, store.CreateByKey(name, model.NoMesh))
 	}
 
-	createSampleResource := func(mesh string) (*sample.TrafficRouteResource, error) {
-		trRes := sample.TrafficRouteResource{
-			Spec: &v1alpha1.TrafficRoute{
-				Path: "/some",
+	createSampleResource := func(mesh string) (*core_mesh.TrafficRouteResource, error) {
+		trRes := core_mesh.TrafficRouteResource{
+			Spec: &mesh_proto.TrafficRoute{
+				Sources: []*mesh_proto.Selector{{Match: map[string]string{
+					mesh_proto.ServiceTag: "*",
+				}}},
+				Destinations: []*mesh_proto.Selector{{Match: map[string]string{
+					mesh_proto.ServiceTag: "*",
+				}}},
+				Conf: &mesh_proto.TrafficRoute_Conf{
+					Destination: map[string]string{
+						mesh_proto.ServiceTag: "*",
+						"path":                "demo",
+					},
+				},
 			},
 		}
 		err := resManager.Create(context.Background(), &trRes, store.CreateByKey("tr-1", mesh))
@@ -65,6 +75,20 @@ var _ = Describe("Resource Manager", func() {
 			// then
 			Expect(err.Error()).To(Equal("mesh of name mesh-1 is not found"))
 		})
+
+		It("should default if a resource has a defaulter", func() {
+			// given
+			Expect(samples.MeshDefaultBuilder().Create(resManager)).To(Succeed())
+
+			// when
+			err := samples.MeshServiceBackendBuilder().WithState("").Create(resManager)
+
+			// then
+			Expect(err).ToNot(HaveOccurred())
+			getMs := v1alpha1.NewMeshServiceResource()
+			Expect(resManager.Get(context.Background(), getMs, store.GetByKey("backend", "default"))).To(Succeed())
+			Expect(getMs.Spec.State).To(Equal(v1alpha1.StateUnavailable))
+		})
 	})
 
 	Describe("DeleteAll()", func() {
@@ -81,7 +105,7 @@ var _ = Describe("Resource Manager", func() {
 				Mesh: "mesh-1",
 				Name: "tl-1",
 			}
-			trafficLog := &mesh.TrafficLogResource{
+			trafficLog := &core_mesh.TrafficLogResource{
 				Spec: &mesh_proto.TrafficLog{
 					Sources: []*mesh_proto.Selector{
 						{
@@ -103,24 +127,23 @@ var _ = Describe("Resource Manager", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			err = resManager.DeleteAll(context.Background(), &sample.TrafficRouteResourceList{}, store.DeleteAllByMesh("mesh-1"))
+			err = resManager.DeleteAll(context.Background(), &core_mesh.TrafficRouteResourceList{}, store.DeleteAllByMesh("mesh-1"))
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
 
 			// and resource from mesh-1 is deleted
-			res1 := sample.NewTrafficRouteResource()
+			res1 := core_mesh.NewTrafficRouteResource()
 			err = resManager.Get(context.Background(), res1, store.GetByKey("tr-1", "mesh-1"))
 			Expect(store.IsResourceNotFound(err)).To(BeTrue())
 
 			// and only TrafficRoutes are deleted
-			Expect(resManager.Get(context.Background(), mesh.NewTrafficLogResource(), store.GetBy(tlKey))).To(Succeed())
+			Expect(resManager.Get(context.Background(), core_mesh.NewTrafficLogResource(), store.GetBy(tlKey))).To(Succeed())
 
 			// and resource from mesh-2 is retained
-			res2 := sample.NewTrafficRouteResource()
+			res2 := core_mesh.NewTrafficRouteResource()
 			err = resManager.Get(context.Background(), res2, store.GetByKey("tr-1", "mesh-2"))
 			Expect(err).ToNot(HaveOccurred())
-
 		})
 	})
 })

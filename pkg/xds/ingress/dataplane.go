@@ -1,16 +1,16 @@
 package ingress
 
 import (
-	"context"
 	"fmt"
+	"slices"
 	"sort"
-
-	"github.com/golang/protobuf/proto"
+	"strings"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
-	"github.com/kumahq/kuma/pkg/core/resources/manager"
-	"github.com/kumahq/kuma/pkg/xds/envoy"
+	"github.com/kumahq/kuma/pkg/core/xds"
+	envoy "github.com/kumahq/kuma/pkg/xds/envoy/tags"
+	"github.com/kumahq/kuma/pkg/xds/topology"
 )
 
 // tagSets represent map from tags (encoded as string) to number of instances
@@ -38,26 +38,6 @@ func (s tagSets) addInstanceOfTags(mesh string, tags envoy.Tags) {
 	s[serviceKey{tags: strTags, mesh: mesh}]++
 }
 
-func (s tagSets) toAvailableServicesCompat() []*mesh_proto.Dataplane_Networking_Ingress_AvailableService {
-	var result []*mesh_proto.Dataplane_Networking_Ingress_AvailableService
-
-	var keys []serviceKey
-	for key := range s {
-		keys = append(keys, key)
-	}
-	sort.Sort(serviceKeySlice(keys))
-
-	for _, key := range keys {
-		tags, _ := envoy.TagsFromString(key.tags) // ignore error since we control how string looks like
-		result = append(result, &mesh_proto.Dataplane_Networking_Ingress_AvailableService{
-			Tags:      tags,
-			Instances: s[key],
-			Mesh:      key.mesh,
-		})
-	}
-	return result
-}
-
 func (s tagSets) toAvailableServices() []*mesh_proto.ZoneIngress_AvailableService {
 	var result []*mesh_proto.ZoneIngress_AvailableService
 
@@ -78,76 +58,123 @@ func (s tagSets) toAvailableServices() []*mesh_proto.ZoneIngress_AvailableServic
 	return result
 }
 
-func UpdateAvailableServicesCompat(ctx context.Context, rm manager.ResourceManager, ingress *core_mesh.DataplaneResource, others []*core_mesh.DataplaneResource) error {
-	availableServices := GetIngressAvailableServicesCompat(others)
-	if availableServicesEqualCompat(availableServices, ingress.Spec.GetNetworking().GetIngress().GetAvailableServices()) {
-		return nil
+func GetAvailableServices(
+	skipAvailableServices map[xds.MeshName]struct{},
+	allDataplanes []*core_mesh.DataplaneResource,
+	meshGateways []*core_mesh.MeshGatewayResource,
+	externalServices []*core_mesh.ExternalServiceResource,
+	tagFilters []string,
+) []*mesh_proto.ZoneIngress_AvailableService {
+	availableServices := GetIngressAvailableServices(skipAvailableServices, allDataplanes, tagFilters)
+	availableExternalServices := GetExternalAvailableServices(externalServices)
+	availableServices = append(availableServices, availableExternalServices...)
+
+	meshGatewayDataplanes := getMeshGateways(allDataplanes, meshGateways)
+
+	for _, meshGateways := range meshGatewayDataplanes {
+		availableMeshGatewayListeners := getIngressAvailableMeshGateways(
+			meshGateways.Mesh,
+			meshGateways.Gateways,
+			meshGateways.Dataplanes,
+		)
+		availableServices = append(availableServices, availableMeshGatewayListeners...)
 	}
-	ingress.Spec.Networking.Ingress.AvailableServices = availableServices
-	if err := rm.Update(ctx, ingress); err != nil {
-		return err
-	}
-	return nil
+
+	return availableServices
 }
 
-func UpdateAvailableServices(ctx context.Context, rm manager.ResourceManager, ingress *core_mesh.ZoneIngressResource, others []*core_mesh.DataplaneResource) error {
-	availableServices := GetIngressAvailableServices(others)
-	if availableServicesEqual(availableServices, ingress.Spec.GetAvailableServices()) {
-		return nil
-	}
-	ingress.Spec.AvailableServices = availableServices
-	if err := rm.Update(ctx, ingress); err != nil {
-		return err
-	}
-	return nil
+// MeshGatewayDataplanes is a helper type to hold the MeshGateways and Dataplanes for a mesh.
+type MeshGatewayDataplanes struct {
+	Mesh       string
+	Gateways   []*core_mesh.MeshGatewayResource
+	Dataplanes []*core_mesh.DataplaneResource
 }
 
-func availableServicesEqualCompat(services []*mesh_proto.Dataplane_Networking_Ingress_AvailableService, other []*mesh_proto.Dataplane_Networking_Ingress_AvailableService) bool {
-	if len(services) != len(other) {
-		return false
+func getMeshGateways(
+	dataplanes []*core_mesh.DataplaneResource,
+	meshGateways []*core_mesh.MeshGatewayResource,
+) []MeshGatewayDataplanes {
+	meshGatewayDataplanes := []MeshGatewayDataplanes{}
+
+	meshGatewaysByMesh := map[xds.MeshName][]*core_mesh.MeshGatewayResource{}
+	for _, gateway := range meshGateways {
+		gateways := meshGatewaysByMesh[gateway.GetMeta().GetMesh()]
+		meshGatewaysByMesh[gateway.GetMeta().GetMesh()] = append(gateways, gateway)
 	}
-	for i := range services {
-		if !proto.Equal(services[i], other[i]) {
-			return false
+
+	dataplanesByMesh := map[xds.MeshName][]*core_mesh.DataplaneResource{}
+	for _, dataplane := range dataplanes {
+		if !dataplane.Spec.IsBuiltinGateway() {
+			continue
 		}
+		dataplanes := dataplanesByMesh[dataplane.GetMeta().GetMesh()]
+		dataplanesByMesh[dataplane.GetMeta().GetMesh()] = append(dataplanes, dataplane)
 	}
-	return true
+
+	for meshName, meshGateways := range meshGatewaysByMesh {
+		dataplanes := dataplanesByMesh[meshName]
+
+		meshGatewayDataplanes = append(meshGatewayDataplanes, MeshGatewayDataplanes{
+			Mesh:       meshName,
+			Gateways:   meshGateways,
+			Dataplanes: dataplanes,
+		})
+	}
+
+	return meshGatewayDataplanes
 }
 
-func availableServicesEqual(services []*mesh_proto.ZoneIngress_AvailableService, other []*mesh_proto.ZoneIngress_AvailableService) bool {
-	if len(services) != len(other) {
-		return false
-	}
-	for i := range services {
-		if !proto.Equal(services[i], other[i]) {
-			return false
-		}
-	}
-	return true
-}
+func getIngressAvailableMeshGateways(meshName string, meshGateways []*core_mesh.MeshGatewayResource, dataplanes []*core_mesh.DataplaneResource) []*mesh_proto.ZoneIngress_AvailableService {
+	endpoints := topology.CrossMeshEndpointTags(meshGateways, dataplanes)
 
-func GetIngressAvailableServicesCompat(others []*core_mesh.DataplaneResource) []*mesh_proto.Dataplane_Networking_Ingress_AvailableService {
 	tagSets := tagSets{}
-	for _, dp := range others {
-		if dp.Spec.IsIngress() {
+	for _, endpointTags := range endpoints {
+		tagSets.addInstanceOfTags(meshName, mesh_proto.MergeAs[envoy.Tags](
+			map[string]string{
+				mesh_proto.MeshTag: meshName,
+			},
+			endpointTags,
+		))
+	}
+
+	return tagSets.toAvailableServices()
+}
+
+func GetIngressAvailableServices(
+	skipAvailableServices map[xds.MeshName]struct{},
+	dataplanes []*core_mesh.DataplaneResource,
+	tagFilters []string,
+) []*mesh_proto.ZoneIngress_AvailableService {
+	tagSets := tagSets{}
+	for _, dp := range dataplanes {
+		if _, ok := skipAvailableServices[dp.GetMeta().GetMesh()]; ok {
 			continue
 		}
 		for _, dpInbound := range dp.Spec.GetNetworking().GetHealthyInbounds() {
-			tagSets.addInstanceOfTags(dp.GetMeta().GetMesh(), dpInbound.Tags)
-		}
-	}
-	return tagSets.toAvailableServicesCompat()
-}
-
-func GetIngressAvailableServices(others []*core_mesh.DataplaneResource) []*mesh_proto.ZoneIngress_AvailableService {
-	tagSets := tagSets{}
-	for _, dp := range others {
-		if dp.Spec.IsIngress() {
-			continue
-		}
-		for _, dpInbound := range dp.Spec.GetNetworking().GetHealthyInbounds() {
-			tagSets.addInstanceOfTags(dp.GetMeta().GetMesh(), dpInbound.Tags)
+			tags := map[string]string{}
+			for key, value := range dpInbound.Tags {
+				hasPrefix := func(tagFilter string) bool {
+					return strings.HasPrefix(key, tagFilter)
+				}
+				if len(tagFilters) == 0 || slices.ContainsFunc(tagFilters, hasPrefix) {
+					tags[key] = value
+				}
+			}
+			tagSets.addInstanceOfTags(dp.GetMeta().GetMesh(), tags)
 		}
 	}
 	return tagSets.toAvailableServices()
+}
+
+func GetExternalAvailableServices(others []*core_mesh.ExternalServiceResource) []*mesh_proto.ZoneIngress_AvailableService {
+	tagSets := tagSets{}
+	for _, es := range others {
+		tagSets.addInstanceOfTags(es.GetMeta().GetMesh(), es.Spec.Tags)
+	}
+
+	availableServices := tagSets.toAvailableServices()
+	for _, as := range availableServices {
+		as.ExternalService = true
+	}
+	return availableServices
 }

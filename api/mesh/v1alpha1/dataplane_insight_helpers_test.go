@@ -4,7 +4,7 @@ import (
 	"time"
 
 	envoy_resource "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	. "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -13,9 +13,7 @@ import (
 )
 
 var _ = Describe("DataplaneHelpers", func() {
-
 	Describe("DataplaneInsight", func() {
-
 		var status *DataplaneInsight
 		var t1, t2, t3 time.Time
 
@@ -27,13 +25,12 @@ var _ = Describe("DataplaneHelpers", func() {
 		})
 
 		Describe("UpdateSubscription()", func() {
-
 			It("should add new subscriptions", func() {
 				// given
 				subscription := &DiscoverySubscription{
 					Id:                     "1",
 					ControlPlaneInstanceId: "node-001",
-					Status:                 NewSubscriptionStatus(),
+					Status:                 NewSubscriptionStatus(t1),
 				}
 
 				// when
@@ -47,6 +44,7 @@ var _ = Describe("DataplaneHelpers", func() {
                   status:
                     cds: {}
                     eds: {}
+                    lastUpdateTime: "2017-07-17T17:07:47Z"
                     lds: {}
                     rds: {}
                     total: {}
@@ -59,12 +57,12 @@ var _ = Describe("DataplaneHelpers", func() {
 					{
 						Id:                     "1",
 						ControlPlaneInstanceId: "node-001",
-						Status:                 NewSubscriptionStatus(),
+						Status:                 NewSubscriptionStatus(t1),
 					},
 					{
 						Id:                     "2",
 						ControlPlaneInstanceId: "node-002",
-						Status:                 NewSubscriptionStatus(),
+						Status:                 NewSubscriptionStatus(t2),
 					},
 				}
 
@@ -72,7 +70,7 @@ var _ = Describe("DataplaneHelpers", func() {
 				subscription := &DiscoverySubscription{
 					Id:                     "1",
 					ControlPlaneInstanceId: "node-003",
-					Status:                 NewSubscriptionStatus(),
+					Status:                 NewSubscriptionStatus(t3),
 				}
 
 				// when
@@ -86,6 +84,7 @@ var _ = Describe("DataplaneHelpers", func() {
                   status:
                     cds: {}
                     eds: {}
+                    lastUpdateTime: "2019-09-19T19:09:49Z"
                     lds: {}
                     rds: {}
                     total: {}
@@ -94,6 +93,7 @@ var _ = Describe("DataplaneHelpers", func() {
                   status:
                     cds: {}
                     eds: {}
+                    lastUpdateTime: "2018-08-18T18:08:48Z"
                     lds: {}
                     rds: {}
                     total: {}
@@ -123,8 +123,8 @@ var _ = Describe("DataplaneHelpers", func() {
 				})).To(Succeed())
 
 				// then
-				_, subscription := dataplaneInsight.GetSubscription("2")
-				Expect(subscription.DisconnectTime).ToNot(BeNil())
+				subscription := dataplaneInsight.GetSubscription("2")
+				Expect(subscription.(*DiscoverySubscription).DisconnectTime).ToNot(BeNil())
 			})
 
 			It("should return error for wrong subscription type", func() {
@@ -152,21 +152,19 @@ var _ = Describe("DataplaneHelpers", func() {
 			})
 		})
 
-		Describe("GetLatestSubscription()", func() {
-
+		Describe("GetLastSubscription()", func() {
 			It("should return `nil` when there are no subscriptions", func() {
 				// given
 				status.Subscriptions = nil
 
 				// when
-				subscription, connectTime := status.GetLatestSubscription()
+				subscription := status.GetLastSubscription()
 
 				// then
 				Expect(subscription).To(BeNil())
-				Expect(connectTime).To(BeNil())
 			})
 
-			It("should return subscription with the most recent `ConnectTime`", func() {
+			It("should return last subscription", func() {
 				// given
 				status.Subscriptions = []*DiscoverySubscription{
 					{
@@ -184,16 +182,15 @@ var _ = Describe("DataplaneHelpers", func() {
 				}
 
 				// when
-				subscription, connectTime := status.GetLatestSubscription()
+				subscription := status.GetLastSubscription()
 
 				// then
-				Expect(subscription).To(BeIdenticalTo(status.Subscriptions[1]))
-				Expect(*connectTime).To(BeTemporally("==", t3))
+				Expect(subscription).To(BeIdenticalTo(status.Subscriptions[2]))
+				Expect(subscription.GetId()).To(Equal("2"))
 			})
 		})
 
 		Describe("Sum()", func() {
-
 			It("should return `0` when there are no subscriptions", func() {
 				// given
 				status.Subscriptions = nil
@@ -240,17 +237,15 @@ var _ = Describe("DataplaneHelpers", func() {
 	})
 
 	Describe("DiscoverySubscriptionStatus", func() {
-
 		var status *DiscoverySubscriptionStatus
 
 		BeforeEach(func() {
-			status = NewSubscriptionStatus()
+			t1, _ := time.Parse(time.RFC3339, "2017-07-17T17:07:47+00:00")
+			status = NewSubscriptionStatus(t1)
 		})
 
 		Describe("StatsOf()", func() {
-
 			It("should support CDS", func() {
-
 				// when
 				status.StatsOf(envoy_resource.ClusterType).ResponsesSent = 1
 
@@ -259,6 +254,7 @@ var _ = Describe("DataplaneHelpers", func() {
                 cds:
                   responsesSent: "1"
                 eds: {}
+                lastUpdateTime: "2017-07-17T17:07:47Z"
                 lds: {}
                 rds: {}
                 total: {}
@@ -266,7 +262,6 @@ var _ = Describe("DataplaneHelpers", func() {
 			})
 
 			It("should support EDS", func() {
-
 				// when
 				status.StatsOf(envoy_resource.EndpointType).ResponsesSent = 1
 
@@ -275,6 +270,7 @@ var _ = Describe("DataplaneHelpers", func() {
                 cds: {}
                 eds:
                   responsesSent: "1"
+                lastUpdateTime: "2017-07-17T17:07:47Z"
                 lds: {}
                 rds: {}
                 total: {}
@@ -282,7 +278,6 @@ var _ = Describe("DataplaneHelpers", func() {
 			})
 
 			It("should support LDS", func() {
-
 				// when
 				status.StatsOf(envoy_resource.ListenerType).ResponsesSent = 1
 
@@ -290,6 +285,7 @@ var _ = Describe("DataplaneHelpers", func() {
 				Expect(util_proto.ToYAML(status)).To(MatchYAML(`
                 cds: {}
                 eds: {}
+                lastUpdateTime: "2017-07-17T17:07:47Z"
                 lds:
                   responsesSent: "1"
                 rds: {}
@@ -298,7 +294,6 @@ var _ = Describe("DataplaneHelpers", func() {
 			})
 
 			It("should support RDS", func() {
-
 				// when
 				status.StatsOf(envoy_resource.RouteType).ResponsesSent = 1
 
@@ -306,6 +301,7 @@ var _ = Describe("DataplaneHelpers", func() {
 				Expect(util_proto.ToYAML(status)).To(MatchYAML(`
                 cds: {}
                 eds: {}
+                lastUpdateTime: "2017-07-17T17:07:47Z"
                 lds: {}
                 rds:
                   responsesSent: "1"
@@ -321,6 +317,7 @@ var _ = Describe("DataplaneHelpers", func() {
 				Expect(util_proto.ToYAML(status)).To(MatchYAML(`
                 cds: {}
                 eds: {}
+                lastUpdateTime: "2017-07-17T17:07:47Z"
                 lds: {}
                 rds: {}
                 total: {}
@@ -328,4 +325,39 @@ var _ = Describe("DataplaneHelpers", func() {
 			})
 		})
 	})
+
+	type testCase struct {
+		inputVersion    string
+		expectedVersion string
+		expectedLabel   string
+	}
+	DescribeTable("Envoy.ParseVersion",
+		func(given testCase) {
+			actualVersion, actualLabel := (&EnvoyVersion{
+				Version: given.inputVersion,
+			}).ParseVersion()
+			Expect(actualVersion).To(Equal(given.expectedVersion))
+			Expect(actualLabel).To(Equal(given.expectedLabel))
+		},
+		Entry("empty", testCase{
+			inputVersion:    "",
+			expectedVersion: "",
+			expectedLabel:   "",
+		}),
+		Entry("no label", testCase{
+			inputVersion:    "1.20.0",
+			expectedVersion: "1.20.0",
+			expectedLabel:   "",
+		}),
+		Entry("simple label", testCase{
+			inputVersion:    "1.20.0-dev",
+			expectedVersion: "1.20.0",
+			expectedLabel:   "dev",
+		}),
+		Entry("label with dashes", testCase{
+			inputVersion:    "1.20.0-super-dev",
+			expectedVersion: "1.20.0",
+			expectedLabel:   "super-dev",
+		}),
+	)
 })

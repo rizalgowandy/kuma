@@ -1,10 +1,9 @@
 package mesh_test
 
 import (
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	. "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -167,7 +166,7 @@ var _ = Describe("VirtualOutbound_validator", func() {
 			expected: `
                 violations:
                 - field: conf.host
-                  message: 'template pre evaluation failed with error=''failed compiling gotemplate error=''template: :1: function "mesh" not defined'''''
+                  message: 'template pre evaluation failed with error="failed compiling gotemplate error=\"template: :1: function \\\"mesh\\\" not defined\""'
 `,
 		}),
 		Entry("bad port template", testCase{
@@ -185,7 +184,7 @@ var _ = Describe("VirtualOutbound_validator", func() {
 			expected: `
                 violations:
                 - field: conf.port
-                  message: 'template pre evaluation failed with error=''failed compiling gotemplate error=''template: :1: function "port" not defined'''''
+                  message: 'template pre evaluation failed with error="failed compiling gotemplate error=\"template: :1: function \\\"port\\\" not defined\""'
 `,
 		}),
 		Entry("port is not a number template", testCase{
@@ -205,7 +204,7 @@ var _ = Describe("VirtualOutbound_validator", func() {
 			expected: `
                 violations:
                 - field: conf.port
-                  message: template pre evaluation failed with error='evaluation of template with parameters didn't evaluate to a parsable number result='1a''
+                  message: template pre evaluation failed with error="evaluation of template with parameters didn't evaluate to a parsable number result=\"1a\""
 `,
 		}),
 		Entry("parameter is not good tag", testCase{

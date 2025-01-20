@@ -1,17 +1,15 @@
 package mesh_test
 
 import (
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
 var _ = Describe("ExternalService", func() {
-
 	DescribeTable("should pass validation",
 		func(dpYAML string) {
 			// given
@@ -223,8 +221,8 @@ var _ = Describe("ExternalService", func() {
                   version: "1"`,
 			expected: `
                 violations:
-                - field: tags["kuma.io/service"]
-                  message: tag has to exist`,
+                - field: tags
+                  message: mandatory tag "kuma.io/service" is missing`,
 		}),
 		Entry("tags: empty tag value", testCase{
 			dataplane: `
@@ -239,7 +237,7 @@ var _ = Describe("ExternalService", func() {
 			expected: `
                 violations:
                 - field: tags["version"]
-                  message: tag value cannot be empty`,
+                  message: tag value must be non-empty`,
 		}),
 		Entry("tags: `protocol` tag with an empty value", testCase{
 			dataplane: `
@@ -254,10 +252,9 @@ var _ = Describe("ExternalService", func() {
 			expected: `
                 violations:
                 - field: tags["kuma.io/protocol"]
-                  message: tag value cannot be empty
-                - field: tags["kuma.io/protocol"]
                   message: 'tag "kuma.io/protocol" has an invalid value "". Allowed values: grpc, http, http2, kafka, tcp'
-`,
+                - field: tags["kuma.io/protocol"]
+                  message: tag value must be non-empty`,
 		}),
 		Entry("tags: `protocol` tag with unsupported value", testCase{
 			dataplane: `
@@ -306,6 +303,45 @@ var _ = Describe("ExternalService", func() {
                 - field: tags["invalidTagValue"]
                   message: tag value must consist of alphanumeric characters, dots, dashes and underscores`,
 		}),
+		Entry("tls: empty inline cert", testCase{
+			dataplane: `
+                type: ExternalService
+                name: es-1
+                mesh: default
+                tags:
+                  kuma.io/service: backend
+                networking:
+                  address: 192.168.0.1:8080
+                  tls:
+                    enabled: true
+                    caCert:
+                      inline: ""
+                    clientCert:
+                      inlineString: ""
+                    clientKey:
+                      secret: ""`,
+			expected: `
+                violations:
+                - field: networking.tls.caCert
+                  message: data source cannot be empty
+                - field: networking.tls.clientCert
+                  message: data source cannot be empty
+                - field: networking.tls.clientKey
+                  message: data source cannot be empty`,
+		}),
+		Entry("kuma.io/service and networking address clash", testCase{
+			dataplane: `
+                type: ExternalService
+                name: es-1
+                mesh: default
+                networking:
+                  address: httpbin.org:80
+                tags:
+                  kuma.io/service: httpbin.org`,
+			expected: `
+                violations:
+                - field: tags["kuma.io/service"]
+                  message: cannot be the same as networking.address`,
+		}),
 	)
-
 })

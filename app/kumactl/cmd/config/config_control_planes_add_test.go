@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,25 +13,23 @@ import (
 	"time"
 	"unicode"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
-	"github.com/kumahq/kuma/app/kumactl/pkg/config"
-	"github.com/kumahq/kuma/pkg/api-server/types"
-	"github.com/kumahq/kuma/pkg/util/test"
+	"github.com/kumahq/kuma/api/openapi/types"
+	"github.com/kumahq/kuma/app/kumactl/pkg/test"
 	"github.com/kumahq/kuma/pkg/version"
 )
 
 var _ = Describe("kumactl config control-planes add", func() {
-
 	var configFile *os.File
 
 	BeforeEach(func() {
 		var err error
-		configFile, err = ioutil.TempFile("", "")
+		configFile, err = os.CreateTemp("", "")
 		Expect(err).ToNot(HaveOccurred())
+		Expect(configFile.Close()).To(Succeed())
 	})
 	AfterEach(func() {
 		if configFile != nil {
@@ -44,10 +41,10 @@ var _ = Describe("kumactl config control-planes add", func() {
 	var outbuf *bytes.Buffer
 
 	BeforeEach(func() {
-		rootCmd = test.DefaultTestingRootCmd()
+		_, _, rootCmd = test.DefaultTestingRootCmd()
 
 		// Different versions of cobra might emit errors to stdout
-		// or stderr. It's too fragile to depend on precidely what
+		// or stderr. It's too fragile to depend on precisely what
 		// it does, and that's not something that needs to be tested
 		// within Kuma anyway. So we just combine all the output
 		// and validate the aggregate.
@@ -57,11 +54,12 @@ var _ = Describe("kumactl config control-planes add", func() {
 	})
 
 	Describe("error cases", func() {
-
 		It("should require name", func() {
 			// given
-			rootCmd.SetArgs([]string{"--config-file", configFile.Name(),
-				"config", "control-planes", "add"})
+			rootCmd.SetArgs([]string{
+				"--config-file", configFile.Name(),
+				"config", "control-planes", "add",
+			})
 			// when
 			err := rootCmd.Execute()
 			// then
@@ -73,9 +71,11 @@ var _ = Describe("kumactl config control-planes add", func() {
 
 		It("should require API Server URL", func() {
 			// given
-			rootCmd.SetArgs([]string{"--config-file", configFile.Name(),
+			rootCmd.SetArgs([]string{
+				"--config-file", configFile.Name(),
 				"config", "control-planes", "add",
-				"--name", "example"})
+				"--name", "example",
+			})
 			// when
 			err := rootCmd.Execute()
 			// then
@@ -87,11 +87,13 @@ var _ = Describe("kumactl config control-planes add", func() {
 
 		It("should not allow invalid auth-type", func() {
 			// given
-			rootCmd.SetArgs([]string{"--config-file", configFile.Name(),
+			rootCmd.SetArgs([]string{
+				"--config-file", configFile.Name(),
 				"config", "control-planes", "add",
 				"--address", "http://localhost:1234",
 				"--auth-type", "unknown",
-				"--name", "example"})
+				"--name", "example",
+			})
 			// when
 			err := rootCmd.Execute()
 			// then
@@ -104,10 +106,12 @@ var _ = Describe("kumactl config control-planes add", func() {
 			defer server.Close()
 
 			// given
-			rootCmd.SetArgs([]string{"--config-file", filepath.Join("testdata", "config-control-planes-add.01.golden.yaml"),
+			rootCmd.SetArgs([]string{
+				"--config-file", filepath.Join("testdata", "config-control-planes-add.01.golden.yaml"),
 				"config", "control-planes", "add",
 				"--name", "example",
-				"--address", fmt.Sprintf("http://localhost:%d", port)})
+				"--address", fmt.Sprintf("http://localhost:%d", port),
+			})
 			// when
 			err := rootCmd.Execute()
 			// then
@@ -119,22 +123,19 @@ var _ = Describe("kumactl config control-planes add", func() {
 
 		It("should fail when CP timeouts", func() {
 			// setup
-			currentTimeout := config.DefaultApiServerTimeout
-			config.DefaultApiServerTimeout = 10 * time.Millisecond
-			defer func() {
-				config.DefaultApiServerTimeout = currentTimeout
-			}()
-			timeout := config.DefaultApiServerTimeout * 5 // so we are sure we exceed the timeout
 			server, port := setupCpServer(func(writer http.ResponseWriter, req *http.Request) {
-				time.Sleep(timeout)
+				time.Sleep(time.Millisecond * 500)
 			})
 			defer server.Close()
 
 			// given
-			rootCmd.SetArgs([]string{"--config-file", configFile.Name(),
+			rootCmd.SetArgs([]string{
+				"--config-file", configFile.Name(),
+				"--api-timeout", "100ms",
 				"config", "control-planes", "add",
 				"--name", "example",
-				"--address", fmt.Sprintf("http://localhost:%d", port)})
+				"--address", fmt.Sprintf("http://localhost:%d", port),
+			})
 			// when
 			err := rootCmd.Execute()
 
@@ -148,28 +149,29 @@ var _ = Describe("kumactl config control-planes add", func() {
 		It("should fail on invalid api server", func() {
 			// setup
 			server, port := setupCpServer(func(writer http.ResponseWriter, req *http.Request) {
-				_, err := writer.Write([]byte("{}"))
+				_, err := writer.Write([]byte(`{"product": "OtherProduct"}`))
 				Expect(err).ToNot(HaveOccurred())
 			})
 			defer server.Close()
 
 			// given
-			rootCmd.SetArgs([]string{"--config-file", configFile.Name(),
+			rootCmd.SetArgs([]string{
+				"--config-file", configFile.Name(),
 				"config", "control-planes", "add",
 				"--name", "example",
-				"--address", fmt.Sprintf("http://localhost:%d", port)})
+				"--address", fmt.Sprintf("http://localhost:%d", port),
+			})
 			// when
 			err := rootCmd.Execute()
 			// then
-			Expect(err).To(MatchError(`provided address is not valid Kuma Control Plane API Server`))
+			Expect(err).To(MatchError(`this CLI is for Kuma but the control plane you're connected to is OtherProduct. Please use the CLI for your control plane`))
 			// and
-			Expect(outbuf.String()).To(Equal(`Error: provided address is not valid Kuma Control Plane API Server
+			Expect(outbuf.String()).To(Equal(`Error: this CLI is for Kuma but the control plane you're connected to is OtherProduct. Please use the CLI for your control plane
 `))
 		})
 	})
 
 	Describe("happy path", func() {
-
 		type testCase struct {
 			configFile  string
 			goldenFile  string
@@ -181,22 +183,24 @@ var _ = Describe("kumactl config control-planes add", func() {
 		DescribeTable("should add a new Control Plane by name and address",
 			func(given testCase) {
 				// setup
-				initial, err := ioutil.ReadFile(filepath.Join("testdata", given.configFile))
+				initial, err := os.ReadFile(filepath.Join("testdata", given.configFile))
 				Expect(err).ToNot(HaveOccurred())
-				err = ioutil.WriteFile(configFile.Name(), initial, 0600)
+				err = os.WriteFile(configFile.Name(), initial, 0o600)
 				Expect(err).ToNot(HaveOccurred())
 
 				// setup cp index server for validation to pass
 				server, port := setupCpIndexServer()
 				defer server.Close()
 
-				args := []string{"--config-file", configFile.Name(),
+				args := []string{
+					"--config-file", configFile.Name(),
 					"config", "control-planes", "add",
 					"--name", "example",
 					"--address", fmt.Sprintf("http://localhost:%d", port),
 					"--ca-cert-file", "/tmp/ca-cert.pem",
 					"--client-cert-file", "/tmp/client.cert.pem",
 					"--client-key-file", "/tmp/client.key.pem",
+					"--skip-check",
 				}
 				if given.overwrite {
 					args = append(args, "--overwrite")
@@ -211,13 +215,13 @@ var _ = Describe("kumactl config control-planes add", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				// when
-				expectedWithPlaceholder, err := ioutil.ReadFile(filepath.Join("testdata", given.goldenFile))
+				expectedWithPlaceholder, err := os.ReadFile(filepath.Join("testdata", given.goldenFile))
 				// then
 				Expect(err).ToNot(HaveOccurred())
 				expected := strings.ReplaceAll(string(expectedWithPlaceholder), "http://placeholder-address", fmt.Sprintf("http://localhost:%d", port))
 
 				// when
-				actual, err := ioutil.ReadFile(configFile.Name())
+				actual, err := os.ReadFile(configFile.Name())
 				// then
 				Expect(err).ToNot(HaveOccurred())
 
@@ -283,7 +287,7 @@ switched active Control Plane to "example"
 func setupCpIndexServer() (*httptest.Server, int) {
 	return setupCpServer(func(writer http.ResponseWriter, req *http.Request) {
 		response := types.IndexResponse{
-			Tagline: version.Product,
+			Product: version.Product,
 			Version: "unknown",
 		}
 		marshaled, err := json.Marshal(response)

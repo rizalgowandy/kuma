@@ -5,6 +5,7 @@ resources:
     address:
       socketAddress:
         portValue: 9000
+    enableReusePort: false
     filterChains:
     - filters:
       - name: envoy.filters.network.http_connection_manager
@@ -12,7 +13,10 @@ resources:
           '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           httpFilters:
           - name: envoy.filters.http.router
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           routeConfig:
+            name: probe:route_configuration
             virtualHosts:
             - domains:
               - '*'
@@ -20,14 +24,14 @@ resources:
               routes:
               - match:
                   headers:
-                  - exactMatch: GET
-                    name: :method
+                  - name: :method
+                    stringMatch:
+                      exact: GET
                   path: /8080/healthz/probe
                 route:
                   cluster: localhost:8080
                   regexRewrite:
                     pattern:
-                      googleRe2: {}
                       regex: .*
                     substitution: /healthz/probe
           statPrefix: probe_listener

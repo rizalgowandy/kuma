@@ -3,20 +3,23 @@ package bootstrap_test
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	dp_server_cfg "github.com/kumahq/kuma/pkg/config/dp-server"
+	config_types "github.com/kumahq/kuma/pkg/config/types"
+	xds_config "github.com/kumahq/kuma/pkg/config/xds"
 	bootstrap_config "github.com/kumahq/kuma/pkg/config/xds/bootstrap"
 	"github.com/kumahq/kuma/pkg/core"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
@@ -33,11 +36,16 @@ import (
 )
 
 var _ = Describe("Bootstrap Server", func() {
-
 	var stop chan struct{}
 	var resManager manager.ResourceManager
-	var baseUrl string
+	var baseURL string
 	var metrics core_metrics.Metrics
+
+	authEnabled := map[string]bool{
+		string(mesh_proto.DataplaneProxyType): true,
+		string(mesh_proto.IngressProxyType):   true,
+		string(mesh_proto.EgressProxyType):    true,
+	}
 
 	version := `
 	"version": {
@@ -53,8 +61,14 @@ var _ = Describe("Bootstrap Server", func() {
 	  }
 	}`
 
+	ca := x509.NewCertPool()
+	cert, err := os.ReadFile(filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"))
+	if err != nil {
+		panic(err)
+	}
+	ca.AppendCertsFromPEM(cert)
 	httpClient := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: ca, MinVersion: tls.VersionTLS12}},
 	}
 
 	BeforeEach(func() {
@@ -64,19 +78,24 @@ var _ = Describe("Bootstrap Server", func() {
 		config.Params.XdsPort = 5678
 
 		port, err := test.GetFreePort()
-		baseUrl = "https://localhost:" + strconv.Itoa(port)
+		baseURL = "https://localhost:" + strconv.Itoa(port)
 		Expect(err).ToNot(HaveOccurred())
-		metrics, err = core_metrics.NewMetrics("Standalone")
+		metrics, err = core_metrics.NewMetrics("Zone")
 		Expect(err).ToNot(HaveOccurred())
 
 		dpServerCfg := dp_server_cfg.DpServerConfig{
-			Port:        port,
-			TlsCertFile: filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"),
-			TlsKeyFile:  filepath.Join("..", "..", "..", "test", "certs", "server-key.pem"),
+			Port:              port,
+			TlsCertFile:       filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"),
+			TlsKeyFile:        filepath.Join("..", "..", "..", "test", "certs", "server-key.pem"),
+			ReadHeaderTimeout: config_types.Duration{Duration: 5 * time.Second},
 		}
-		dpServer := server.NewDpServer(dpServerCfg, metrics)
+		dpServer := server.NewDpServer(dpServerCfg, metrics, func(writer http.ResponseWriter, request *http.Request) bool {
+			return true
+		})
 
-		generator, err := bootstrap.NewDefaultBootstrapGenerator(resManager, config, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), true, true)
+		proxyConfig := xds_config.DefaultProxyConfig()
+
+		generator, err := bootstrap.NewDefaultBootstrapGenerator(resManager, config, proxyConfig, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), authEnabled, false, true, 0)
 		Expect(err).ToNot(HaveOccurred())
 		bootstrapHandler := bootstrap.BootstrapHandler{
 			Generator: generator,
@@ -90,14 +109,14 @@ var _ = Describe("Bootstrap Server", func() {
 			Expect(err).ToNot(HaveOccurred())
 		}()
 		Eventually(func() bool {
-			resp, err := httpClient.Get(baseUrl)
+			resp, err := httpClient.Get(baseURL)
 			if err != nil {
 				return false
 			}
 			Expect(resp.Body.Close()).To(Succeed())
 			return true
-		}).Should(BeTrue())
-	}, 5)
+		}, 5).Should(BeTrue())
+	})
 
 	AfterEach(func() {
 		close(stop)
@@ -112,58 +131,109 @@ var _ = Describe("Bootstrap Server", func() {
 		}
 	})
 
+	defaultDataplane := func() *mesh.DataplaneResource {
+		return &mesh.DataplaneResource{
+			Spec: &mesh_proto.Dataplane{
+				Networking: &mesh_proto.Dataplane_Networking{
+					Address: "8.8.8.8",
+					Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
+						{
+							Port:        443,
+							ServicePort: 8443,
+							Tags: map[string]string{
+								"kuma.io/service": "backend",
+							},
+						},
+					},
+					Admin: &mesh_proto.EnvoyAdmin{},
+				},
+			},
+		}
+	}
+
+	gatewayDataplane := func() *mesh.DataplaneResource {
+		return &mesh.DataplaneResource{
+			Spec: &mesh_proto.Dataplane{
+				Networking: &mesh_proto.Dataplane_Networking{
+					Address: "8.8.8.8",
+					Gateway: &mesh_proto.Dataplane_Networking_Gateway{
+						Type: mesh_proto.Dataplane_Networking_Gateway_BUILTIN,
+						Tags: map[string]string{
+							mesh_proto.ServiceTag: "gateway",
+						},
+					},
+					Admin: &mesh_proto.EnvoyAdmin{},
+				},
+			},
+		}
+	}
+
 	type testCase struct {
 		dataplaneName      string
+		dataplane          func() *mesh.DataplaneResource
 		body               string
 		expectedConfigFile string
+		overrideReqHost    string
 	}
 	DescribeTable("should return configuration",
 		func(given testCase) {
 			// given
-			res := mesh.DataplaneResource{
-				Spec: &mesh_proto.Dataplane{
-					Networking: &mesh_proto.Dataplane_Networking{
-						Address: "8.8.8.8",
-						Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-							{
-								Port:        443,
-								ServicePort: 8443,
-								Tags: map[string]string{
-									"kuma.io/service": "backend",
-								},
-							},
-						},
-					},
-				},
-			}
-			err := resManager.Create(context.Background(), &res, store.CreateByKey(given.dataplaneName, "default"))
+			err := resManager.Create(context.Background(), given.dataplane(), store.CreateByKey(given.dataplaneName, "default"))
 			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			resp, err := httpClient.Post(baseUrl+"/bootstrap", "application/json", strings.NewReader(given.body))
+			req, err := http.NewRequest(http.MethodPost, baseURL+"/bootstrap", strings.NewReader(given.body))
+			Expect(err).ToNot(HaveOccurred())
+			req.Header.Set("Content-Type", "application/json")
+
+			if given.overrideReqHost != "" {
+				req.Host = given.overrideReqHost
+			}
+
+			resp, err := httpClient.Do(req)
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
-			received, err := ioutil.ReadAll(resp.Body)
+			received, err := io.ReadAll(resp.Body)
 			Expect(resp.Body.Close()).To(Succeed())
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			Expect(received).To(matchers.MatchGoldenYAML(filepath.Join("testdata", given.expectedConfigFile)))
 		},
+		Entry("minimal data provided with no port in host", testCase{
+			dataplaneName:      "dp-1",
+			dataplane:          defaultDataplane,
+			body:               fmt.Sprintf(`{ "mesh": "default", "name": "dp-1", "dataplaneToken": "token", "workdir": "/tmp", %s }`, version),
+			expectedConfigFile: "bootstrap.universal.golden.yaml",
+			overrideReqHost:    "localhost",
+		}),
 		Entry("minimal data provided (universal)", testCase{
 			dataplaneName:      "dp-1",
-			body:               fmt.Sprintf(`{ "mesh": "default", "name": "dp-1", "dataplaneToken": "token", %s }`, version),
+			dataplane:          defaultDataplane,
+			body:               fmt.Sprintf(`{ "mesh": "default", "name": "dp-1", "dataplaneToken": "token", "workdir": "/tmp", %s }`, version),
 			expectedConfigFile: "bootstrap.universal.golden.yaml",
 		}),
 		Entry("minimal data provided (k8s)", testCase{
 			dataplaneName:      "dp-1.default",
-			body:               fmt.Sprintf(`{ "mesh": "default", "name": "dp-1.default", "dataplaneToken": "token", %s }`, version),
+			dataplane:          defaultDataplane,
+			body:               fmt.Sprintf(`{ "mesh": "default", "name": "dp-1.default", "dataplaneToken": "token", "workdir": "/tmp", %s }`, version),
 			expectedConfigFile: "bootstrap.k8s.golden.yaml",
 		}),
+		Entry("with max heap size", testCase{
+			dataplaneName:      "gateway-1.default",
+			dataplane:          gatewayDataplane,
+			body:               fmt.Sprintf(`{ "mesh": "default", "name": "gateway-1.default", "dataplaneToken": "token", "workdir": "/tmp", "resources": { "maxHeapSizeBytes": 2000000 }, %s }`, version),
+			expectedConfigFile: "bootstrap.gateway.golden.yaml",
+		}),
 		Entry("full data provided", testCase{
-			dataplaneName:      "dp-1.default",
-			body:               fmt.Sprintf(`{ "mesh": "default", "name": "dp-1.default", "adminPort": 1234, "dataplaneToken": "token", %s }`, version),
+			dataplaneName: "dp-1.default",
+			dataplane: func() *mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				return dp
+			},
+			body:               fmt.Sprintf(`{ "mesh": "default", "name": "dp-1.default", "dataplaneToken": "token", "workdir": "/tmp", %s }`, version),
 			expectedConfigFile: "bootstrap.overridden.golden.yaml",
 		}),
 	)
@@ -178,7 +248,7 @@ var _ = Describe("Bootstrap Server", func() {
 		}
 		`
 
-		resp, err := httpClient.Post(baseUrl+"/bootstrap", "application/json", strings.NewReader(json))
+		resp, err := httpClient.Post(baseURL+"/bootstrap", "application/json", strings.NewReader(json))
 		// then
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resp.Body.Close()).To(Succeed())
@@ -214,15 +284,14 @@ var _ = Describe("Bootstrap Server", func() {
 		}
 		`
 
-		resp, err := httpClient.Post(baseUrl+"/bootstrap", "application/json", strings.NewReader(json))
+		resp, err := httpClient.Post(baseURL+"/bootstrap", "application/json", strings.NewReader(json))
 		// then
 		Expect(err).ToNot(HaveOccurred())
-		bytes, err := ioutil.ReadAll(resp.Body)
+		bytes, err := io.ReadAll(resp.Body)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resp.Body.Close()).To(Succeed())
 		Expect(resp.StatusCode).To(Equal(422))
 		Expect(string(bytes)).To(Equal("Dataplane Token is required. Generate token using 'kumactl generate dataplane-token > /path/file' and provide it via --dataplane-token-file=/path/file argument to Kuma DP"))
-
 	})
 
 	It("should publish metrics", func() {
@@ -247,7 +316,7 @@ var _ = Describe("Bootstrap Server", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
-		_, err = httpClient.Post(baseUrl+"/bootstrap", "application/json", strings.NewReader(`{ "mesh": "default", "name": "dp-1" }`))
+		_, err = httpClient.Post(baseURL+"/bootstrap", "application/json", strings.NewReader(`{ "mesh": "default", "name": "dp-1" }`))
 
 		// then
 		Expect(err).ToNot(HaveOccurred())

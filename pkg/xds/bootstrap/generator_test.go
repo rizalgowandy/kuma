@@ -2,17 +2,20 @@ package bootstrap_test
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
+	config_types "github.com/kumahq/kuma/pkg/config/types"
+	xds_config "github.com/kumahq/kuma/pkg/config/xds"
 	bootstrap_config "github.com/kumahq/kuma/pkg/config/xds/bootstrap"
 	"github.com/kumahq/kuma/pkg/core"
-	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
+	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	core_manager "github.com/kumahq/kuma/pkg/core/resources/manager"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
@@ -37,8 +40,13 @@ var defaultVersion = types.Version{
 }
 
 var _ = Describe("bootstrapGenerator", func() {
-
 	var resManager core_manager.ResourceManager
+
+	authEnabled := map[string]bool{
+		string(mesh_proto.DataplaneProxyType): true,
+		string(mesh_proto.IngressProxyType):   true,
+		string(mesh_proto.EgressProxyType):    true,
+	}
 
 	BeforeEach(func() {
 		resManager = core_manager.NewResourceManager(memory.NewStore())
@@ -48,9 +56,8 @@ var _ = Describe("bootstrapGenerator", func() {
 		}
 	})
 
-	BeforeEach(func() {
-		// given
-		dataplane := mesh.DataplaneResource{
+	defaultDataplane := func() *core_mesh.DataplaneResource {
+		return &core_mesh.DataplaneResource{
 			Spec: &mesh_proto.Dataplane{
 				Networking: &mesh_proto.Dataplane_Networking{
 					Address: "8.8.8.8",
@@ -63,36 +70,58 @@ var _ = Describe("bootstrapGenerator", func() {
 							},
 						},
 					},
+					Admin: &mesh_proto.EnvoyAdmin{},
 				},
 			},
 		}
+	}
 
+	BeforeEach(func() {
 		// when
-		err := resManager.Create(context.Background(), mesh.NewMeshResource(), store.CreateByKey("mesh", model.NoMesh))
-		// then
-		Expect(err).ToNot(HaveOccurred())
-
-		// when
-		err = resManager.Create(context.Background(), &dataplane, store.CreateByKey("name.namespace", "mesh"))
+		err := resManager.Create(context.Background(), &core_mesh.MeshResource{
+			Spec: &mesh_proto.Mesh{
+				Metrics: &mesh_proto.Metrics{
+					EnabledBackend: "prometheus-1",
+					Backends: []*mesh_proto.MetricsBackend{
+						{
+							Name: "prometheus-1",
+							Type: mesh_proto.MetricsPrometheusType,
+						},
+					},
+				},
+			},
+		}, store.CreateByKey("mesh", model.NoMesh))
 		// then
 		Expect(err).ToNot(HaveOccurred())
 	})
 
 	type testCase struct {
-		config             func() *bootstrap_config.BootstrapServerConfig
-		dpAuthEnabled      bool
-		request            types.BootstrapRequest
-		expectedConfigFile string
-		hdsEnabled         bool
+		serverConfig        *bootstrap_config.BootstrapServerConfig
+		proxyConfig         *xds_config.Proxy
+		dataplane           func() *core_mesh.DataplaneResource
+		dpAuthForProxyType  map[string]bool
+		useTokenPath        bool
+		request             types.BootstrapRequest
+		expectedConfigFile  string
+		dpBootstrapVerifier func(KumaDpBootstrap)
+		hdsEnabled          bool
 	}
 	DescribeTable("should generate bootstrap configuration",
 		func(given testCase) {
 			// setup
-			generator, err := NewDefaultBootstrapGenerator(resManager, given.config(), filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), given.dpAuthEnabled, given.hdsEnabled)
+			err := resManager.Create(context.Background(), given.dataplane(), store.CreateByKey("name.namespace", "mesh"))
+			Expect(err).ToNot(HaveOccurred())
+
+			proxyConfig := xds_config.DefaultProxyConfig()
+			if given.proxyConfig != nil {
+				proxyConfig = *given.proxyConfig
+			}
+
+			generator, err := NewDefaultBootstrapGenerator(resManager, given.serverConfig, proxyConfig, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), given.dpAuthForProxyType, given.useTokenPath, given.hdsEnabled, 0)
 			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			bootstrapConfig, err := generator.Generate(context.Background(), given.request)
+			bootstrapConfig, dpBootstrap, err := generator.Generate(context.Background(), given.request)
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
@@ -100,85 +129,102 @@ var _ = Describe("bootstrapGenerator", func() {
 			// and config is as expected
 			actual, err := util_proto.ToYAML(bootstrapConfig)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(actual).To(MatchGoldenYAML(filepath.Join("testdata", given.expectedConfigFile)))
+			if given.expectedConfigFile != "" {
+				Expect(actual).To(MatchGoldenYAML(filepath.Join("testdata", given.expectedConfigFile)))
+			}
+			if given.dpBootstrapVerifier != nil {
+				given.dpBootstrapVerifier(dpBootstrap)
+			}
 		},
 		Entry("default config with minimal request", testCase{
-			dpAuthEnabled: false,
-			config: func() *bootstrap_config.BootstrapServerConfig {
+			dpAuthForProxyType: map[string]bool{},
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
 				cfg := bootstrap_config.DefaultBootstrapServerConfig()
 				cfg.Params.XdsHost = "localhost"
 				cfg.Params.XdsPort = 5678
 				return cfg
-			},
+			}(),
+			dataplane: defaultDataplane,
 			request: types.BootstrapRequest{
 				Mesh:    "mesh",
 				Name:    "name.namespace",
 				Version: defaultVersion,
+				Workdir: "/tmp",
 			},
 			expectedConfigFile: "generator.default-config-minimal-request.golden.yaml",
 			hdsEnabled:         true,
 		}),
 		Entry("default config", testCase{
-			dpAuthEnabled: true,
-			config: func() *bootstrap_config.BootstrapServerConfig {
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
 				cfg := bootstrap_config.DefaultBootstrapServerConfig()
 				cfg.Params.XdsHost = "localhost"
 				cfg.Params.XdsPort = 5678
 				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				return dp
 			},
 			request: types.BootstrapRequest{
 				Mesh:           "mesh",
 				Name:           "name.namespace",
-				AdminPort:      1234,
 				DataplaneToken: "token",
 				Version:        defaultVersion,
 				DNSPort:        53001,
-				EmptyDNSPort:   53002,
+				Workdir:        "/tmp",
 			},
 			expectedConfigFile: "generator.default-config.golden.yaml",
 			hdsEnabled:         true,
 		}),
 		Entry("custom config with minimal request", testCase{
-			dpAuthEnabled: false,
-			config: func() *bootstrap_config.BootstrapServerConfig {
+			dpAuthForProxyType: map[string]bool{},
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
 				return &bootstrap_config.BootstrapServerConfig{
 					Params: &bootstrap_config.BootstrapParamsConfig{
 						AdminAddress:       "192.168.0.1", // by default, Envoy Admin interface should listen on loopback address
-						AdminPort:          9902,          // by default, turn off Admin interface of Envoy
 						AdminAccessLogPath: "/var/log",
 						XdsHost:            "localhost",
 						XdsPort:            15678,
-						XdsConnectTimeout:  2 * time.Second,
+						XdsConnectTimeout:  config_types.Duration{Duration: 2 * time.Second},
 					},
 				}
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 9902
+				return dp
 			},
 			request: types.BootstrapRequest{
 				Mesh:    "mesh",
 				Name:    "name.namespace",
 				Version: defaultVersion,
+				Workdir: "/tmp",
 			},
 			expectedConfigFile: "generator.custom-config-minimal-request.golden.yaml",
 			hdsEnabled:         true,
 		}),
 		Entry("custom config", testCase{
-			dpAuthEnabled: true,
-			config: func() *bootstrap_config.BootstrapServerConfig {
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
 				return &bootstrap_config.BootstrapServerConfig{
 					Params: &bootstrap_config.BootstrapParamsConfig{
 						AdminAddress:       "192.168.0.1", // by default, Envoy Admin interface should listen on loopback address
 						AdminPort:          9902,          // by default, turn off Admin interface of Envoy
-						AdminAccessLogPath: "/var/log",
+						AdminAccessLogPath: os.DevNull,
 						XdsHost:            "localhost",
 						XdsPort:            15678,
-						XdsConnectTimeout:  2 * time.Second,
+						XdsConnectTimeout:  config_types.Duration{Duration: 2 * time.Second},
 					},
 				}
-			},
+			}(),
+			dataplane: defaultDataplane,
 			request: types.BootstrapRequest{
-				Mesh:           "mesh",
-				Name:           "name.namespace",
-				AdminPort:      1234,
-				DataplaneToken: "token",
+				Mesh:            "mesh",
+				Name:            "name.namespace",
+				DataplaneToken:  "token",
+				OperatingSystem: "windows",
 				DynamicMetadata: map[string]string{
 					"test": "value",
 				},
@@ -200,175 +246,289 @@ var _ = Describe("bootstrapGenerator", func() {
           "kuma.io/service": "backend"
         }
       },
-    ]
+    ],
+    "admin": {
+      "port": 1234
+    }
   }
 }`,
 				Version: defaultVersion,
+				Workdir: "/tmp",
 			},
 			expectedConfigFile: "generator.custom-config.golden.yaml",
 			hdsEnabled:         true,
 		}),
 		Entry("default config, kubernetes", testCase{
-			dpAuthEnabled: true,
-			config: func() *bootstrap_config.BootstrapServerConfig {
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
 				cfg := bootstrap_config.DefaultBootstrapServerConfig()
 				cfg.Params.XdsHost = "localhost"
 				cfg.Params.XdsPort = 5678
 				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				return dp
 			},
 			request: types.BootstrapRequest{
 				Mesh:           "mesh",
 				Name:           "name.namespace",
-				AdminPort:      1234,
 				DataplaneToken: "token",
 				Version:        defaultVersion,
+				Workdir:        "/tmp",
 			},
 			expectedConfigFile: "generator.default-config.kubernetes.golden.yaml",
 			hdsEnabled:         false,
 		}),
 		Entry("default config, kubernetes with IPv6", testCase{
-			dpAuthEnabled: true,
-			config: func() *bootstrap_config.BootstrapServerConfig {
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
 				cfg := bootstrap_config.DefaultBootstrapServerConfig()
 				cfg.Params.XdsHost = "fd00:a123::1"
 				cfg.Params.XdsPort = 5678
 				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				return dp
 			},
 			request: types.BootstrapRequest{
 				Mesh:           "mesh",
 				Name:           "name.namespace",
-				AdminPort:      1234,
 				DataplaneToken: "token",
 				Version:        defaultVersion,
+				Workdir:        "/tmp",
 			},
 			expectedConfigFile: "generator.default-config.kubernetes.ipv6.golden.yaml",
 			hdsEnabled:         false,
 		}),
+		Entry("default config, kubernetes with application metrics", testCase{
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
+				cfg := bootstrap_config.DefaultBootstrapServerConfig()
+				cfg.Params.XdsHost = "localhost"
+				cfg.Params.XdsPort = 5678
+				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				dp.Spec.Metrics = &mesh_proto.MetricsBackend{
+					Type: mesh_proto.MetricsPrometheusType,
+					Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+						Aggregate: []*mesh_proto.PrometheusAggregateMetricsConfig{
+							{
+								Name: "app1",
+								Port: 123,
+								Path: "/stats",
+							},
+						},
+					}),
+				}
+				return dp
+			},
+			request: types.BootstrapRequest{
+				Mesh:           "mesh",
+				Name:           "name.namespace",
+				DataplaneToken: "token",
+				Version:        defaultVersion,
+				Workdir:        "/tmp",
+			},
+			expectedConfigFile: "generator.metrics-config.kubernetes.golden.yaml",
+			hdsEnabled:         false,
+		}),
+		Entry("default config, kubernetes with custom system ca path", testCase{
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
+				cfg := bootstrap_config.DefaultBootstrapServerConfig()
+				cfg.Params.XdsHost = "localhost"
+				cfg.Params.XdsPort = 5678
+				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				dp.Spec.Metrics = &mesh_proto.MetricsBackend{
+					Type: mesh_proto.MetricsPrometheusType,
+					Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+						Aggregate: []*mesh_proto.PrometheusAggregateMetricsConfig{
+							{
+								Name: "app1",
+								Port: 123,
+								Path: "/stats",
+							},
+						},
+					}),
+				}
+				return dp
+			},
+			request: types.BootstrapRequest{
+				Mesh:           "mesh",
+				Name:           "name.namespace",
+				DataplaneToken: "token",
+				Version:        defaultVersion,
+				SystemCaPath:   "/etc/certs/cert.pem",
+				Workdir:        "/tmp",
+			},
+			expectedConfigFile: "generator.system-cert-config.kubernetes.golden.yaml",
+			hdsEnabled:         false,
+		}),
+		Entry("backwards compatibility, adminPort both in bootstrapRequest and in DPP resource", testCase{ // https://github.com/kumahq/kuma/issues/4002
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
+				cfg := bootstrap_config.DefaultBootstrapServerConfig()
+				cfg.Params.XdsHost = "localhost"
+				cfg.Params.XdsPort = 5678
+				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				return dp
+			},
+			request: types.BootstrapRequest{
+				Mesh:           "mesh",
+				Name:           "name.namespace",
+				DataplaneToken: "token",
+				Version:        defaultVersion,
+				DNSPort:        53001,
+				Workdir:        "/tmp",
+			},
+			expectedConfigFile: "generator.default-config.golden.yaml",
+			hdsEnabled:         true,
+		}),
+		Entry("default config with useTokenPath", testCase{
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
+				cfg := bootstrap_config.DefaultBootstrapServerConfig()
+				cfg.Params.XdsHost = "localhost"
+				cfg.Params.XdsPort = 5678
+				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				return dp
+			},
+			request: types.BootstrapRequest{
+				Mesh:               "mesh",
+				Name:               "name.namespace",
+				DataplaneToken:     "token",
+				Version:            defaultVersion,
+				DNSPort:            53001,
+				DataplaneTokenPath: "/path/to/file",
+				MetricsResources: types.MetricsResources{
+					CertPath: "/path/cert/pem",
+					KeyPath:  "/path/key/pem",
+				},
+				Workdir: "/tmp",
+			},
+			expectedConfigFile: "generator.default-config-token-path.golden.yaml",
+			hdsEnabled:         true,
+			useTokenPath:       true,
+		}),
+		Entry("gateway settings", testCase{
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
+				cfg := bootstrap_config.DefaultBootstrapServerConfig()
+				cfg.Params.XdsHost = "localhost"
+				cfg.Params.XdsPort = 5678
+				return cfg
+			}(),
+			proxyConfig: func() *xds_config.Proxy {
+				cfg := xds_config.DefaultProxyConfig()
+				cfg.Gateway.GlobalDownstreamMaxConnections = 35678
+				return &cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				return &core_mesh.DataplaneResource{
+					Spec: &mesh_proto.Dataplane{
+						Networking: &mesh_proto.Dataplane_Networking{
+							Address: "8.8.8.8",
+							Gateway: &mesh_proto.Dataplane_Networking_Gateway{
+								Type: mesh_proto.Dataplane_Networking_Gateway_BUILTIN,
+								Tags: map[string]string{
+									mesh_proto.ServiceTag: "gateway",
+								},
+							},
+							Admin: &mesh_proto.EnvoyAdmin{},
+						},
+					},
+				}
+			},
+			request: types.BootstrapRequest{
+				Mesh:               "mesh",
+				Name:               "name.namespace",
+				DataplaneToken:     "token",
+				Version:            defaultVersion,
+				DNSPort:            53001,
+				DataplaneTokenPath: "/path/to/file",
+				Workdir:            "/tmp",
+			},
+			expectedConfigFile: "generator.gateway.golden.yaml",
+			hdsEnabled:         true,
+			useTokenPath:       true,
+		}),
+		Entry("dns corefile template", testCase{
+			dpAuthForProxyType: map[string]bool{},
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
+				return &bootstrap_config.BootstrapServerConfig{
+					Params: &bootstrap_config.BootstrapParamsConfig{
+						AdminAddress:         "192.168.0.1", // by default, Envoy Admin interface should listen on loopback address
+						AdminAccessLogPath:   "/var/log",
+						XdsHost:              "localhost",
+						XdsPort:              15678,
+						XdsConnectTimeout:    config_types.Duration{Duration: 2 * time.Second},
+						CorefileTemplatePath: filepath.Join("testdata", "corefile.template"),
+					},
+				}
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 9902
+				return dp
+			},
+			request: types.BootstrapRequest{
+				Mesh:    "mesh",
+				Name:    "name.namespace",
+				Version: defaultVersion,
+				Workdir: "/tmp",
+			},
+			dpBootstrapVerifier: func(dpBootstrap KumaDpBootstrap) {
+				expected, err := os.ReadFile(filepath.Join("testdata", "corefile.template"))
+				Expect(err).ToNot(HaveOccurred())
+				Expect(dpBootstrap.NetworkingConfig.CorefileTemplate).To(Equal(expected))
+			},
+			hdsEnabled: true,
+		}),
+		Entry("readiness port and application probe proxy", testCase{
+			dpAuthForProxyType: authEnabled,
+			serverConfig: func() *bootstrap_config.BootstrapServerConfig {
+				cfg := bootstrap_config.DefaultBootstrapServerConfig()
+				cfg.Params.XdsHost = "localhost"
+				cfg.Params.XdsPort = 5678
+				return cfg
+			}(),
+			dataplane: func() *core_mesh.DataplaneResource {
+				dp := defaultDataplane()
+				dp.Spec.Networking.Admin.Port = 1234
+				return dp
+			},
+			request: types.BootstrapRequest{
+				Mesh:                 "mesh",
+				Name:                 "name.namespace",
+				DataplaneToken:       "token",
+				Version:              defaultVersion,
+				Workdir:              "/tmp",
+				ReadinessPort:        15000,
+				AppProbeProxyEnabled: true,
+			},
+			expectedConfigFile: "generator.probes.kubernetes.golden.yaml",
+			hdsEnabled:         false,
+		}),
 	)
-
-	It("should fail bootstrap configuration due to conflicting port in inbound", func() {
-		// setup
-		dataplane := mesh.DataplaneResource{
-			Spec: &mesh_proto.Dataplane{
-				Networking: &mesh_proto.Dataplane_Networking{
-					Address: "8.8.8.8",
-					Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-						{
-							Address:     "127.0.0.1",
-							Port:        9901,
-							ServicePort: 8443,
-							Tags: map[string]string{
-								"kuma.io/service": "backend",
-							},
-						},
-					},
-					Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-						{
-							Address: "1.1.1.1",
-							Port:    9000,
-							Service: "redis",
-						},
-					},
-				},
-			},
-		}
-		// when
-		err := resManager.Create(context.Background(), &dataplane, store.CreateByKey("name-1.namespace", "mesh"))
-		// then
-		Expect(err).ToNot(HaveOccurred())
-
-		// when
-		dataplane.Spec.Networking.Address = "127.0.0.1"
-		dataplane.Spec.Networking.Inbound[0].Address = ""
-		err = resManager.Create(context.Background(), &dataplane, store.CreateByKey("name-2.namespace", "mesh"))
-		// then
-		Expect(err).ToNot(HaveOccurred())
-
-		// given
-		cfg := bootstrap_config.DefaultBootstrapServerConfig()
-		cfg.Params.XdsHost = "localhost"
-		cfg.Params.XdsPort = 5678
-
-		generator, err := NewDefaultBootstrapGenerator(resManager, cfg, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), false, true)
-		Expect(err).ToNot(HaveOccurred())
-		request := types.BootstrapRequest{
-			Mesh:      "mesh",
-			Name:      "name-1.namespace",
-			AdminPort: 9901,
-		}
-
-		// when
-		_, err = generator.Generate(context.Background(), request)
-		// then
-		Expect(err).To(HaveOccurred())
-		// and
-		Expect(err.Error()).To(Equal("Resource precondition failed: Port 9901 requested as both admin and inbound port."))
-
-		request = types.BootstrapRequest{
-			Mesh:      "mesh",
-			Name:      "name-2.namespace",
-			AdminPort: 9901,
-		}
-
-		// when
-		_, err = generator.Generate(context.Background(), request)
-		// then
-		Expect(err).To(HaveOccurred())
-		// and
-		Expect(err.Error()).To(Equal("Resource precondition failed: Port 9901 requested as both admin and inbound port."))
-
-	})
-
-	It("should fail bootstrap configuration due to conflicting port in outbound", func() {
-		// setup
-		dataplane := mesh.DataplaneResource{
-			Spec: &mesh_proto.Dataplane{
-				Networking: &mesh_proto.Dataplane_Networking{
-					Address: "8.8.8.8",
-					Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-						{
-							Port:        443,
-							ServicePort: 8443,
-							Tags: map[string]string{
-								"kuma.io/service": "backend",
-							},
-						},
-					},
-					Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-						{
-							Address: "127.0.0.1",
-							Port:    9901,
-							Service: "redis",
-						},
-					},
-				},
-			},
-		}
-		// when
-		err := resManager.Create(context.Background(), &dataplane, store.CreateByKey("name-3.namespace", "mesh"))
-		// then
-		Expect(err).ToNot(HaveOccurred())
-
-		// given
-		cfg := bootstrap_config.DefaultBootstrapServerConfig()
-		cfg.Params.XdsHost = "localhost"
-		cfg.Params.XdsPort = 5678
-
-		generator, err := NewDefaultBootstrapGenerator(resManager, cfg, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), false, true)
-		Expect(err).ToNot(HaveOccurred())
-		request := types.BootstrapRequest{
-			Mesh:      "mesh",
-			Name:      "name-3.namespace",
-			AdminPort: 9901,
-		}
-
-		// when
-		_, err = generator.Generate(context.Background(), request)
-		// then
-		Expect(err).To(HaveOccurred())
-		// and
-		Expect(err.Error()).To(Equal("Resource precondition failed: Port 9901 requested as both admin and outbound port."))
-	})
 
 	type errTestCase struct {
 		request  types.BootstrapRequest
@@ -377,27 +537,31 @@ var _ = Describe("bootstrapGenerator", func() {
 	DescribeTable("should fail bootstrap",
 		func(given errTestCase) {
 			// given
-			cfg := bootstrap_config.DefaultBootstrapServerConfig()
+			err := resManager.Create(context.Background(), defaultDataplane(), store.CreateByKey("name.namespace", "mesh"))
+			Expect(err).ToNot(HaveOccurred())
 
-			generator, err := NewDefaultBootstrapGenerator(resManager, cfg, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), false, true)
+			cfg := bootstrap_config.DefaultBootstrapServerConfig()
+			proxyCfg := xds_config.DefaultProxyConfig()
+
+			generator, err := NewDefaultBootstrapGenerator(resManager, cfg, proxyCfg, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), map[string]bool{}, false, true, 9901)
 			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			_, err = generator.Generate(context.Background(), given.request)
+			_, _, err = generator.Generate(context.Background(), given.request)
 			// then
 			Expect(err).To(HaveOccurred())
 			// and
+			fmt.Println(err.Error())
 			Expect(err.Error()).To(Equal(given.expected))
 		},
 		Entry("due to invalid hostname", errTestCase{
 			request: types.BootstrapRequest{
-				Mesh:      "mesh",
-				Name:      "name-3.namespace",
-				AdminPort: 9901,
-				Host:      "kuma.internal",
+				Mesh: "mesh",
+				Name: "name-3.namespace",
+				Host: "kuma.internal",
 			},
 			expected: `A data plane proxy is trying to connect to the control plane using "kuma.internal" address, but the certificate in the control plane has the following SANs ["fd00:a123::1" "localhost"]. Either change the --cp-address in kuma-dp to one of those or execute the following steps:
-1) Generate a new certificate with the address you are trying to use. It is recommended to use trusted Certificate Authority, but you can also generate self-signed certificates using 'kumactl generate tls-certificate --type=server --cp-hostname=kuma.internal'
+1) Generate a new certificate with the address you are trying to use. It is recommended to use trusted Certificate Authority, but you can also generate self-signed certificates using 'kumactl generate tls-certificate --type=server --hostname=kuma.internal'
 2) Set KUMA_GENERAL_TLS_CERT_FILE and KUMA_GENERAL_TLS_KEY_FILE or the equivalent in Kuma CP config file to the new certificate.
 3) Restart the control plane to read the new certificate and start kuma-dp.`,
 		}),
@@ -406,7 +570,6 @@ var _ = Describe("bootstrapGenerator", func() {
 				Host:           "localhost",
 				Mesh:           "mesh",
 				Name:           "name.namespace",
-				AdminPort:      9901,
 				DataplaneToken: "token",
 				CaCert: `
 -----BEGIN CERTIFICATE-----
@@ -436,4 +599,215 @@ w/vjIriD0mGwwccxbojmEHq4rO4ZrjQNmwvOgxoL2dTm/L9Smr6RXmIgu/0Pnrlq
 Provide CA that was used to sign a certificate used in the control plane by using 'kuma-dp run --ca-cert-file=file' or via KUMA_CONTROL_PLANE_CA_CERT_FILE`,
 		}),
 	)
+
+	It("should override configuration from Mesh", func() {
+		// given
+		err := resManager.Create(context.Background(), &core_mesh.MeshResource{
+			Spec: &mesh_proto.Mesh{
+				Metrics: &mesh_proto.Metrics{
+					EnabledBackend: "prometheus-1",
+					Backends: []*mesh_proto.MetricsBackend{
+						{
+							Name: "prometheus-1",
+							Type: mesh_proto.MetricsPrometheusType,
+							Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+								Aggregate: []*mesh_proto.PrometheusAggregateMetricsConfig{
+									{
+										Name: "opa",
+										Port: 123,
+										Path: "/mesh/config",
+									},
+									{
+										Name: "dp-disabled",
+										Port: 999,
+										Path: "/stats/default",
+									},
+								},
+							}),
+						},
+					},
+				},
+			},
+		}, store.CreateByKey("metrics", model.NoMesh))
+		Expect(err).ToNot(HaveOccurred())
+
+		// and
+		dataplane := &core_mesh.DataplaneResource{
+			Spec: &mesh_proto.Dataplane{
+				Networking: &mesh_proto.Dataplane_Networking{
+					Address: "8.8.8.8",
+					Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
+						{
+							Port:        443,
+							ServicePort: 8443,
+							Tags: map[string]string{
+								"kuma.io/service": "backend",
+							},
+						},
+					},
+					TransparentProxying: &mesh_proto.Dataplane_Networking_TransparentProxying{
+						RedirectPortInbound:  12345,
+						RedirectPortOutbound: 12346,
+					},
+					Admin: &mesh_proto.EnvoyAdmin{},
+				},
+				Metrics: &mesh_proto.MetricsBackend{
+					Type: mesh_proto.MetricsPrometheusType,
+					Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+						Aggregate: []*mesh_proto.PrometheusAggregateMetricsConfig{
+							{
+								Name:    "dp-disabled",
+								Enabled: util_proto.Bool(false),
+							},
+							{
+								Name: "app",
+								Port: 12,
+								Path: "/dp/override",
+							},
+						},
+					}),
+				},
+			},
+		}
+
+		config := func() *bootstrap_config.BootstrapServerConfig {
+			cfg := bootstrap_config.DefaultBootstrapServerConfig()
+			cfg.Params.XdsHost = "localhost"
+			cfg.Params.XdsPort = 5678
+			return cfg
+		}
+		proxyCfg := xds_config.DefaultProxyConfig()
+
+		err = resManager.Create(context.Background(), dataplane, store.CreateByKey("name.namespace", "metrics"))
+		Expect(err).ToNot(HaveOccurred())
+
+		generator, err := NewDefaultBootstrapGenerator(resManager, config(), proxyCfg, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), authEnabled, false, false, 0)
+		Expect(err).ToNot(HaveOccurred())
+
+		// when
+		bootstrapConfig, configParam, err := generator.Generate(context.Background(), types.BootstrapRequest{
+			Mesh:           "metrics",
+			Name:           "name.namespace",
+			DataplaneToken: "token",
+			Version:        defaultVersion,
+		})
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+
+		// and config is as expected
+		_, err = util_proto.ToYAML(bootstrapConfig)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(configParam.NetworkingConfig.IsUsingTransparentProxy).To(BeTrue())
+		Expect(configParam.AggregateMetricsConfig).To(ContainElements([]AggregateMetricsConfig{
+			{
+				Address: "8.8.8.8",
+				Name:    "opa",
+				Path:    "/mesh/config",
+				Port:    123,
+			},
+			{
+				Address: "8.8.8.8",
+				Name:    "app",
+				Path:    "/dp/override",
+				Port:    12,
+			},
+		}))
+	})
+
+	It("should take configuration from Mesh when service do not define", func() {
+		// given
+		err := resManager.Create(context.Background(), &core_mesh.MeshResource{
+			Spec: &mesh_proto.Mesh{
+				Metrics: &mesh_proto.Metrics{
+					EnabledBackend: "prometheus-1",
+					Backends: []*mesh_proto.MetricsBackend{
+						{
+							Name: "prometheus-1",
+							Type: mesh_proto.MetricsPrometheusType,
+							Conf: util_proto.MustToStruct(&mesh_proto.PrometheusMetricsBackendConfig{
+								Aggregate: []*mesh_proto.PrometheusAggregateMetricsConfig{
+									{
+										Name: "opa",
+										Port: 123,
+										Path: "/mesh/opa",
+									},
+									{
+										Name: "app",
+										Port: 999,
+										Path: "/mesh/app",
+									},
+								},
+							}),
+						},
+					},
+				},
+			},
+		}, store.CreateByKey("metrics", model.NoMesh))
+		Expect(err).ToNot(HaveOccurred())
+
+		// and
+		dataplane := &core_mesh.DataplaneResource{
+			Spec: &mesh_proto.Dataplane{
+				Networking: &mesh_proto.Dataplane_Networking{
+					Address: "8.8.8.8",
+					Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
+						{
+							Port:        443,
+							ServicePort: 8443,
+							Tags: map[string]string{
+								"kuma.io/service": "backend",
+							},
+						},
+					},
+					Admin: &mesh_proto.EnvoyAdmin{},
+				},
+			},
+		}
+
+		config := func() *bootstrap_config.BootstrapServerConfig {
+			cfg := bootstrap_config.DefaultBootstrapServerConfig()
+			cfg.Params.XdsHost = "localhost"
+			cfg.Params.XdsPort = 5678
+			return cfg
+		}
+		proxyCfg := xds_config.DefaultProxyConfig()
+
+		err = resManager.Create(context.Background(), dataplane, store.CreateByKey("name.namespace", "metrics"))
+		Expect(err).ToNot(HaveOccurred())
+
+		generator, err := NewDefaultBootstrapGenerator(resManager, config(), proxyCfg, filepath.Join("..", "..", "..", "test", "certs", "server-cert.pem"), authEnabled, false, false, 0)
+		Expect(err).ToNot(HaveOccurred())
+
+		// when
+		bootstrapConfig, configParam, err := generator.Generate(context.Background(), types.BootstrapRequest{
+			Mesh:           "metrics",
+			Name:           "name.namespace",
+			DataplaneToken: "token",
+			Version:        defaultVersion,
+			Workdir:        "/tmp",
+		})
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+
+		// and config is as expected
+		_, err = util_proto.ToYAML(bootstrapConfig)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(configParam.NetworkingConfig.IsUsingTransparentProxy).To(BeFalse())
+		Expect(configParam.AggregateMetricsConfig).To(Equal([]AggregateMetricsConfig{
+			{
+				Address: "8.8.8.8",
+				Name:    "opa",
+				Path:    "/mesh/opa",
+				Port:    123,
+			},
+			{
+				Address: "8.8.8.8",
+				Name:    "app",
+				Path:    "/mesh/app",
+				Port:    999,
+			},
+		}))
+	})
 })

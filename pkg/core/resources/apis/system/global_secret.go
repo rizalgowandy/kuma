@@ -47,6 +47,14 @@ func (t *GlobalSecretResource) SetSpec(spec model.ResourceSpec) error {
 	}
 }
 
+func (t *GlobalSecretResource) GetStatus() model.ResourceStatus {
+	return nil
+}
+
+func (t *GlobalSecretResource) SetStatus(_ model.ResourceStatus) error {
+	return errors.New("status not supported")
+}
+
 func (t *GlobalSecretResource) Validate() error {
 	return nil
 }
@@ -91,6 +99,10 @@ func (l *GlobalSecretResourceList) GetPagination() *model.Pagination {
 	return &l.Pagination
 }
 
+func (l *GlobalSecretResourceList) SetPagination(p model.Pagination) {
+	l.Pagination = p
+}
+
 var GlobalSecretResourceTypeDescriptor model.ResourceTypeDescriptor
 
 func init() {
@@ -101,7 +113,7 @@ func init() {
 		ReadOnly:       false,
 		AdminOnly:      true,
 		Scope:          model.ScopeGlobal,
-		KDSFlags:       model.FromGlobalToZone,
+		KDSFlags:       model.GlobalToAllZonesFlag,
 		WsPath:         "global-secrets",
 		KumactlArg:     "global-secret",
 		KumactlListArg: "global-secrets",

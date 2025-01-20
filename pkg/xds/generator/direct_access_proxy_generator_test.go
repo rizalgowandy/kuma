@@ -1,30 +1,30 @@
 package generator_test
 
 import (
-	"io/ioutil"
+	"context"
+	"os"
 	"path/filepath"
 
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
-	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
+	rest_v1alpha1 "github.com/kumahq/kuma/pkg/core/resources/model/rest/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/xds"
 	. "github.com/kumahq/kuma/pkg/test/matchers"
 	"github.com/kumahq/kuma/pkg/test/resources/model"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	util_yaml "github.com/kumahq/kuma/pkg/util/yaml"
-	"github.com/kumahq/kuma/pkg/xds/context"
+	xds_context "github.com/kumahq/kuma/pkg/xds/context"
 	envoy_common "github.com/kumahq/kuma/pkg/xds/envoy"
 	"github.com/kumahq/kuma/pkg/xds/generator"
 )
 
 func parseResource(bytes []byte, resource core_model.Resource) {
-	Expect(util_proto.FromYAML(bytes, resource.GetSpec())).To(Succeed())
-	resMeta := rest.ResourceMeta{}
+	Expect(core_model.FromYAML(bytes, resource.GetSpec())).To(Succeed())
+	resMeta := rest_v1alpha1.ResourceMeta{}
 	err := yaml.Unmarshal(bytes, &resMeta)
 	Expect(err).ToNot(HaveOccurred())
 	resource.SetMeta(&model.ResourceMeta{
@@ -49,13 +49,13 @@ var _ = Describe("DirectAccessProxyGenerator", func() {
 
 			// dataplane
 			dataplane := core_mesh.NewDataplaneResource()
-			bytes, err := ioutil.ReadFile(filepath.Join("testdata", "direct-access", given.dataplaneFile))
+			bytes, err := os.ReadFile(filepath.Join("testdata", "direct-access", given.dataplaneFile))
 			Expect(err).ToNot(HaveOccurred())
 			parseResource(bytes, dataplane)
 
 			// all dataplanes
 			var dataplanes []*core_mesh.DataplaneResource
-			dpsBytes, err := ioutil.ReadFile(filepath.Join("testdata", "direct-access", given.dataplanesFile))
+			dpsBytes, err := os.ReadFile(filepath.Join("testdata", "direct-access", given.dataplanesFile))
 			Expect(err).ToNot(HaveOccurred())
 			dpYamls := util_yaml.SplitYAML(string(dpsBytes))
 			for _, dpYAML := range dpYamls {
@@ -66,16 +66,20 @@ var _ = Describe("DirectAccessProxyGenerator", func() {
 
 			// mesh
 			mesh := core_mesh.NewMeshResource()
-			bytes, err = ioutil.ReadFile(filepath.Join("testdata", "direct-access", given.meshFile))
+			bytes, err = os.ReadFile(filepath.Join("testdata", "direct-access", given.meshFile))
 			Expect(err).ToNot(HaveOccurred())
 			parseResource(bytes, mesh)
 
-			ctx := context.Context{
+			ctx := xds_context.Context{
 				ControlPlane: nil,
-				Mesh: context.MeshContext{
+				Mesh: xds_context.MeshContext{
 					Resource: mesh,
-					Dataplanes: &core_mesh.DataplaneResourceList{
-						Items: dataplanes,
+					Resources: xds_context.Resources{
+						MeshLocalResources: map[core_model.ResourceType]core_model.ResourceList{
+							core_mesh.DataplaneType: &core_mesh.DataplaneResourceList{
+								Items: dataplanes,
+							},
+						},
 					},
 				},
 			}
@@ -86,7 +90,7 @@ var _ = Describe("DirectAccessProxyGenerator", func() {
 			}
 
 			// when
-			resources, err := generator.Generate(ctx, proxy)
+			resources, err := generator.Generate(context.Background(), nil, ctx, proxy)
 
 			// then
 			Expect(err).ToNot(HaveOccurred())

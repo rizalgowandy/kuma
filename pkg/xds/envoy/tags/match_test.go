@@ -3,8 +3,7 @@ package tags_test
 import (
 	"regexp"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -20,7 +19,6 @@ func strictMatch(re *regexp.Regexp, s string) bool {
 }
 
 var _ = Describe("MatchingRegex", func() {
-
 	type testCase struct {
 		serviceTags mesh_proto.MultiValueTagSet
 		selector    mesh_proto.SingleValueTagSet
@@ -144,7 +142,6 @@ var _ = Describe("MatchingRegex", func() {
 })
 
 var _ = Describe("RegexOR", func() {
-
 	type testCase struct {
 		servicesTags []mesh_proto.MultiValueTagSet
 		selectors    []mesh_proto.SingleValueTagSet

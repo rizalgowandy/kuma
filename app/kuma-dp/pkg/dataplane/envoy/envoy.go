@@ -4,15 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
+	"net/http"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	envoy_bootstrap_v3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
 	"github.com/pkg/errors"
 
 	command_utils "github.com/kumahq/kuma/app/kuma-dp/pkg/dataplane/command"
@@ -20,120 +21,83 @@ import (
 	"github.com/kumahq/kuma/pkg/core"
 	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
 	"github.com/kumahq/kuma/pkg/core/runtime/component"
-	pkg_log "github.com/kumahq/kuma/pkg/log"
+	"github.com/kumahq/kuma/pkg/util/files"
+	"github.com/kumahq/kuma/pkg/xds/bootstrap/types"
 )
 
-var (
-	runLog = core.Log.WithName("kuma-dp").WithName("run").WithName("envoy")
-)
+var runLog = core.Log.WithName("kuma-dp").WithName("run").WithName("envoy")
 
 type BootstrapParams struct {
-	Dataplane       *rest.Resource
-	DNSPort         uint32
-	EmptyDNSPort    uint32
-	EnvoyVersion    EnvoyVersion
-	DynamicMetadata map[string]string
+	Dataplane            rest.Resource
+	DNSPort              uint32
+	ReadinessPort        uint32
+	AppProbeProxyEnabled bool
+	EnvoyVersion         EnvoyVersion
+	DynamicMetadata      map[string]string
+	Workdir              string
+	MetricsCertPath      string
+	MetricsKeyPath       string
+	SystemCaPath         string
 }
 
-type BootstrapConfigFactoryFunc func(url string, cfg kuma_dp.Config, params BootstrapParams) ([]byte, error)
+type BootstrapConfigFactoryFunc func(ctx context.Context, url string, cfg kuma_dp.Config, params BootstrapParams) (*envoy_bootstrap_v3.Bootstrap, *types.KumaSidecarConfiguration, error)
 
 type Opts struct {
 	Config          kuma_dp.Config
-	Generator       BootstrapConfigFactoryFunc
-	Dataplane       *rest.Resource
-	DynamicMetadata map[string]string
-	DNSPort         uint32
-	EmptyDNSPort    uint32
+	BootstrapConfig []byte
+	AdminPort       uint32
+	Dataplane       rest.Resource
 	Stdout          io.Writer
 	Stderr          io.Writer
-	Quit            chan struct{}
-	LogLevel        pkg_log.LogLevel
+	OnFinish        func()
 }
 
 func New(opts Opts) (*Envoy, error) {
 	if _, err := lookupEnvoyPath(opts.Config.DataplaneRuntime.BinaryPath); err != nil {
-		runLog.Error(err, "could not find the envoy executable in your path")
-		return nil, err
+		return nil, errors.Wrap(err, "could not find envoy executable")
+	}
+	if opts.OnFinish == nil {
+		opts.OnFinish = func() {}
 	}
 	return &Envoy{opts: opts}, nil
 }
 
-var _ component.Component = &Envoy{}
+var _ component.GracefulComponent = &Envoy{}
 
 type Envoy struct {
 	opts Opts
+
+	wg sync.WaitGroup
 }
 
 type EnvoyVersion struct {
-	Build   string
-	Version string
+	Build            string
+	Version          string
+	KumaDpCompatible bool
 }
 
 func (e *Envoy) NeedLeaderElection() bool {
 	return false
 }
 
-func getSelfPath() (string, error) {
-	ex, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Dir(ex), nil
-}
-
-func lookupBinaryPath(candidatePaths []string) (string, error) {
-	for _, candidatePath := range candidatePaths {
-		path, err := exec.LookPath(candidatePath)
-		if err == nil {
-			return path, nil
-		}
-	}
-
-	return "", errors.Errorf("could not find binary in any of the following paths: %v", candidatePaths)
-}
-
 func lookupEnvoyPath(configuredPath string) (string, error) {
-	selfPath, err := getSelfPath()
-	if err != nil {
-		return "", err
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	path, err := lookupBinaryPath([]string{
-		configuredPath,
-		selfPath + "/envoy",
-		cwd + "/envoy",
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return path, nil
+	return files.LookupBinaryPath(
+		files.LookupInPath(configuredPath),
+		files.LookupInCurrentDirectory("envoy"),
+		files.LookupNextToCurrentExecutable("envoy"),
+	)
 }
 
 func (e *Envoy) Start(stop <-chan struct{}) error {
-	envoyVersion, err := e.version()
-	if err != nil {
-		return errors.Wrap(err, "failed to get Envoy version")
-	}
-	runLog.Info("fetched Envoy version", "version", envoyVersion)
-	runLog.Info("generating bootstrap configuration")
-	bootstrapConfig, err := e.opts.Generator(e.opts.Config.ControlPlane.URL, e.opts.Config, BootstrapParams{
-		Dataplane:       e.opts.Dataplane,
-		DNSPort:         e.opts.DNSPort,
-		EmptyDNSPort:    e.opts.EmptyDNSPort,
-		EnvoyVersion:    *envoyVersion,
-		DynamicMetadata: e.opts.DynamicMetadata,
-	})
-	if err != nil {
-		return errors.Errorf("Failed to generate Envoy bootstrap config. %v", err)
-	}
-	configFile, err := GenerateBootstrapFile(e.opts.Config.DataplaneRuntime, bootstrapConfig)
+	e.wg.Add(1)
+	// Component should only be considered done after Envoy exists.
+	// Otherwise, we may not propagate SIGTERM on time.
+	defer func() {
+		e.wg.Done()
+		e.opts.OnFinish()
+	}()
+
+	configFile, err := GenerateBootstrapFile(e.opts.Config.DataplaneRuntime, e.opts.BootstrapConfig)
 	if err != nil {
 		return err
 	}
@@ -151,7 +115,8 @@ func (e *Envoy) Start(stop <-chan struct{}) error {
 	args := []string{
 		"--config-path", configFile,
 		"--drain-time-s",
-		fmt.Sprintf("%d", e.opts.Config.Dataplane.DrainTime/time.Second),
+		fmt.Sprintf("%d", e.opts.Config.Dataplane.DrainTime.Duration/time.Second),
+		"--drain-strategy", "immediate",
 		// "hot restart" (enabled by default) requires each Envoy instance to have
 		// `--base-id <uint32_t>` argument.
 		// it is not possible to start multiple Envoy instances on the same Linux machine
@@ -161,7 +126,11 @@ func (e *Envoy) Start(stop <-chan struct{}) error {
 		// and we don't expect users to do "hot restart" manually.
 		// so, let's turn it off to simplify getting started experience.
 		"--disable-hot-restart",
-		"--log-level", e.opts.LogLevel.String(),
+		"--log-level", e.opts.Config.DataplaneRuntime.EnvoyLogLevel,
+	}
+
+	if e.opts.Config.DataplaneRuntime.EnvoyComponentLogLevel != "" {
+		args = append(args, "--component-log-level", e.opts.Config.DataplaneRuntime.EnvoyComponentLogLevel)
 	}
 
 	// If the concurrency is explicit, use that. On Linux, users
@@ -185,33 +154,50 @@ func (e *Envoy) Start(stop <-chan struct{}) error {
 		runLog.Error(err, "envoy executable failed", "path", resolvedPath, "arguments", args)
 		return err
 	}
-	done := make(chan error, 1)
 	go func() {
-		done <- command.Wait()
-	}()
-
-	select {
-	case <-stop:
+		<-stop
 		runLog.Info("stopping Envoy")
 		cancel()
-		return nil
-	case err := <-done:
-		if err != nil {
-			runLog.Error(err, "Envoy terminated with an error")
-		} else {
-			runLog.Info("Envoy terminated successfully")
-		}
-		if e.opts.Quit != nil {
-			close(e.opts.Quit)
-		}
-
+	}()
+	err = command.Wait()
+	if err != nil && !errors.Is(err, context.Canceled) {
+		runLog.Error(err, "Envoy terminated with an error")
 		return err
 	}
+	runLog.Info("Envoy terminated successfully")
+	return nil
 }
 
-func (e *Envoy) version() (*EnvoyVersion, error) {
-	binaryPathConfig := e.opts.Config.DataplaneRuntime.BinaryPath
-	resolvedPath, err := lookupEnvoyPath(binaryPathConfig)
+func (e *Envoy) WaitForDone() {
+	e.wg.Wait()
+}
+
+func (e *Envoy) FailHealthchecks() error {
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/healthcheck/fail", e.opts.AdminPort), "", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return errors.Errorf("expected 200 status code, got %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (e *Envoy) DrainForever() error {
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/drain_listeners?inboundonly&graceful&skip_exit", e.opts.AdminPort), "", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return errors.Errorf("expected 200 status code, got %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func GetEnvoyVersion(binaryPath string) (*EnvoyVersion, error) {
+	resolvedPath, err := lookupEnvoyPath(binaryPath)
 	if err != nil {
 		return nil, err
 	}

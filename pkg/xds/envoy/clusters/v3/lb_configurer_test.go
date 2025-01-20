@@ -1,8 +1,7 @@
 package clusters_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -13,7 +12,6 @@ import (
 )
 
 var _ = Describe("Lb", func() {
-
 	type testCase struct {
 		clusterName string
 		lb          *mesh_proto.TrafficRoute_LoadBalancer
@@ -23,10 +21,10 @@ var _ = Describe("Lb", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			cluster, err := clusters.NewClusterBuilder(envoy.APIV3).
-				Configure(clusters.EdsCluster(given.clusterName)).
+			cluster, err := clusters.NewClusterBuilder(envoy.APIV3, given.clusterName).
+				Configure(clusters.EdsCluster()).
 				Configure(clusters.LB(given.lb)).
-				Configure(clusters.Timeout(core_mesh.ProtocolTCP, DefaultTimeout())).
+				Configure(clusters.Timeout(DefaultTimeout(), core_mesh.ProtocolTCP)).
 				Build()
 
 			// then
@@ -68,6 +66,23 @@ var _ = Describe("Lb", func() {
             lbPolicy: LEAST_REQUEST
             leastRequestLbConfig:
               choiceCount: 4
+            name: backend
+            type: EDS`,
+		}),
+		Entry("least request with default", testCase{
+			clusterName: "backend",
+			lb: &mesh_proto.TrafficRoute_LoadBalancer{
+				LbType: &mesh_proto.TrafficRoute_LoadBalancer_LeastRequest_{},
+			},
+			expected: `
+            connectTimeout: 5s
+            edsClusterConfig:
+              edsConfig:
+                ads: {}
+                resourceApiVersion: V3
+            lbPolicy: LEAST_REQUEST
+            leastRequestLbConfig:
+              choiceCount: 2
             name: backend
             type: EDS`,
 		}),

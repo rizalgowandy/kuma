@@ -4,7 +4,7 @@
 package uninstall
 
 import (
-	"io/ioutil"
+	"fmt"
 	"os"
 	"runtime"
 
@@ -12,61 +12,73 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kumahq/kuma/pkg/transparentproxy"
+	"github.com/kumahq/kuma/pkg/transparentproxy/config"
 )
 
-type transparentProxyArgs struct {
-	DryRun  bool
-	Verbose bool
-}
-
 func newUninstallTransparentProxy() *cobra.Command {
-	args := transparentProxyArgs{
-		DryRun:  false,
-		Verbose: false,
-	}
+	cfg := config.DefaultConfig()
+
 	cmd := &cobra.Command{
 		Use:   "transparent-proxy",
 		Short: "Uninstall Transparent Proxy pre-requisites on the host",
-		Long:  `Uninstall Transparent Proxy by restoring the hosts iptables and /etc/resolv.conf`,
+		Long: "Uninstall Transparent Proxy by restoring the hosts iptables " +
+			"and /etc/resolv.conf or removing leftover ebpf objects",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !args.DryRun && runtime.GOOS != "linux" {
-				return errors.Errorf("transparent proxy will work only on Linux OSes")
+			cfg.RuntimeStdout = cmd.OutOrStdout()
+			cfg.RuntimeStderr = cmd.ErrOrStderr()
+
+			switch {
+			case runtime.GOOS != "linux" && !cfg.DryRun:
+				return errors.New("transparent proxy is supported only on Linux systems")
+			case runtime.GOOS == "linux" && os.Geteuid() != 0 && !cfg.DryRun:
+				return errors.New("you need to have root privileges to run this command")
+			case runtime.GOOS == "linux" && os.Geteuid() != 0 && cfg.DryRun:
+				fmt.Fprintln(cfg.RuntimeStderr, "# [WARNING] [dry-run]: running this command as a non-root user may lead to unpredictable results")
 			}
 
-			tp := transparentproxy.DefaultTransparentProxy()
-
-			output, err := tp.Cleanup(args.DryRun, args.Verbose)
+			initializedConfig, err := cfg.Initialize(cmd.Context())
 			if err != nil {
-				return errors.Wrap(err, "Failed to cleanup transparent proxy")
+				return errors.Wrap(err, "failed to initialize config")
 			}
 
-			if args.DryRun {
-				_, _ = cmd.OutOrStdout().Write([]byte(output))
-				_, _ = cmd.OutOrStdout().Write([]byte("\n"))
+			if err := transparentproxy.Cleanup(cmd.Context(), initializedConfig); err != nil {
+				return errors.Wrap(err, "transparent proxy cleanup failed")
+			}
+
+			if cfg.Ebpf.Enabled {
+				return nil
 			}
 
 			if _, err := os.Stat("/etc/resolv.conf.kuma-backup"); !os.IsNotExist(err) {
-				content, err := ioutil.ReadFile("/etc/resolv.conf.kuma-backup")
+				content, err := os.ReadFile("/etc/resolv.conf.kuma-backup")
 				if err != nil {
 					return errors.Wrap(err, "unable to open /etc/resolv.conf.kuma-backup")
 				}
 
-				if !args.DryRun {
-					err = ioutil.WriteFile("/etc/resolv.conf", content, 0644)
+				if !cfg.DryRun {
+					err = os.WriteFile("/etc/resolv.conf", content, 0o600)
 					if err != nil {
 						return errors.Wrap(err, "unable to write /etc/resolv.conf")
 					}
 				}
 
-				_, _ = cmd.OutOrStdout().Write(content)
+				fmt.Fprintln(cfg.RuntimeStdout, string(content))
 			}
-			_, _ = cmd.OutOrStdout().Write([]byte("\nTransparent proxy cleaned up successfully\n"))
+
+			if !initializedConfig.DryRun {
+				initializedConfig.Logger.Info("transparent proxy cleanup completed successfully")
+			}
 
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&args.DryRun, "dry-run", args.DryRun, "dry run")
-	cmd.Flags().BoolVar(&args.Verbose, "verbose", args.Verbose, "verbose")
+	// ebpf
+	cmd.Flags().BoolVar(&cfg.Ebpf.Enabled, "ebpf-enabled", cfg.Ebpf.Enabled, "uninstall transparent proxy with ebpf mode")
+	cmd.Flags().StringVar(&cfg.Ebpf.BPFFSPath, "ebpf-bpffs-path", cfg.Ebpf.BPFFSPath, "the path of the BPF filesystem")
+
+	cmd.Flags().BoolVar(&cfg.DryRun, "dry-run", cfg.DryRun, "dry run")
+	cmd.Flags().BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "verbose")
+
 	return cmd
 }

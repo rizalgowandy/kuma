@@ -2,12 +2,15 @@ package util
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"strings"
 
+	"github.com/go-logr/logr"
 	kube_core "k8s.io/api/core/v1"
-	kube_meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kube_labels "k8s.io/apimachinery/pkg/labels"
+	kube_types "k8s.io/apimachinery/pkg/types"
 	kube_intstr "k8s.io/apimachinery/pkg/util/intstr"
+	kube_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/plugins/runtime/k8s/metadata"
@@ -15,10 +18,13 @@ import (
 
 type ServicePredicate func(*kube_core.Service) bool
 
-func MatchServiceThatSelectsPod(pod *kube_core.Pod) ServicePredicate {
+func MatchServiceThatSelectsPod(pod *kube_core.Pod, ignoredLabels []string) ServicePredicate {
 	return func(svc *kube_core.Service) bool {
-		selector := kube_labels.SelectorFromSet(svc.Spec.Selector)
-		return selector.Matches(kube_labels.Set(pod.Labels))
+		selector := maps.Clone(svc.Spec.Selector)
+		for _, ignoredLabel := range ignoredLabels {
+			delete(selector, ignoredLabel)
+		}
+		return kube_labels.SelectorFromSet(selector).Matches(kube_labels.Set(pod.Labels))
 	}
 }
 
@@ -46,31 +52,18 @@ func Ignored() ServicePredicate {
 		if svc.Annotations == nil {
 			return false
 		}
-		ignore, _, _ := metadata.Annotations(svc.Annotations).GetBool(metadata.KumaIgnoreAnnotation)
+		ignore, _, _ := metadata.Annotations(svc.Annotations).GetEnabled(metadata.KumaIgnoreAnnotation)
 		return ignore
 	}
 }
 
-func FindServices(svcs *kube_core.ServiceList, predicates ...ServicePredicate) []*kube_core.Service {
-	matching := make([]*kube_core.Service, 0)
-	for i := range svcs.Items {
-		svc := &svcs.Items[i]
-		allMatched := true
-		for _, predicate := range predicates {
-			if !predicate(svc) {
-				allMatched = false
-				break
-			}
-		}
-		if allMatched {
-			matching = append(matching, svc)
+func MatchService(svc *kube_core.Service, predicates ...ServicePredicate) bool {
+	for _, predicate := range predicates {
+		if !predicate(svc) {
+			return false
 		}
 	}
-	// Sort by name so that inbound order is similar across zones regardless of the order services got created.
-	sort.Slice(matching, func(i, j int) bool {
-		return matching[i].Name < matching[j].Name
-	})
-	return matching
+	return true
 }
 
 // FindPort locates the container port for the given pod and portName.  If the
@@ -115,13 +108,21 @@ func FindPort(pod *kube_core.Pod, svcPort *kube_core.ServicePort) (int, *kube_co
 	return 0, nil, fmt.Errorf("no suitable port for manifest: %s", pod.UID)
 }
 
-func FindContainerStatus(pod *kube_core.Pod, containerName string) *kube_core.ContainerStatus {
-	for _, cs := range pod.Status.ContainerStatuses {
+func findContainerStatus(containerName string, status []kube_core.ContainerStatus, initStatus []kube_core.ContainerStatus) *kube_core.ContainerStatus {
+	for _, cs := range append(status, initStatus...) {
 		if cs.Name == containerName {
 			return &cs
 		}
 	}
 	return nil
+}
+
+func FindContainerStatus(containerName string, status []kube_core.ContainerStatus) *kube_core.ContainerStatus {
+	return findContainerStatus(containerName, status, nil)
+}
+
+func FindContainerOrInitContainerStatus(containerName string, status []kube_core.ContainerStatus, initStatus []kube_core.ContainerStatus) *kube_core.ContainerStatus {
+	return findContainerStatus(containerName, status, initStatus)
 }
 
 func CopyStringMap(in map[string]string) map[string]string {
@@ -135,11 +136,48 @@ func CopyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func MeshFor(obj kube_meta.Object) string {
-	mesh, exist := metadata.Annotations(obj.GetAnnotations()).GetString(metadata.KumaMeshAnnotation)
-	if !exist || mesh == "" {
-		return model.DefaultMesh
+// MeshOfByLabelOrAnnotation returns the mesh of the given object according to its own
+// annotations or labels or the annotations of its namespace. It treats the annotation
+// directly on the object as deprecated.
+func MeshOfByLabelOrAnnotation(log logr.Logger, obj kube_client.Object, namespace *kube_core.Namespace) string {
+	if mesh, exists := metadata.Annotations(obj.GetLabels()).GetString(metadata.KumaMeshLabel); exists && mesh != "" {
+		return mesh
+	}
+	if mesh, exists := metadata.Annotations(obj.GetAnnotations()).GetString(metadata.KumaMeshAnnotation); exists && mesh != "" { // nolint:staticcheck
+		log.Info("WARNING: The kuma.io/mesh annotation is no longer supported. Use label instead", "name", obj.GetName(), "namespace", obj.GetNamespace(), "kind", obj.GetObjectKind().GroupVersionKind().Kind)
+		return mesh
 	}
 
-	return mesh
+	// Label wasn't found on the object, let's look on the namespace instead
+	if mesh, exists := metadata.Annotations(namespace.GetLabels()).GetString(metadata.KumaMeshLabel); exists && mesh != "" {
+		return mesh
+	}
+
+	if mesh, exists := metadata.Annotations(namespace.GetAnnotations()).GetString(metadata.KumaMeshAnnotation); exists && mesh != "" { // nolint:staticcheck
+		log.Info("WARNING: The kuma.io/mesh annotation is no longer supported. Use label instead", "name", obj.GetName(), "namespace", obj.GetNamespace(), "kind", obj.GetObjectKind().GroupVersionKind().Kind)
+		return mesh
+	}
+
+	return model.DefaultMesh
+}
+
+// ServiceTag returns the canonical service name for a Kubernetes service,
+// optionally with a specific port.
+func ServiceTag(name kube_types.NamespacedName, svcPort *int32) string {
+	port := ""
+	if svcPort != nil {
+		port = fmt.Sprintf("_%d", *svcPort)
+	}
+	return fmt.Sprintf("%s_%s_svc%s", name.Name, name.Namespace, port)
+}
+
+func NamespacesNameFromServiceTag(serviceName string) (kube_types.NamespacedName, error) {
+	split := strings.Split(serviceName, "_")
+	if len(split) >= 2 {
+		return kube_types.NamespacedName{
+			Name:      split[0],
+			Namespace: split[1],
+		}, nil
+	}
+	return kube_types.NamespacedName{}, fmt.Errorf("incorrect service name: %s", serviceName)
 }

@@ -1,22 +1,46 @@
 package v3
 
 import (
+	"context"
+
 	envoy_cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	envoy_route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_auth "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	envoy_types "github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	envoy_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
-	. "github.com/onsi/ginkgo"
+	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	xds_model "github.com/kumahq/kuma/pkg/core/xds"
+	core_metrics "github.com/kumahq/kuma/pkg/metrics"
 	test_model "github.com/kumahq/kuma/pkg/test/resources/model"
+	"github.com/kumahq/kuma/pkg/util/proto"
+	util_xds "github.com/kumahq/kuma/pkg/util/xds"
 	xds_context "github.com/kumahq/kuma/pkg/xds/context"
 )
+
+func hcmForRoute(routeName string) *anypb.Any {
+	hcm := envoy_hcm.HttpConnectionManager{
+		RouteSpecifier: &envoy_hcm.HttpConnectionManager_Rds{
+			Rds: &envoy_hcm.Rds{
+				RouteConfigName: routeName,
+			},
+		},
+	}
+
+	a, err := proto.MarshalAnyDeterministic(&hcm)
+	Expect(err).To(Succeed())
+
+	return a
+}
 
 var _ = Describe("Reconcile", func() {
 	Describe("reconciler", func() {
@@ -29,35 +53,65 @@ var _ = Describe("Reconcile", func() {
 		snapshot := envoy_cache.Snapshot{
 			Resources: [envoy_types.UnknownType]envoy_cache.Resources{
 				envoy_types.Listener: {
-					Items: map[string]envoy_types.ResourceWithTtl{
+					Items: map[string]envoy_types.ResourceWithTTL{
 						"listener": {
-							Resource: &envoy_listener.Listener{},
+							Resource: &envoy_listener.Listener{
+								Address: &envoy_core.Address{
+									Address: &envoy_core.Address_SocketAddress{
+										SocketAddress: &envoy_core.SocketAddress{
+											Address: "127.0.0.1",
+											PortSpecifier: &envoy_core.SocketAddress_PortValue{
+												PortValue: 99,
+											},
+										},
+									},
+								},
+								FilterChains: []*envoy_listener.FilterChain{{
+									Filters: []*envoy_listener.Filter{{
+										Name: "envoy.filters.network.http_connection_manager",
+										ConfigType: &envoy_listener.Filter_TypedConfig{
+											TypedConfig: hcmForRoute("route"),
+										},
+									}},
+								}},
+							},
 						},
 					},
 				},
 				envoy_types.Route: {
-					Items: map[string]envoy_types.ResourceWithTtl{
+					Items: map[string]envoy_types.ResourceWithTTL{
 						"route": {
 							Resource: &envoy_route.RouteConfiguration{},
 						},
 					},
 				},
 				envoy_types.Cluster: {
-					Items: map[string]envoy_types.ResourceWithTtl{
+					Items: map[string]envoy_types.ResourceWithTTL{
 						"cluster": {
-							Resource: &envoy_cluster.Cluster{},
+							Resource: &envoy_cluster.Cluster{
+								Name:                 "cluster",
+								ClusterDiscoveryType: &envoy_cluster.Cluster_Type{Type: envoy_cluster.Cluster_EDS},
+								EdsClusterConfig: &envoy_cluster.Cluster_EdsClusterConfig{
+									EdsConfig: &envoy_core.ConfigSource{
+										ResourceApiVersion: envoy_core.ApiVersion_V3,
+										ConfigSourceSpecifier: &envoy_core.ConfigSource_Ads{
+											Ads: &envoy_core.AggregatedConfigSource{},
+										},
+									},
+								},
+							},
 						},
 					},
 				},
 				envoy_types.Endpoint: {
-					Items: map[string]envoy_types.ResourceWithTtl{
-						"endpoint": {
-							Resource: &envoy_endpoint.ClusterLoadAssignment{},
+					Items: map[string]envoy_types.ResourceWithTTL{
+						"cluster": {
+							Resource: &envoy_endpoint.ClusterLoadAssignment{ClusterName: "cluster"},
 						},
 					},
 				},
 				envoy_types.Secret: {
-					Items: map[string]envoy_types.ResourceWithTtl{
+					Items: map[string]envoy_types.ResourceWithTTL{
 						"secret": {
 							Resource: &envoy_auth.Secret{},
 						},
@@ -73,12 +127,19 @@ var _ = Describe("Reconcile", func() {
 			snapshots <- snapshot               // same Dataplane configuration
 			snapshots <- envoy_cache.Snapshot{} // new Dataplane configuration
 
+			metrics, err := core_metrics.NewMetrics("Zone")
+			Expect(err).ToNot(HaveOccurred())
+			statsCallbacks, err := util_xds.NewStatsCallbacks(metrics, "xds", util_xds.NoopVersionExtractor)
+			Expect(err).ToNot(HaveOccurred())
+
 			// setup
 			r := &reconciler{
-				snapshotGeneratorFunc(func(ctx xds_context.Context, proxy *xds_model.Proxy) (envoy_cache.Snapshot, error) {
-					return <-snapshots, nil
+				snapshotGeneratorFunc(func(_ context.Context, ctx xds_context.Context, proxy *xds_model.Proxy) (*envoy_cache.Snapshot, error) {
+					snap := <-snapshots
+					return &snap, nil
 				}),
 				&simpleSnapshotCacher{xdsContext.Hasher(), xdsContext.Cache()},
+				statsCallbacks,
 			}
 
 			// given
@@ -97,9 +158,10 @@ var _ = Describe("Reconcile", func() {
 				Id:        *xds_model.BuildProxyId("demo", "example"),
 				Dataplane: dataplane,
 			}
-			err := r.Reconcile(xds_context.Context{}, proxy)
+			changed, err := r.Reconcile(context.Background(), xds_context.Context{}, proxy)
 			// then
 			Expect(err).ToNot(HaveOccurred())
+			Expect(changed).To(BeTrue())
 			Expect(snapshot.Resources[envoy_types.Listener].Version).To(BeEmpty())
 			Expect(snapshot.Resources[envoy_types.Route].Version).To(BeEmpty())
 			Expect(snapshot.Resources[envoy_types.Cluster].Version).To(BeEmpty())
@@ -113,11 +175,11 @@ var _ = Describe("Reconcile", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(snapshot).ToNot(BeZero())
 			// and
-			listenerV1 := snapshot.Resources[envoy_types.Listener].Version
-			routeV1 := snapshot.Resources[envoy_types.Route].Version
-			clusterV1 := snapshot.Resources[envoy_types.Cluster].Version
-			endpointV1 := snapshot.Resources[envoy_types.Endpoint].Version
-			secretV1 := snapshot.Resources[envoy_types.Secret].Version
+			listenerV1 := snapshot.GetVersion(resource.ListenerType)
+			routeV1 := snapshot.GetVersion(resource.RouteType)
+			clusterV1 := snapshot.GetVersion(resource.ClusterType)
+			endpointV1 := snapshot.GetVersion(resource.EndpointType)
+			secretV1 := snapshot.GetVersion(resource.SecretType)
 			Expect(listenerV1).ToNot(BeEmpty())
 			Expect(routeV1).ToNot(BeEmpty())
 			Expect(clusterV1).ToNot(BeEmpty())
@@ -126,9 +188,10 @@ var _ = Describe("Reconcile", func() {
 
 			By("simulating discovery event (Dataplane watchdog triggers refresh)")
 			// when
-			err = r.Reconcile(xds_context.Context{}, proxy)
+			changed, err = r.Reconcile(context.Background(), xds_context.Context{}, proxy)
 			// then
 			Expect(err).ToNot(HaveOccurred())
+			Expect(changed).To(BeFalse())
 
 			By("verifying that snapshot versions remain the same")
 			// when
@@ -137,15 +200,15 @@ var _ = Describe("Reconcile", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(snapshot).ToNot(BeZero())
 			// and
-			Expect(snapshot.Resources[envoy_types.Listener].Version).To(Equal(listenerV1))
-			Expect(snapshot.Resources[envoy_types.Route].Version).To(Equal(routeV1))
-			Expect(snapshot.Resources[envoy_types.Cluster].Version).To(Equal(clusterV1))
-			Expect(snapshot.Resources[envoy_types.Endpoint].Version).To(Equal(endpointV1))
-			Expect(snapshot.Resources[envoy_types.Secret].Version).To(Equal(secretV1))
+			Expect(snapshot.GetVersion(resource.ListenerType)).To(Equal(listenerV1))
+			Expect(snapshot.GetVersion(resource.RouteType)).To(Equal(routeV1))
+			Expect(snapshot.GetVersion(resource.ClusterType)).To(Equal(clusterV1))
+			Expect(snapshot.GetVersion(resource.EndpointType)).To(Equal(endpointV1))
+			Expect(snapshot.GetVersion(resource.SecretType)).To(Equal(secretV1))
 
 			By("simulating discovery event (Dataplane gets changed)")
 			// when
-			err = r.Reconcile(xds_context.Context{}, proxy)
+			_, err = r.Reconcile(context.Background(), xds_context.Context{}, proxy)
 			// then
 			Expect(err).ToNot(HaveOccurred())
 
@@ -156,23 +219,23 @@ var _ = Describe("Reconcile", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(snapshot).ToNot(BeZero())
 			// and
-			Expect(snapshot.Resources[envoy_types.Listener].Version).To(SatisfyAll(
+			Expect(snapshot.GetVersion(resource.ListenerType)).To(SatisfyAll(
 				Not(Equal(listenerV1)),
 				Not(BeEmpty()),
 			))
-			Expect(snapshot.Resources[envoy_types.Route].Version).To(SatisfyAll(
+			Expect(snapshot.GetVersion(resource.RouteType)).To(SatisfyAll(
 				Not(Equal(routeV1)),
 				Not(BeEmpty()),
 			))
-			Expect(snapshot.Resources[envoy_types.Cluster].Version).To(SatisfyAll(
+			Expect(snapshot.GetVersion(resource.ClusterType)).To(SatisfyAll(
 				Not(Equal(clusterV1)),
 				Not(BeEmpty()),
 			))
-			Expect(snapshot.Resources[envoy_types.Endpoint].Version).To(SatisfyAll(
+			Expect(snapshot.GetVersion(resource.EndpointType)).To(SatisfyAll(
 				Not(Equal(endpointV1)),
 				Not(BeEmpty()),
 			))
-			Expect(snapshot.Resources[envoy_types.Secret].Version).To(SatisfyAll(
+			Expect(snapshot.GetVersion(resource.SecretType)).To(SatisfyAll(
 				Not(Equal(secretV1)),
 				Not(BeEmpty()),
 			))
@@ -186,18 +249,13 @@ var _ = Describe("Reconcile", func() {
 			// then
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("no snapshot found"))
-
-			Expect(snapshot.Resources[envoy_types.Listener].Version).To(BeEmpty())
-			Expect(snapshot.Resources[envoy_types.Route].Version).To(BeEmpty())
-			Expect(snapshot.Resources[envoy_types.Cluster].Version).To(BeEmpty())
-			Expect(snapshot.Resources[envoy_types.Endpoint].Version).To(BeEmpty())
-			Expect(snapshot.Resources[envoy_types.Secret].Version).To(BeEmpty())
+			Expect(snapshot).To(BeNil())
 		})
 	})
 })
 
-type snapshotGeneratorFunc func(ctx xds_context.Context, proxy *xds_model.Proxy) (envoy_cache.Snapshot, error)
+type snapshotGeneratorFunc func(context.Context, xds_context.Context, *xds_model.Proxy) (*envoy_cache.Snapshot, error)
 
-func (f snapshotGeneratorFunc) GenerateSnapshot(ctx xds_context.Context, proxy *xds_model.Proxy) (envoy_cache.Snapshot, error) {
-	return f(ctx, proxy)
+func (f snapshotGeneratorFunc) GenerateSnapshot(ctx context.Context, xdsCtx xds_context.Context, proxy *xds_model.Proxy) (*envoy_cache.Snapshot, error) {
+	return f(ctx, xdsCtx, proxy)
 }

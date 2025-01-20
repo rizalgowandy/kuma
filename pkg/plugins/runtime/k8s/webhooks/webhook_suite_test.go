@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	kube_meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kube_runtime "k8s.io/apimachinery/pkg/runtime"
@@ -15,7 +15,6 @@ import (
 
 	"github.com/kumahq/kuma/pkg/plugins/bootstrap/k8s"
 	mesh_k8s "github.com/kumahq/kuma/pkg/plugins/resources/k8s/native/api/v1alpha1"
-	sample_k8s "github.com/kumahq/kuma/pkg/plugins/resources/k8s/native/test/api/sample/v1alpha1"
 	"github.com/kumahq/kuma/pkg/test"
 )
 
@@ -23,17 +22,30 @@ func TestWebhook(t *testing.T) {
 	test.RunSpecs(t, "Webhooks Suite")
 }
 
-var decoder *kube_admission.Decoder
-var testEnv *envtest.Environment
-var k8sClient client.Client
-var scheme *kube_runtime.Scheme
-var defaultMesh *mesh_k8s.Mesh
+var (
+	decoder     kube_admission.Decoder
+	testEnv     *envtest.Environment
+	k8sClient   client.Client
+	scheme      *kube_runtime.Scheme
+	defaultMesh = &mesh_k8s.Mesh{
+		ObjectMeta: kube_meta.ObjectMeta{
+			Name: "default",
+		},
+	}
+	dp1 = &mesh_k8s.Dataplane{
+		ObjectMeta: kube_meta.ObjectMeta{
+			Name:      "dp-1",
+			Namespace: "default",
+		},
+		Mesh: "default",
+	}
+)
 
 var _ = BeforeSuite(func() {
 	// setup K8S with Kuma CRDs
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "resources", "k8s", "native", "config", "crd", "bases"),
+			filepath.Join("..", "..", "..", "..", "..", test.CustomResourceDir),
 		},
 	}
 	cfg, err := testEnv.Start()
@@ -42,23 +54,18 @@ var _ = BeforeSuite(func() {
 
 	scheme, err = k8s.NewScheme()
 	Expect(err).ToNot(HaveOccurred())
-	Expect(sample_k8s.AddToScheme(scheme)).To(Succeed())
+	Expect(mesh_k8s.AddToScheme(scheme)).To(Succeed())
 
-	decoder, err = kube_admission.NewDecoder(scheme)
-	Expect(err).ToNot(HaveOccurred())
+	decoder = kube_admission.NewDecoder(scheme)
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	Expect(err).ToNot(HaveOccurred())
 	Expect(k8sClient).ToNot(BeNil())
 
 	// create default mesh
-	defaultMesh = &mesh_k8s.Mesh{
-		ObjectMeta: kube_meta.ObjectMeta{
-			Name: "default",
-		},
-	}
 	err = k8sClient.Create(context.Background(), defaultMesh)
 	Expect(err).ToNot(HaveOccurred())
+	Expect(k8sClient.Create(context.Background(), dp1)).To(Succeed())
 })
 
 var _ = AfterSuite(func() {

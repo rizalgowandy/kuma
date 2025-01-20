@@ -3,58 +3,37 @@ package gc_test
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
-	"github.com/kumahq/kuma/pkg/core"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/gc"
+	core_metrics "github.com/kumahq/kuma/pkg/metrics"
 	"github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	"github.com/kumahq/kuma/pkg/test/resources/model"
+	"github.com/kumahq/kuma/pkg/test/resources/samples"
 	"github.com/kumahq/kuma/pkg/util/proto"
 )
 
-// The problem is SubscriptionFinalizer in the same package uses core.Now
-// variable to set DisconnectTime when finalizes subscription.
-// Test in the current file replaces core.Now for testing purposes. When running
-// the whole suite with `-race` flag it constantly fails with `WARNING: DATA RACE`.
-// In order to avoid that we protect core.Now with mtxNow mutex in the scope
-// of this gc_test package.
-var mtxNow sync.RWMutex
-
 var _ = Describe("Dataplane Collector", func() {
 	var rm manager.ResourceManager
-	now := time.Now()
-	var backupNow func() time.Time
-
-	createDpAndDpInsight := func(name, mesh string) {
-		dp := &core_mesh.DataplaneResource{
-			Meta: &model.ResourceMeta{Name: name, Mesh: mesh},
-			Spec: &mesh_proto.Dataplane{
-				Networking: &mesh_proto.Dataplane_Networking{
-					Address: "192.168.0.1",
-					Inbound: []*mesh_proto.Dataplane_Networking_Inbound{{
-						Port: 8080,
-						Tags: map[string]string{
-							"kuma.io/service": "db",
-						},
-					}},
-				},
-			},
-		}
+	createDpAndDpInsight := func(name, mesh string, disconnectTime time.Time) {
+		dp := samples.DataplaneBackendBuilder().
+			WithName(name).
+			WithMesh(mesh).
+			Build()
 		dpInsight := &core_mesh.DataplaneInsightResource{
 			Meta: &model.ResourceMeta{Name: name, Mesh: mesh},
 			Spec: &mesh_proto.DataplaneInsight{
 				Subscriptions: []*mesh_proto.DiscoverySubscription{
 					{
-						DisconnectTime: proto.MustTimestampProto(core.Now()),
+						DisconnectTime: proto.MustTimestampProto(disconnectTime),
 					},
 				},
 			},
@@ -69,35 +48,27 @@ var _ = Describe("Dataplane Collector", func() {
 		rm = manager.NewResourceManager(memory.NewStore())
 		err := rm.Create(context.Background(), core_mesh.NewMeshResource(), store.CreateByKey(core_model.DefaultMesh, core_model.NoMesh))
 		Expect(err).ToNot(HaveOccurred())
-
-		mtxNow.Lock()
-		backupNow = core.Now
-		core.Now = func() time.Time {
-			return now
-		}
-		mtxNow.Unlock()
-	})
-
-	AfterEach(func() {
-		mtxNow.Lock()
-		core.Now = backupNow
-		mtxNow.Unlock()
 	})
 
 	It("should cleanup old dataplanes", func() {
+		now := time.Now()
+		ticks := make(chan time.Time)
+		defer close(ticks)
 		// given 5 dataplanes now
 		for i := 0; i < 5; i++ {
-			createDpAndDpInsight(fmt.Sprintf("dp-%d", i), "default")
+			createDpAndDpInsight(fmt.Sprintf("dp-%d", i), "default", now)
 		}
-		now = now.Add(1 * time.Hour)
 		// given 5 dataplanes after an hour
 		for i := 5; i < 10; i++ {
-			createDpAndDpInsight(fmt.Sprintf("dp-%d", i), "default")
+			createDpAndDpInsight(fmt.Sprintf("dp-%d", i), "default", now.Add(time.Hour))
 		}
 
-		now = now.Add(30 * time.Minute)
-		// when dataplane collector is run after 1.5 hours
-		collector := gc.NewCollector(rm, 100*time.Millisecond, 1*time.Hour)
+		metrics, err := core_metrics.NewMetrics("")
+		Expect(err).ToNot(HaveOccurred())
+		collector, err := gc.NewCollector(rm, func() *time.Ticker {
+			return &time.Ticker{C: ticks}
+		}, 1*time.Hour, metrics)
+		Expect(err).ToNot(HaveOccurred())
 
 		stop := make(chan struct{})
 		defer close(stop)
@@ -105,22 +76,27 @@ var _ = Describe("Dataplane Collector", func() {
 			_ = collector.Start(stop)
 		}()
 
-		// then first 5 dataplanes that are offline for more than 1 hour are deleted
-		Eventually(func() (int, error) {
+		// Run a first call to gc after 30 mins nothing happens (just disconnected)
+		ticks <- now.Add(30 * time.Minute)
+		Consistently(func(g Gomega) {
 			dataplanes := &core_mesh.DataplaneResourceList{}
-			if err := rm.List(context.Background(), dataplanes); err != nil {
-				return 0, err
-			}
-			return len(dataplanes.Items), nil
-		}).Should(Equal(5))
+			g.Expect(rm.List(context.Background(), dataplanes)).To(Succeed())
+			g.Expect(dataplanes.Items).To(HaveLen(10))
+		}).Should(Succeed())
 
-		actual := &core_mesh.DataplaneResourceList{}
-		err := rm.List(context.Background(), actual)
-		Expect(err).ToNot(HaveOccurred())
-		names := []string{}
-		for _, dp := range actual.Items {
-			names = append(names, dp.Meta.GetName())
-		}
-		Expect(names).To(Equal([]string{"dp-5", "dp-6", "dp-7", "dp-8", "dp-9"}))
+		// after 61 then first 5 dataplanes that are offline for more than 1 hour are deleted
+		ticks <- now.Add(61 * time.Minute)
+		Eventually(func(g Gomega) {
+			dataplanes := &core_mesh.DataplaneResourceList{}
+			g.Expect(rm.List(context.Background(), dataplanes)).To(Succeed())
+			g.Expect(dataplanes.Items).To(HaveLen(5))
+			g.Expect(dataplanes).To(WithTransform(func(actual *core_mesh.DataplaneResourceList) []string {
+				var names []string
+				for _, dp := range actual.Items {
+					names = append(names, dp.Meta.GetName())
+				}
+				return names
+			}, Equal([]string{"dp-5", "dp-6", "dp-7", "dp-8", "dp-9"})))
+		}).Should(Succeed())
 	})
 })

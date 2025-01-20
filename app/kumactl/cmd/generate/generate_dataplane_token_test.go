@@ -4,20 +4,21 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	"github.com/golang-jwt/jwt/v4"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/app/kumactl/cmd"
 	kumactl_cmd "github.com/kumahq/kuma/app/kumactl/pkg/cmd"
+	test_kumactl "github.com/kumahq/kuma/app/kumactl/pkg/test"
 	"github.com/kumahq/kuma/app/kumactl/pkg/tokens"
-	config_proto "github.com/kumahq/kuma/pkg/config/app/kumactl/v1alpha1"
-	"github.com/kumahq/kuma/pkg/core/resources/registry"
+	"github.com/kumahq/kuma/pkg/tokens/builtin/issuer"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
-	"github.com/kumahq/kuma/pkg/util/test"
 )
 
 type staticDataplaneTokenGenerator struct {
@@ -26,7 +27,7 @@ type staticDataplaneTokenGenerator struct {
 
 var _ tokens.DataplaneTokenClient = &staticDataplaneTokenGenerator{}
 
-func (s *staticDataplaneTokenGenerator) Generate(name string, mesh string, tags map[string][]string, dpType string) (string, error) {
+func (s *staticDataplaneTokenGenerator) Generate(name string, mesh string, tags map[string][]string, dpType string, validFor time.Duration) (string, error) {
 	if s.err != nil {
 		return "", s.err
 	}
@@ -41,17 +42,9 @@ var _ = Describe("kumactl generate dataplane-token", func() {
 
 	BeforeEach(func() {
 		generator = &staticDataplaneTokenGenerator{}
-		ctx = &kumactl_cmd.RootContext{
-			Runtime: kumactl_cmd.RootRuntime{
-				Registry: registry.NewTypeRegistry(),
-				NewBaseAPIServerClient: func(server *config_proto.ControlPlaneCoordinates_ApiServer) (util_http.Client, error) {
-					return nil, nil
-				},
-				NewDataplaneTokenClient: func(util_http.Client) tokens.DataplaneTokenClient {
-					return generator
-				},
-				NewAPIServerClient: test.GetMockNewAPIServerClient(),
-			},
+		ctx = test_kumactl.MakeMinimalRootContext()
+		ctx.Runtime.NewDataplaneTokenClient = func(util_http.Client) tokens.DataplaneTokenClient {
+			return generator
 		}
 
 		rootCmd = cmd.NewRootCmd(ctx)
@@ -78,21 +71,47 @@ var _ = Describe("kumactl generate dataplane-token", func() {
 			Expect(buf.String()).To(Equal(given.result))
 		},
 		Entry("for default mesh when it is not specified", testCase{
-			args:   []string{"generate", "dataplane-token", "--name=example"},
+			args:   []string{"generate", "dataplane-token", "--name=example", "--valid-for", "30s"},
 			result: "token-for-example-default--",
 		}),
 		Entry("for all arguments", testCase{
-			args:   []string{"generate", "dataplane-token", "--mesh=demo", "--name=example", "--proxy-type=dataplane", "--tag", "kuma.io/service=web"},
+			args:   []string{"generate", "dataplane-token", "--mesh=demo", "--name=example", "--proxy-type=dataplane", "--tag", "kuma.io/service=web", "--valid-for", "30s"},
 			result: "token-for-example-demo-kuma.io/service=web-dataplane",
 		}),
 	)
+
+	It("should issue token offline", func() {
+		// given
+		rootCmd.SetArgs([]string{
+			"generate", "dataplane-token",
+			"--name", "dp-1",
+			"--mesh", "demo",
+			"--valid-for", "30s",
+			"--kid", "1",
+			"--signing-key-path", filepath.Join("..", "..", "..", "..", "test", "keys", "samplekey.pem"),
+		})
+
+		// when
+		err := rootCmd.Execute()
+
+		// then
+		Expect(err).ToNot(HaveOccurred())
+		Expect(buf.String()).ToNot(BeEmpty())
+
+		// and the token is valid
+		claims := &issuer.DataplaneClaims{}
+		_, _, err = new(jwt.Parser).ParseUnverified(buf.String(), claims)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(claims.Name).To(Equal("dp-1"))
+		Expect(claims.Mesh).To(Equal("demo"))
+	})
 
 	It("should write error when generating token fails", func() {
 		// setup
 		generator.err = errors.New("could not connect to API")
 
 		// when
-		rootCmd.SetArgs([]string{"generate", "dataplane-token", "--name=example"})
+		rootCmd.SetArgs([]string{"generate", "dataplane-token", "--name=example", "--valid-for", "30s"})
 		err := rootCmd.Execute()
 
 		// then
@@ -102,4 +121,39 @@ var _ = Describe("kumactl generate dataplane-token", func() {
 		Expect(buf.String()).To(Equal("Error: failed to generate a dataplane token: could not connect to API\n"))
 	})
 
+	type errTestCase struct {
+		args []string
+		err  string
+	}
+
+	DescribeTable("should trow an error",
+		func(given errTestCase) {
+			// given
+			rootCmd.SetArgs(given.args)
+
+			// when
+			err := rootCmd.Execute()
+
+			// then
+			Expect(err).To(MatchError(given.err))
+		},
+		Entry("when kid is specified for online signing", errTestCase{
+			args: []string{
+				"generate", "dataplane-token",
+				"--name", "dp-1",
+				"--kid", "1",
+				"--valid-for", "30s",
+			},
+			err: "--kid cannot be used when --signing-key-path is used",
+		}),
+		Entry("when kid is not specified for offline signing", errTestCase{
+			args: []string{
+				"generate", "user-token",
+				"--name", "dp-1",
+				"--valid-for", "30s",
+				"--signing-key-path", filepath.Join("..", "..", "..", "..", "..", "..", "..", "test", "keys", "samplekey.pem"),
+			},
+			err: "--kid is required when --signing-key-path is used",
+		}),
+	)
 })

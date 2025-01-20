@@ -11,6 +11,7 @@ import (
 	"github.com/kumahq/kuma/pkg/core/policy"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
+	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
 )
@@ -25,24 +26,24 @@ func (m *RateLimitMatcher) Match(ctx context.Context, dataplane *core_mesh.Datap
 		return core_xds.RateLimitsMap{}, errors.Wrap(err, "could not retrieve ratelimits")
 	}
 
-	return buildRateLimitMap(dataplane, mesh, splitPoliciesBySourceMatch(ratelimits.Items))
-}
-
-func buildRateLimitMap(
-	dataplane *core_mesh.DataplaneResource,
-	mesh *core_mesh.MeshResource,
-	rateLimits []*core_mesh.RateLimitResource,
-) (core_xds.RateLimitsMap, error) {
-	policies := make([]policy.ConnectionPolicy, len(rateLimits))
-	for i, ratelimit := range rateLimits {
-		policies[i] = ratelimit
-	}
-
 	additionalInbounds, err := manager_dataplane.AdditionalInbounds(dataplane, mesh)
 	if err != nil {
 		return core_xds.RateLimitsMap{}, errors.Wrap(err, "could not fetch additional inbounds")
 	}
 	inbounds := append(dataplane.Spec.GetNetworking().GetInbound(), additionalInbounds...)
+	return BuildRateLimitMap(dataplane, inbounds, splitPoliciesBySourceMatch(ratelimits.Items)), nil
+}
+
+func BuildRateLimitMap(
+	dataplane *core_mesh.DataplaneResource,
+	inbounds []*mesh_proto.Dataplane_Networking_Inbound,
+	rateLimits []*core_mesh.RateLimitResource,
+) core_xds.RateLimitsMap {
+	policies := make([]policy.ConnectionPolicy, len(rateLimits))
+	for i, ratelimit := range rateLimits {
+		policies[i] = ratelimit
+	}
+
 	policyMap := policy.SelectInboundConnectionMatchingPolicies(dataplane, inbounds, policies)
 
 	result := core_xds.RateLimitsMap{
@@ -51,21 +52,21 @@ func buildRateLimitMap(
 	}
 	for inbound, connectionPolicies := range policyMap {
 		for _, policy := range connectionPolicies {
-			result.Inbound[inbound] = append(result.Inbound[inbound], policy.(*core_mesh.RateLimitResource).Spec)
+			result.Inbound[inbound] = append(result.Inbound[inbound], policy.(*core_mesh.RateLimitResource))
 		}
 	}
 
 	outboundMap := policy.SelectOutboundConnectionPolicies(dataplane, policies)
 
-	for _, outbound := range dataplane.Spec.GetNetworking().GetOutbound() {
-		serviceName := outbound.GetTagsIncludingLegacy()[mesh_proto.ServiceTag]
-		if policy, exists := outboundMap[serviceName]; exists {
+	for _, outbound := range dataplane.Spec.GetNetworking().GetOutbounds(mesh_proto.NonBackendRefFilter) {
+		serviceName := outbound.GetService()
+		if connectionPolicy, exists := outboundMap[serviceName]; exists {
 			oface := dataplane.Spec.GetNetworking().ToOutboundInterface(outbound)
-			result.Outbound[oface] = policy.(*core_mesh.RateLimitResource).Spec
+			result.Outbound[oface] = connectionPolicy.(*core_mesh.RateLimitResource)
 		}
 	}
 
-	return result, nil
+	return result
 }
 
 // We need to split policies with many sources into individual policies, because otherwise
@@ -73,19 +74,22 @@ func buildRateLimitMap(
 // most general order.
 //
 // Example:
-//  sources:
-//    - match:
-//        kuma.io/service: 'web'
-//        version: '1'
-//    - match:
-//        kuma.io/service: 'web-api'
-//---
-//  sources:
-//    - match:
-//        kuma.io/service: 'web'
-//    - match:
-//        kuma.io/service: 'web-api'
-//        version: '1'
+//
+//	sources:
+//	  - match:
+//	      kuma.io/service: 'web'
+//	      version: '1'
+//	  - match:
+//	      kuma.io/service: 'web-api'
+//
+// ---
+//
+//	sources:
+//	  - match:
+//	      kuma.io/service: 'web'
+//	  - match:
+//	      kuma.io/service: 'web-api'
+//	      version: '1'
 func splitPoliciesBySourceMatch(rateLimits []*core_mesh.RateLimitResource) []*core_mesh.RateLimitResource {
 	result := []*core_mesh.RateLimitResource{}
 
@@ -101,5 +105,45 @@ func splitPoliciesBySourceMatch(rateLimits []*core_mesh.RateLimitResource) []*co
 		}
 	}
 
+	return result
+}
+
+func BuildExternalServiceRateLimitMapForZoneEgress(
+	externalServices []*core_mesh.ExternalServiceResource,
+	rateLimits []*core_mesh.RateLimitResource,
+) core_xds.ExternalServiceRateLimitMap {
+	policies := make([]policy.ConnectionPolicy, len(rateLimits))
+	for i, rateLimit := range rateLimits {
+		policies[i] = rateLimit
+	}
+
+	result := core_xds.ExternalServiceRateLimitMap{}
+	for _, externalService := range externalServices {
+		tags := externalService.Spec.GetTags()
+		serviceName := tags[mesh_proto.ServiceTag]
+
+		matchedPolicies := policy.SelectInboundConnectionAllPolicies(tags, policies)
+		for _, matchedPolicy := range matchedPolicies {
+			result[serviceName] = append(result[serviceName], matchedPolicy.(*core_mesh.RateLimitResource))
+		}
+	}
+
+	for service, resources := range result {
+		result[service] = dedup(resources)
+	}
+
+	return result
+}
+
+func dedup(policies []*core_mesh.RateLimitResource) []*core_mesh.RateLimitResource {
+	seen := map[core_model.ResourceKey]struct{}{}
+	result := []*core_mesh.RateLimitResource{}
+	for _, p := range policies {
+		if _, ok := seen[core_model.MetaToResourceKey(p.GetMeta())]; ok {
+			continue
+		}
+		seen[core_model.MetaToResourceKey(p.GetMeta())] = struct{}{}
+		result = append(result, p)
+	}
 	return result
 }

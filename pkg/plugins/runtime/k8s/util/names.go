@@ -1,6 +1,8 @@
 package util
 
 const (
-	KumaSidecarContainerName = "kuma-sidecar"
-	KumaInitContainerName    = "kuma-init"
+	KumaSidecarContainerName       = "kuma-sidecar"
+	KumaGatewayContainerName       = "kuma-gateway"
+	KumaInitContainerName          = "kuma-init"
+	KumaCniValidationContainerName = "kuma-validation"
 )

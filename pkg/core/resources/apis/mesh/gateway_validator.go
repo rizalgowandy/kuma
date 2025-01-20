@@ -5,16 +5,19 @@ import (
 	"github.com/kumahq/kuma/pkg/core/validators"
 )
 
-// Validate checks GatewayResource semantic constraints.
-func (g *GatewayResource) Validate() error {
+// Validate checks MeshGatewayResource semantic constraints.
+func (g *MeshGatewayResource) Validate() error {
 	var err validators.ValidationError
+
+	onlyOneSelector := g.Spec.IsCrossMesh()
 
 	err.Add(ValidateSelectors(
 		validators.RootedAt("selectors"),
 		g.Spec.GetSelectors(),
 		ValidateSelectorsOpts{
 			RequireAtLeastOneSelector: true,
-			ValidateSelectorOpts: ValidateSelectorOpts{
+			RequireAtMostOneSelector:  onlyOneSelector,
+			ValidateTagsOpts: ValidateTagsOpts{
 				RequireAtLeastOneTag: true,
 				RequireService:       true,
 			},
@@ -26,7 +29,7 @@ func (g *GatewayResource) Validate() error {
 	err.Add(ValidateSelector(
 		validators.RootedAt("tags"),
 		g.Spec.GetTags(),
-		ValidateSelectorOpts{
+		ValidateTagsOpts{
 			ExtraTagKeyValidators: []TagKeyValidatorFunc{
 				SelectorKeyNotInSet(
 					mesh_proto.ExternalServiceTag,
@@ -38,7 +41,7 @@ func (g *GatewayResource) Validate() error {
 		},
 	))
 
-	err.Add(validateGatewayConf(
+	err.Add(validateMeshGatewayConf(
 		validators.RootedAt("conf"),
 		g.Spec.GetConf(),
 	))
@@ -46,7 +49,90 @@ func (g *GatewayResource) Validate() error {
 	return err.OrNil()
 }
 
-func validateGatewayConf(path validators.PathBuilder, conf *mesh_proto.Gateway_Conf) validators.ValidationError {
+type resourceLimits struct {
+	connectionLimits map[uint32]struct{}
+	listeners        []int
+}
+
+func validateListenerCollapsibility(path validators.PathBuilder, listeners []*mesh_proto.MeshGateway_Listener) validators.ValidationError {
+	protocolsForPort := map[uint32]map[string][]int{}
+	hostnamesForPort := map[uint32]map[string][]int{}
+	limitedListenersForPort := map[uint32]resourceLimits{}
+
+	for i, listener := range listeners {
+		protocols, ok := protocolsForPort[listener.GetPort()]
+		if !ok {
+			protocols = map[string][]int{}
+		}
+
+		hostnames, ok := hostnamesForPort[listener.GetPort()]
+		if !ok {
+			hostnames = map[string][]int{}
+		}
+
+		limitedListeners, ok := limitedListenersForPort[listener.GetPort()]
+		if !ok {
+			limitedListeners = resourceLimits{
+				connectionLimits: map[uint32]struct{}{},
+			}
+		}
+
+		protocols[listener.GetProtocol().String()] = append(protocols[listener.GetProtocol().String()], i)
+
+		// An empty hostname is the same as "*", i.e. matches all hosts.
+		hostname := listener.GetNonEmptyHostname()
+
+		hostnames[hostname] = append(hostnames[hostname], i)
+
+		if l := listener.GetResources().GetConnectionLimit(); l != 0 {
+			limitedListeners.listeners = append(limitedListeners.listeners, i)
+			limitedListeners.connectionLimits[l] = struct{}{}
+		}
+
+		hostnamesForPort[listener.GetPort()] = hostnames
+		protocolsForPort[listener.GetPort()] = protocols
+		limitedListenersForPort[listener.GetPort()] = limitedListeners
+	}
+
+	err := validators.ValidationError{}
+
+	for _, protocolIndexes := range protocolsForPort {
+		if len(protocolIndexes) <= 1 {
+			continue
+		}
+
+		for _, indexes := range protocolIndexes {
+			for _, index := range indexes {
+				err.AddViolationAt(path.Index(index), "protocol conflicts with other listeners on this port")
+			}
+		}
+	}
+
+	for _, hostnameIndexes := range hostnamesForPort {
+		for _, indexes := range hostnameIndexes {
+			if len(indexes) <= 1 {
+				continue
+			}
+
+			for _, index := range indexes {
+				err.AddViolationAt(path.Index(index), "multiple listeners for hostname on this port")
+			}
+		}
+	}
+
+	for _, listeners := range limitedListenersForPort {
+		if len(listeners.connectionLimits) <= 1 {
+			continue
+		}
+		for _, index := range listeners.listeners {
+			err.AddViolationAt(path.Index(index).Field("resources").Field("connectionLimit"), "conflicting values for this port")
+		}
+	}
+
+	return err
+}
+
+func validateMeshGatewayConf(path validators.PathBuilder, conf *mesh_proto.MeshGateway_Conf) validators.ValidationError {
 	err := validators.ValidationError{}
 
 	if conf == nil {
@@ -71,31 +157,28 @@ func validateGatewayConf(path validators.PathBuilder, conf *mesh_proto.Gateway_C
 
 		// For now, only support HTTP and HTTPS.
 		switch l.GetProtocol() {
-		case mesh_proto.Gateway_Listener_NONE:
+		case mesh_proto.MeshGateway_Listener_NONE:
 			err.AddViolationAt(path.Index(i).Field("protocol"), "cannot be empty")
-		case mesh_proto.Gateway_Listener_UDP,
-			mesh_proto.Gateway_Listener_TCP,
-			mesh_proto.Gateway_Listener_TLS:
-			err.AddViolationAt(path.Index(i).Field("protocol"), "protocol type is not supported")
-		case mesh_proto.Gateway_Listener_HTTPS:
-			if l.GetTls() == nil {
+		case mesh_proto.MeshGateway_Listener_HTTPS:
+			switch {
+			case l.GetCrossMesh():
+				err.AddViolationAt(path.Index(i).Field("protocol"), "protocol is not supported with crossMesh")
+			case l.GetTls() == nil:
 				err.AddViolationAt(path.Index(i).Field("tls"), "cannot be empty")
+			case l.GetTls().GetMode() == mesh_proto.MeshGateway_TLS_PASSTHROUGH:
+				err.AddViolationAt(
+					path.Index(i).Field("tls").Field("mode"),
+					"mode is not supported on HTTPS listeners")
 			}
 		}
 
-		if tls := l.GetTls(); tls != nil {
+		if tls := l.GetTls(); tls != nil && !l.GetCrossMesh() {
 			switch tls.GetMode() {
-			case mesh_proto.Gateway_TLS_NONE:
+			case mesh_proto.MeshGateway_TLS_NONE:
 				err.AddViolationAt(
 					path.Index(i).Field("tls").Field("mode"),
 					"cannot be empty")
-			case mesh_proto.Gateway_TLS_PASSTHROUGH:
-				if len(tls.GetCertificates()) > 0 {
-					err.AddViolationAt(
-						path.Index(i).Field("tls").Field("certificates"),
-						"must be empty in TLS passthrough mode")
-				}
-			case mesh_proto.Gateway_TLS_TERMINATE:
+			case mesh_proto.MeshGateway_TLS_TERMINATE:
 				switch len(tls.GetCertificates()) {
 				case 0:
 					err.AddViolationAt(
@@ -110,12 +193,21 @@ func validateGatewayConf(path validators.PathBuilder, conf *mesh_proto.Gateway_C
 				}
 			}
 		}
+		if tls := l.GetTls(); tls != nil && l.GetCrossMesh() {
+			if tls.GetMode() != mesh_proto.MeshGateway_TLS_NONE ||
+				len(tls.GetCertificates()) > 0 {
+				err.AddViolationAt(
+					path.Index(i).Field("tls"),
+					"must be empty with crossMesh")
+			}
+		}
 
+		// Listener tags are optional, but if given, must not contain
+		// various tags that are well-known properties of Dataplanes.
 		err.Add(ValidateSelector(
 			path.Index(i).Field("tags"),
 			l.GetTags(),
-			ValidateSelectorOpts{
-				RequireAtLeastOneTag: true,
+			ValidateTagsOpts{
 				ExtraTagKeyValidators: []TagKeyValidatorFunc{
 					SelectorKeyNotInSet(
 						mesh_proto.ExternalServiceTag,
@@ -126,6 +218,8 @@ func validateGatewayConf(path validators.PathBuilder, conf *mesh_proto.Gateway_C
 				},
 			}))
 	}
+
+	err.Add(validateListenerCollapsibility(path, conf.GetListeners()))
 
 	return err
 }

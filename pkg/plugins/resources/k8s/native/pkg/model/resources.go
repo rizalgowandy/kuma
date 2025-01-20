@@ -4,6 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/kumahq/kuma/pkg/core/resources/model"
 )
 
 type Scope string
@@ -20,8 +22,10 @@ type KubernetesObject interface {
 	SetObjectMeta(*metav1.ObjectMeta)
 	GetMesh() string
 	SetMesh(string)
-	GetSpec() map[string]interface{}
-	SetSpec(map[string]interface{})
+	GetSpec() (model.ResourceSpec, error)
+	SetSpec(model.ResourceSpec)
+	GetStatus() (model.ResourceStatus, error)
+	SetStatus(status model.ResourceStatus) error
 	Scope() Scope
 }
 

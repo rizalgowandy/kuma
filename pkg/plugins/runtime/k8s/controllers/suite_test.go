@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -15,18 +15,20 @@ import (
 	"github.com/kumahq/kuma/pkg/test"
 )
 
-var k8sClient client.Client
-var testEnv *envtest.Environment
-var k8sClientScheme *runtime.Scheme
+var (
+	k8sClient       client.Client
+	testEnv         *envtest.Environment
+	k8sClientScheme *runtime.Scheme
+)
 
 func TestAPIs(t *testing.T) {
-	test.RunSpecs(t, "Namespace Controller Suite")
+	test.RunSpecs(t, "K8s Controller Suite")
 }
 
 var _ = BeforeSuite(test.Within(time.Minute, func() {
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "..", "resources", "k8s", "native", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "..", test.CustomResourceDir)},
 	}
 
 	cfg, err := testEnv.Start()

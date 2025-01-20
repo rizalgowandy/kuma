@@ -1,0 +1,44 @@
+{
+ "httpMatches": [],
+ "resource": {
+  "labels": {
+   "k8s.kuma.io/namespace": "kuma-demo",
+   "kuma.io/display-name": "the-gateway"
+  },
+  "mesh": "default",
+  "name": "the-gateway",
+  "type": "MeshGateway"
+ },
+ "rules": [
+  {
+   "fromRules": [],
+   "proxyRule": {
+    "conf": {
+     "backends": [
+      {
+       "type": "Zipkin",
+       "zipkin": {
+        "url": "http://jaeger-collector:9411/api/v2/spans"
+       }
+      }
+     ]
+    },
+    "origin": [
+     {
+      "labels": {
+       "k8s.kuma.io/namespace": "kuma-demo",
+       "kuma.io/display-name": "default"
+      },
+      "mesh": "default",
+      "name": "default",
+      "type": "MeshTrace"
+     }
+    ]
+   },
+   "toResourceRules": [],
+   "toRules": [],
+   "type": "MeshTrace",
+   "warnings": []
+  }
+ ]
+}

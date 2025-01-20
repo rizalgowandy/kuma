@@ -5,6 +5,7 @@ import (
 	"time"
 
 	envoy_service_discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/server/sotw/v3"
 	envoy_server "github.com/envoyproxy/go-control-plane/pkg/server/v3"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,11 +15,10 @@ import (
 	util_xds "github.com/kumahq/kuma/pkg/util/xds"
 	util_xds_v3 "github.com/kumahq/kuma/pkg/util/xds/v3"
 	"github.com/kumahq/kuma/pkg/xds/auth"
-	auth_components "github.com/kumahq/kuma/pkg/xds/auth/components"
-	"github.com/kumahq/kuma/pkg/xds/cache/mesh"
 	xds_context "github.com/kumahq/kuma/pkg/xds/context"
 	envoy_common "github.com/kumahq/kuma/pkg/xds/envoy"
 	"github.com/kumahq/kuma/pkg/xds/generator"
+	"github.com/kumahq/kuma/pkg/xds/generator/egress"
 	xds_metrics "github.com/kumahq/kuma/pkg/xds/metrics"
 	"github.com/kumahq/kuma/pkg/xds/secrets"
 	xds_callbacks "github.com/kumahq/kuma/pkg/xds/server/callbacks"
@@ -26,27 +26,24 @@ import (
 	xds_template "github.com/kumahq/kuma/pkg/xds/template"
 )
 
-var xdsServerLog = core.Log.WithName("xds-server")
+var xdsServerLog = core.Log.WithName("xds").WithName("server")
 
 func RegisterXDS(
-	statsCallbacks util_xds.Callbacks,
+	statsCallbacks util_xds.StatsCallbacks,
 	xdsMetrics *xds_metrics.Metrics,
-	meshSnapshotCache *mesh.Cache,
 	envoyCpCtx *xds_context.ControlPlaneContext,
 	rt core_runtime.Runtime,
 ) error {
 	xdsContext := NewXdsContext()
 
-	authenticator, err := auth_components.DefaultAuthenticator(rt)
-	if err != nil {
-		return err
-	}
+	authenticator := rt.XDS().PerProxyTypeAuthenticator()
 	authCallbacks := auth.NewCallbacks(rt.ReadOnlyResourceManager(), authenticator, auth.DPNotFoundRetry{}) // no need to retry on DP Not Found because we are creating DP in DataplaneLifecycle callback
 
 	metadataTracker := xds_callbacks.NewDataplaneMetadataTracker()
-	reconciler := DefaultReconciler(rt, xdsContext)
-	ingressReconciler := DefaultIngressReconciler(rt, xdsContext)
-	watchdogFactory, err := xds_sync.DefaultDataplaneWatchdogFactory(rt, metadataTracker, reconciler, ingressReconciler, xdsMetrics, meshSnapshotCache, envoyCpCtx, envoy_common.APIV3)
+	reconciler := DefaultReconciler(rt, xdsContext, statsCallbacks)
+	ingressReconciler := DefaultIngressReconciler(rt, xdsContext, statsCallbacks)
+	egressReconciler := DefaultEgressReconciler(rt, xdsContext, statsCallbacks)
+	watchdogFactory, err := xds_sync.DefaultDataplaneWatchdogFactory(rt, metadataTracker, reconciler, ingressReconciler, egressReconciler, xdsMetrics, envoyCpCtx, envoy_common.APIV3)
 	if err != nil {
 		return err
 	}
@@ -55,22 +52,31 @@ func RegisterXDS(
 		util_xds_v3.NewControlPlaneIdCallbacks(rt.GetInstanceId()),
 		util_xds_v3.AdaptCallbacks(statsCallbacks),
 		util_xds_v3.AdaptCallbacks(authCallbacks),
-		util_xds_v3.AdaptCallbacks(xds_callbacks.DataplaneCallbacksToXdsCallbacks(xds_callbacks.NewDataplaneSyncTracker(watchdogFactory.New))),
 		util_xds_v3.AdaptCallbacks(xds_callbacks.DataplaneCallbacksToXdsCallbacks(metadataTracker)),
-		util_xds_v3.AdaptCallbacks(xds_callbacks.DataplaneCallbacksToXdsCallbacks(xds_callbacks.NewDataplaneLifecycle(rt.AppContext(), rt.ResourceManager()))),
+		util_xds_v3.AdaptCallbacks(xds_callbacks.DataplaneCallbacksToXdsCallbacks(
+			xds_callbacks.NewDataplaneLifecycle(rt.AppContext(), rt.ResourceManager(), authenticator, rt.Config().XdsServer.DataplaneDeregistrationDelay.Duration, rt.GetInstanceId(), rt.Config().Store.Cache.ExpirationTime.Duration)),
+		),
+		util_xds_v3.AdaptCallbacks(xds_callbacks.DataplaneCallbacksToXdsCallbacks(xds_callbacks.NewDataplaneSyncTracker(watchdogFactory.New))),
 		util_xds_v3.AdaptCallbacks(DefaultDataplaneStatusTracker(rt, envoyCpCtx.Secrets)),
-		util_xds_v3.AdaptCallbacks(xds_callbacks.NewNackBackoff(rt.Config().XdsServer.NACKBackoff)),
-		newResourceWarmingForcer(xdsContext.Cache(), xdsContext.Hasher()),
+		util_xds_v3.AdaptCallbacks(xds_callbacks.NewNackBackoff(rt.Config().XdsServer.NACKBackoff.Duration)),
 	}
 
-	srv := envoy_server.NewServer(context.Background(), xdsContext.Cache(), callbacks)
+	if cb := rt.XDS().ServerCallbacks; cb != nil {
+		callbacks = append(callbacks, util_xds_v3.AdaptCallbacks(cb))
+	}
+
+	srv := envoy_server.NewServer(context.Background(), xdsContext.Cache(), callbacks, sotw.WithOrderedADS())
 
 	xdsServerLog.Info("registering Aggregated Discovery Service V3 in Dataplane Server")
 	envoy_service_discovery.RegisterAggregatedDiscoveryServiceServer(rt.DpServer().GrpcServer(), srv)
 	return nil
 }
 
-func DefaultReconciler(rt core_runtime.Runtime, xdsContext XdsContext) xds_sync.SnapshotReconciler {
+func DefaultReconciler(
+	rt core_runtime.Runtime,
+	xdsContext XdsContext,
+	statsCallbacks util_xds.StatsCallbacks,
+) xds_sync.SnapshotReconciler {
 	resolver := xds_template.SequentialResolver(
 		&xds_template.SimpleProxyTemplateResolver{
 			ReadOnlyResourceManager: rt.ReadOnlyResourceManager(),
@@ -79,15 +85,20 @@ func DefaultReconciler(rt core_runtime.Runtime, xdsContext XdsContext) xds_sync.
 	)
 
 	return &reconciler{
-		&templateSnapshotGenerator{
-			ResourceSetHooks:      rt.XDSHooks().ResourceSetHooks(),
+		generator: &TemplateSnapshotGenerator{
+			ResourceSetHooks:      rt.XDS().Hooks.ResourceSetHooks(),
 			ProxyTemplateResolver: resolver,
 		},
-		&simpleSnapshotCacher{xdsContext.Hasher(), xdsContext.Cache()},
+		cacher:         &simpleSnapshotCacher{xdsContext.Hasher(), xdsContext.Cache()},
+		statsCallbacks: statsCallbacks,
 	}
 }
 
-func DefaultIngressReconciler(rt core_runtime.Runtime, xdsContext XdsContext) xds_sync.SnapshotReconciler {
+func DefaultIngressReconciler(
+	rt core_runtime.Runtime,
+	xdsContext XdsContext,
+	statsCallbacks util_xds.StatsCallbacks,
+) xds_sync.SnapshotReconciler {
 	resolver := &xds_template.StaticProxyTemplateResolver{
 		Template: &mesh_proto.ProxyTemplate{
 			Conf: &mesh_proto.ProxyTemplate_Conf{
@@ -99,11 +110,37 @@ func DefaultIngressReconciler(rt core_runtime.Runtime, xdsContext XdsContext) xd
 	}
 
 	return &reconciler{
-		generator: &templateSnapshotGenerator{
-			ResourceSetHooks:      rt.XDSHooks().ResourceSetHooks(),
+		generator: &TemplateSnapshotGenerator{
+			ResourceSetHooks:      rt.XDS().Hooks.ResourceSetHooks(),
 			ProxyTemplateResolver: resolver,
 		},
-		cacher: &simpleSnapshotCacher{xdsContext.Hasher(), xdsContext.Cache()},
+		cacher:         &simpleSnapshotCacher{xdsContext.Hasher(), xdsContext.Cache()},
+		statsCallbacks: statsCallbacks,
+	}
+}
+
+func DefaultEgressReconciler(
+	rt core_runtime.Runtime,
+	xdsContext XdsContext,
+	statsCallbacks util_xds.StatsCallbacks,
+) xds_sync.SnapshotReconciler {
+	resolver := &xds_template.StaticProxyTemplateResolver{
+		Template: &mesh_proto.ProxyTemplate{
+			Conf: &mesh_proto.ProxyTemplate_Conf{
+				Imports: []string{
+					egress.EgressProxy,
+				},
+			},
+		},
+	}
+
+	return &reconciler{
+		generator: &TemplateSnapshotGenerator{
+			ResourceSetHooks:      rt.XDS().Hooks.ResourceSetHooks(),
+			ProxyTemplateResolver: resolver,
+		},
+		cacher:         &simpleSnapshotCacher{xdsContext.Hasher(), xdsContext.Cache()},
+		statsCallbacks: statsCallbacks,
 	}
 }
 
@@ -115,12 +152,12 @@ func DefaultDataplaneStatusTracker(rt core_runtime.Runtime, secrets secrets.Secr
 				accessor,
 				secrets,
 				func() *time.Ticker {
-					return time.NewTicker(rt.Config().XdsServer.DataplaneStatusFlushInterval)
+					return time.NewTicker(rt.Config().XdsServer.DataplaneStatusFlushInterval.Duration)
 				},
 				func() *time.Ticker {
-					return time.NewTicker(rt.Config().Metrics.Dataplane.IdleTimeout / 2)
+					return time.NewTicker(rt.Config().Metrics.Dataplane.IdleTimeout.Duration / 2)
 				},
-				rt.Config().XdsServer.DataplaneStatusFlushInterval/10,
+				rt.Config().XdsServer.DataplaneStatusFlushInterval.Duration/10,
 				xds_callbacks.NewDataplaneInsightStore(rt.ResourceManager()),
 			)
 		})

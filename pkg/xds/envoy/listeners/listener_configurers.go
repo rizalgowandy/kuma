@@ -17,21 +17,25 @@ func OriginalDstForwarder() ListenerBuilderOpt {
 	return AddListenerConfigurer(&v3.OriginalDstForwarderConfigurer{})
 }
 
-func InboundListener(listenerName string, address string, port uint32, protocol core_xds.SocketAddressProtocol) ListenerBuilderOpt {
+func InboundListener(address string, port uint32, protocol core_xds.SocketAddressProtocol) ListenerBuilderOpt {
 	return AddListenerConfigurer(&v3.InboundListenerConfigurer{
-		Protocol:     protocol,
-		ListenerName: listenerName,
-		Address:      address,
-		Port:         port,
+		Protocol: protocol,
+		Address:  address,
+		Port:     port,
 	})
 }
 
-func OutboundListener(listenerName string, address string, port uint32, protocol core_xds.SocketAddressProtocol) ListenerBuilderOpt {
+func OutboundListener(address string, port uint32, protocol core_xds.SocketAddressProtocol) ListenerBuilderOpt {
 	return AddListenerConfigurer(&v3.OutboundListenerConfigurer{
-		Protocol:     protocol,
-		ListenerName: listenerName,
-		Address:      address,
-		Port:         port,
+		Protocol: protocol,
+		Address:  address,
+		Port:     port,
+	})
+}
+
+func PipeListener(socketPath string) ListenerBuilderOpt {
+	return AddListenerConfigurer(&v3.PipeListenerConfigurer{
+		SocketPath: socketPath,
 	})
 }
 
@@ -61,10 +65,9 @@ func FilterChain(builder *FilterChainBuilder) ListenerBuilderOpt {
 	)
 }
 
-func DNS(vips map[string][]string, emptyDnsPort uint32) ListenerBuilderOpt {
+func DNS(vips map[string][]string) ListenerBuilderOpt {
 	return AddListenerConfigurer(&v3.DNSConfigurer{
-		VIPs:         vips,
-		EmptyDNSPort: emptyDnsPort,
+		VIPs: vips,
 	})
 }
 
@@ -78,8 +81,7 @@ func ConnectionBufferLimit(bytes uint32) ListenerBuilderOpt {
 func EnableReusePort(enable bool) ListenerBuilderOpt {
 	return AddListenerConfigurer(
 		v3.ListenerMustConfigureFunc(func(l *envoy_listener.Listener) {
-			// TODO(jpeach) in Envoy 1.20, this field is deprecated in favor of EnableReusePort.
-			l.ReusePort = enable
+			l.EnableReusePort = &wrapperspb.BoolValue{Value: enable}
 		}))
 }
 
@@ -88,4 +90,10 @@ func EnableFreebind(enable bool) ListenerBuilderOpt {
 		v3.ListenerMustConfigureFunc(func(l *envoy_listener.Listener) {
 			l.Freebind = wrapperspb.Bool(enable)
 		}))
+}
+
+func TagsMetadata(tags map[string]string) ListenerBuilderOpt {
+	return AddListenerConfigurer(&v3.TagsMetadataConfigurer{
+		Tags: tags,
+	})
 }

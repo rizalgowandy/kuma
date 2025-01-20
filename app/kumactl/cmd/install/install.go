@@ -16,13 +16,10 @@ func NewInstallCmd(pctx *kumactl_cmd.RootContext) *cobra.Command {
 	// sub-commands
 	cmd.AddCommand(newInstallControlPlaneCmd(&pctx.InstallCpContext))
 	cmd.AddCommand(newInstallCrdsCmd(&pctx.InstallCRDContext))
-	cmd.AddCommand(newInstallMetrics(pctx))
-	cmd.AddCommand(newInstallTracing(pctx))
-	cmd.AddCommand(newInstallDNS())
-	cmd.AddCommand(newInstallLogging(pctx))
+	cmd.AddCommand(newInstallObservability(pctx))
 	cmd.AddCommand(newInstallDemoCmd(&pctx.InstallDemoContext))
-	cmd.AddCommand(newInstallGatewayCmd(pctx))
 	cmd.AddCommand(newInstallTransparentProxy())
+	cmd.AddCommand(newInstallTransparentProxyValidator())
 
 	return cmd
 }

@@ -2,6 +2,8 @@ package vips
 
 import (
 	"fmt"
+
+	"github.com/pkg/errors"
 )
 
 type EntryType int
@@ -26,7 +28,7 @@ func (t EntryType) String() string {
 }
 
 // HostnameEntry is the definition of a DNS entry. The type indicates where the entry comes from
-// (.e.g: Service is auto-generated, FullyQualifiedDomain comes from `virtual-outbound` policies...)
+// (.e.g: Service and Host are auto-generated, FullyQualifiedDomain comes from `virtual-outbound` policies...)
 type HostnameEntry struct {
 	Type EntryType `json:"type"`
 	Name string    `json:"name"`
@@ -36,13 +38,16 @@ func (e HostnameEntry) String() string {
 	return fmt.Sprintf("%s:%s", e.Type, e.Name)
 }
 
-func (e HostnameEntry) MarshalText() (text []byte, err error) {
+func (e HostnameEntry) MarshalText() ([]byte, error) {
 	return []byte(fmt.Sprintf("%d:%s", e.Type, e.Name)), nil
 }
 
 func (e *HostnameEntry) UnmarshalText(text []byte) error {
-	_, err := fmt.Sscanf(string(text), "%v:%s", &e.Type, &e.Name)
-	return err
+	if _, err := fmt.Sscanf(string(text), "%v:%s", &e.Type, &e.Name); err != nil {
+		return errors.Wrapf(err, "could not parse hostname entry: %+q", text)
+	}
+
+	return nil
 }
 
 func (e *HostnameEntry) Less(o *HostnameEntry) bool {

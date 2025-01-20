@@ -1,0 +1,56 @@
+type: object
+required: [type, name, spec]
+properties:
+  type:
+    description: 'the type of the resource'
+    type: string
+    enum:
+      - HostnameGenerator
+  name:
+    description: 'Name of the Kuma resource'
+    type: string
+  labels:
+    additionalProperties:
+      type: string
+    description: 'The labels to help identity resources'
+    type: object
+  spec:
+    description: Spec is the specification of the Kuma HostnameGenerator resource.
+    properties:
+      selector:
+        properties:
+          meshExternalService:
+            properties:
+              matchLabels:
+                additionalProperties:
+                  type: string
+                type: object
+            type: object
+          meshMultiZoneService:
+            properties:
+              matchLabels:
+                additionalProperties:
+                  type: string
+                type: object
+            type: object
+          meshService:
+            properties:
+              matchLabels:
+                additionalProperties:
+                  type: string
+                type: object
+            type: object
+        type: object
+      template:
+        type: string
+    type: object
+  creationTime:
+    type: string
+    description: 'Time at which the resource was created'
+    format: date-time
+    example: '0001-01-01T00:00:00Z'
+  modificationTime:
+    type: string
+    description: 'Time at which the resource was updated'
+    format: date-time
+    example: '0001-01-01T00:00:00Z'

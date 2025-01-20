@@ -1,8 +1,7 @@
 package clusters_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -13,7 +12,6 @@ import (
 )
 
 var _ = Describe("OutlierDetectionConfigurer", func() {
-
 	type testCase struct {
 		clusterName    string
 		circuitBreaker *core_mesh.CircuitBreakerResource
@@ -23,10 +21,10 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			cluster, err := clusters.NewClusterBuilder(envoy.APIV3).
-				Configure(clusters.EdsCluster(given.clusterName)).
+			cluster, err := clusters.NewClusterBuilder(envoy.APIV3, given.clusterName).
+				Configure(clusters.EdsCluster()).
 				Configure(clusters.OutlierDetection(given.circuitBreaker)).
-				Configure(clusters.Timeout(core_mesh.ProtocolTCP, DefaultTimeout())).
+				Configure(clusters.Timeout(DefaultTimeout(), core_mesh.ProtocolTCP)).
 				Build()
 
 			// then
@@ -37,6 +35,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("CircuitBreaker with TotalError detector, default values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -52,6 +51,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               enforcingConsecutive5xx: 100
               enforcingConsecutiveGatewayFailure: 0
@@ -61,6 +61,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
             type: EDS`,
 		}),
 		Entry("CircuitBreaker with GatewayError detector, default values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -76,6 +77,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               enforcingConsecutive5xx: 0
               enforcingConsecutiveGatewayFailure: 100
@@ -85,6 +87,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
             type: EDS`,
 		}),
 		Entry("CircuitBreaker with LocalError detector, default values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -100,6 +103,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               enforcingConsecutive5xx: 0
               enforcingConsecutiveGatewayFailure: 0
@@ -109,6 +113,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
             type: EDS`,
 		}),
 		Entry("CircuitBreaker with all error detectors, custom values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -126,6 +131,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               consecutive5xx: 21
               consecutiveGatewayFailure: 11
@@ -138,6 +144,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
             type: EDS`,
 		}),
 		Entry("CircuitBreaker with StandardDeviation detector, default values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -153,6 +160,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               enforcingConsecutive5xx: 0
               enforcingConsecutiveGatewayFailure: 0
@@ -163,6 +171,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
             type: EDS`,
 		}),
 		Entry("CircuitBreaker with StandardDeviation detector, custom values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -182,6 +191,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               enforcingConsecutive5xx: 0
               enforcingConsecutiveGatewayFailure: 0
@@ -195,6 +205,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
             type: EDS`,
 		}),
 		Entry("CircuitBreaker with Failure detector, default values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -210,6 +221,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               enforcingConsecutive5xx: 0
               enforcingConsecutiveGatewayFailure: 0
@@ -220,6 +232,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
             type: EDS`,
 		}),
 		Entry("CircuitBreaker with Failure detector, custom values", testCase{
+			clusterName: "backend",
 			circuitBreaker: &core_mesh.CircuitBreakerResource{
 				Spec: &mesh_proto.CircuitBreaker{
 					Conf: &mesh_proto.CircuitBreaker_Conf{
@@ -239,6 +252,7 @@ var _ = Describe("OutlierDetectionConfigurer", func() {
               edsConfig:
                 ads: {}
                 resourceApiVersion: V3
+            name: backend
             outlierDetection:
               enforcingConsecutive5xx: 0
               enforcingConsecutiveGatewayFailure: 0

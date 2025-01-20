@@ -1,8 +1,7 @@
 package generator_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -16,9 +15,7 @@ import (
 )
 
 var _ = Describe("ProxyTemplateRawSource", func() {
-
 	Context("Manually-defined xDS resources are not valid", func() {
-
 		type testCase struct {
 			proxy *model.Proxy
 			raw   []*mesh_proto.ProxyTemplateRawResource
@@ -213,7 +210,6 @@ var _ = Describe("ProxyTemplateRawSource", func() {
 	})
 
 	Context("Manually-defined xDS resources are valid", func() {
-
 		type testCase struct {
 			proxy    *model.Proxy
 			raw      []*mesh_proto.ProxyTemplateRawResource

@@ -3,8 +3,7 @@ package mesh_test
 import (
 	"net"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -15,9 +14,7 @@ import (
 )
 
 var _ = Describe("Dataplane", func() {
-
 	Describe("UsesInterface()", func() {
-
 		type testCase struct {
 			dataplane string
 			address   string
@@ -116,7 +113,7 @@ var _ = Describe("Dataplane", func() {
                   - port: 59200
                     service: elastic
 `,
-				address:  "127.0.0.1",
+				address:  "192.168.0.1",
 				port:     8080,
 				expected: true,
 			}),
@@ -250,8 +247,7 @@ var _ = Describe("Dataplane", func() {
 		})
 	})
 
-	Describe("GetPrometheusEndpoint()", func() {
-
+	Describe("GetPrometheusConfig()", func() {
 		type testCase struct {
 			dataplaneName string
 			dataplaneMesh string
@@ -289,7 +285,7 @@ var _ = Describe("Dataplane", func() {
 				}
 
 				// then
-				endpoint, err := dataplane.GetPrometheusEndpoint(mesh)
+				endpoint, err := dataplane.GetPrometheusConfig(mesh)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(endpoint).To(MatchProto(given.expected))
 			},
@@ -381,11 +377,53 @@ var _ = Describe("Dataplane", func() {
 					Path: "/even-more-non-standard-path",
 				},
 			}),
+			Entry("dataplane.mesh == mesh && dataplane.metrics.prometheus.conf.aggregate != nil && mesh.metrics.prometheus.conf.aggregate != nil", testCase{
+				dataplaneName: "backend-01",
+				dataplaneMesh: "demo",
+				dataplaneSpec: `
+                metrics:
+                  type: prometheus
+                  conf:
+                    port: 8765
+                    path: /even-more-non-standard-path
+                    aggregate:
+                    - name: app1
+                      port: 123
+                      path: "/stats"
+                      enabled: false
+`,
+				meshName: "demo",
+				meshSpec: `
+                metrics:
+                  enabledBackend: prometheus-1
+                  backends:
+                  - name: prometheus-1
+                    type: prometheus
+                    conf:
+                      port: 1234
+                      path: /non-standard-path
+                      aggregate:
+                      - name: app1
+                        port: 12345
+                        path: "/disabled"
+`,
+				expected: &mesh_proto.PrometheusMetricsBackendConfig{
+					Port: 8765,
+					Path: "/even-more-non-standard-path",
+					Aggregate: []*mesh_proto.PrometheusAggregateMetricsConfig{
+						{
+							Name:    "app1",
+							Port:    123,
+							Path:    "/stats",
+							Enabled: util_proto.Bool(false),
+						},
+					},
+				},
+			}),
 		)
 	})
 
 	Describe("GetIP()", func() {
-
 		type testCase struct {
 			dataplane string
 			expected  string
@@ -442,7 +480,6 @@ var _ = Describe("Dataplane", func() {
 	})
 
 	Describe("IsIPv6()", func() {
-
 		type testCase struct {
 			dataplane string
 			expected  bool
@@ -510,54 +547,132 @@ var _ = Describe("Dataplane", func() {
 		)
 	})
 
-})
+	Describe("IsUsingTransparentProxy()", func() {
+		type testCase struct {
+			dataplane string
+			expected  bool
+		}
 
-var _ = Describe("ParseProtocol()", func() {
+		DescribeTable("should correctly determine if dataplane is using transparent proxy",
+			func(given testCase) {
+				// given
+				var dataplane *DataplaneResource
+				if given.dataplane != "" {
+					dataplane = NewDataplaneResource()
+					Expect(util_proto.FromYAML([]byte(given.dataplane), dataplane.Spec)).To(Succeed())
+				}
 
-	type testCase struct {
-		tag      string
-		expected Protocol
-	}
+				// expect
+				Expect(dataplane.IsUsingTransparentProxy()).To(Equal(given.expected))
+			},
+			Entry("`nil` dataplane", testCase{
+				dataplane: ``,
+				expected:  false,
+			}),
+			Entry("dataplane without transparent proxy", testCase{
+				dataplane: `
+                networking: {}
+`,
+				expected: false,
+			}),
+			Entry("dataplane with empty transparent proxy", testCase{
+				dataplane: `
+                networking:
+                  transparent_proxying: {}
+`,
+				expected: false,
+			}),
+			Entry("dataplane with DualStack transparent proxy configured", testCase{
+				dataplane: `
+                networking:
+                  address: fd00::123
+                  transparent_proxying:
+                    ipFamilyMode: DualStack
+                    redirect_port_inbound: 123
+                    redirect_port_outbound: 1234
+`,
+				expected: true,
+			}),
+			Entry("dataplane with IPv4 transparent proxy configured", testCase{
+				dataplane: `
+                networking:
+                  address: 10.244.16.28
+                  transparent_proxying:
+                    ipFamilyMode: IPv4
+                    redirect_port_inbound: 123
+                    redirect_port_outbound: 1234
+`,
+				expected: true,
+			}),
+			Entry("old dataplane with transparent proxy configured and ipv4 address", testCase{
+				dataplane: `
+                networking:
+                  address: 10.244.16.28
+                  transparent_proxying:
+                    redirect_port_inbound: 123
+                    redirect_port_outbound: 1234
+`,
+				expected: true,
+			}),
+			Entry("old dataplane with transparent proxy configured and ipv6 address", testCase{
+				dataplane: `
+                networking:
+                  address: fd00::123
+                  transparent_proxying:
+                    redirect_port_inbound: 123
+                    redirect_port_outbound: 1234
+`,
+				expected: true,
+			}),
+		)
+	})
 
-	DescribeTable("should parse protocol from a tag",
-		func(given testCase) {
-			Expect(ParseProtocol(given.tag)).To(Equal(given.expected))
-		},
-		Entry("http", testCase{
-			tag:      "http",
-			expected: ProtocolHTTP,
-		}),
-		Entry("tcp", testCase{
-			tag:      "tcp",
-			expected: ProtocolTCP,
-		}),
-		Entry("http2", testCase{
-			tag:      "http2",
-			expected: ProtocolHTTP2,
-		}),
-		Entry("grpc", testCase{
-			tag:      "grpc",
-			expected: ProtocolGRPC,
-		}),
-		Entry("kafka", testCase{
-			tag:      "kafka",
-			expected: ProtocolKafka,
-		}),
-		Entry("mongo", testCase{
-			tag:      "mongo",
-			expected: ProtocolUnknown,
-		}),
-		Entry("mysql", testCase{
-			tag:      "mysql",
-			expected: ProtocolUnknown,
-		}),
-		Entry("unknown", testCase{
-			tag:      "unknown",
-			expected: ProtocolUnknown,
-		}),
-		Entry("empty", testCase{
-			tag:      "",
-			expected: ProtocolUnknown,
-		}),
-	)
+	_ = Describe("ParseProtocol()", func() {
+		type testCase struct {
+			tag      string
+			expected Protocol
+		}
+
+		DescribeTable("should parse protocol from a tag",
+			func(given testCase) {
+				Expect(ParseProtocol(given.tag)).To(Equal(given.expected))
+			},
+			Entry("http", testCase{
+				tag:      "http",
+				expected: ProtocolHTTP,
+			}),
+			Entry("tcp", testCase{
+				tag:      "tcp",
+				expected: ProtocolTCP,
+			}),
+			Entry("http2", testCase{
+				tag:      "http2",
+				expected: ProtocolHTTP2,
+			}),
+			Entry("grpc", testCase{
+				tag:      "grpc",
+				expected: ProtocolGRPC,
+			}),
+			Entry("kafka", testCase{
+				tag:      "kafka",
+				expected: ProtocolKafka,
+			}),
+			Entry("mongo", testCase{
+				tag:      "mongo",
+				expected: ProtocolUnknown,
+			}),
+			Entry("mysql", testCase{
+				tag:      "mysql",
+				expected: ProtocolUnknown,
+			}),
+			Entry("unknown", testCase{
+				tag:      "unknown",
+				expected: ProtocolUnknown,
+			}),
+			Entry("empty", testCase{
+				tag:      "",
+				expected: ProtocolUnknown,
+			}),
+		)
+	})
 })

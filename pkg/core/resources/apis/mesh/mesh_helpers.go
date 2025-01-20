@@ -7,7 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
+	"github.com/kumahq/kuma/pkg/plugins/ca/provided/config"
+	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
 func (m *MeshResource) HasPrometheusMetricsEnabled() bool {
@@ -31,6 +35,28 @@ func (m *MeshResource) MTLSEnabled() bool {
 	return m != nil && m.Spec.GetMtls().GetEnabledBackend() != ""
 }
 
+// ZoneEgress works only when mTLS is enabled.
+// Configuration of mTLS is validated on Mesh configuration
+// change and when zoneEgress is enabled.
+func (m *MeshResource) ZoneEgressEnabled() bool {
+	return m != nil && m.Spec.GetRouting().GetZoneEgress()
+}
+
+func (m *MeshResource) LocalityAwareLbEnabled() bool {
+	return m != nil && m.Spec.GetRouting().GetLocalityAwareLoadBalancing()
+}
+
+func (m *MeshResource) GetLoggingBackend(name string) *mesh_proto.LoggingBackend {
+	backends := map[string]*mesh_proto.LoggingBackend{}
+	for _, backend := range m.Spec.GetLogging().GetBackends() {
+		backends[backend.Name] = backend
+	}
+	if name == "" {
+		return backends[m.Spec.GetLogging().GetDefaultBackend()]
+	}
+	return backends[name]
+}
+
 func (m *MeshResource) GetTracingBackend(name string) *mesh_proto.TracingBackend {
 	backends := map[string]*mesh_proto.TracingBackend{}
 	for _, backend := range m.Spec.GetTracing().GetBackends() {
@@ -47,7 +73,8 @@ func (m *MeshResource) GetTracingBackend(name string) *mesh_proto.TracingBackend
 func (m *MeshResource) GetLoggingBackends() string {
 	var backends []string
 	for _, backend := range m.Spec.GetLogging().GetBackends() {
-		backends = append(backends, backend.GetName())
+		backend := fmt.Sprintf("%s/%s", backend.GetType(), backend.GetName())
+		backends = append(backends, backend)
 	}
 	return strings.Join(backends, ", ")
 }
@@ -57,7 +84,8 @@ func (m *MeshResource) GetLoggingBackends() string {
 func (m *MeshResource) GetTracingBackends() string {
 	var backends []string
 	for _, backend := range m.Spec.GetTracing().GetBackends() {
-		backends = append(backends, backend.GetName())
+		backend := fmt.Sprintf("%s/%s", backend.GetType(), backend.GetName())
+		backends = append(backends, backend)
 	}
 	return strings.Join(backends, ", ")
 }
@@ -110,4 +138,47 @@ func ParseDuration(durationStr string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid time unit in duration string: %q", unit)
 	}
 	return dur, nil
+}
+
+func (ml *MeshResourceList) MarshalLog() interface{} {
+	maskedList := make([]*MeshResource, 0, len(ml.Items))
+	for _, mesh := range ml.Items {
+		maskedList = append(maskedList, mesh.MarshalLog().(*MeshResource))
+	}
+	return MeshResourceList{
+		Items:      maskedList,
+		Pagination: ml.Pagination,
+	}
+}
+
+func (m *MeshResource) MarshalLog() interface{} {
+	spec := proto.Clone(m.Spec).(*mesh_proto.Mesh)
+	if spec == nil {
+		return m
+	}
+	mtls := spec.Mtls
+	if mtls == nil {
+		return m
+	}
+	for _, backend := range mtls.Backends {
+		conf := backend.Conf
+		if conf == nil {
+			continue
+		}
+		cfg := &config.ProvidedCertificateAuthorityConfig{}
+		err := util_proto.ToTyped(conf, cfg)
+		if err != nil {
+			continue
+		}
+		cfg.Key = cfg.Key.MaskInlineDatasource()
+		cfg.Cert = cfg.Cert.MaskInlineDatasource()
+		backend.Conf, err = util_proto.ToStruct(cfg)
+		if err != nil {
+			continue
+		}
+	}
+	return &MeshResource{
+		Meta: m.Meta,
+		Spec: spec,
+	}
 }

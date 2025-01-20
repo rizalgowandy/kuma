@@ -4,35 +4,37 @@ import (
 	"context"
 	"net/http"
 
-	"k8s.io/api/admission/v1"
+	v1 "k8s.io/api/admission/v1"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	managers_mesh "github.com/kumahq/kuma/pkg/core/managers/apis/mesh"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
-	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	"github.com/kumahq/kuma/pkg/core/validators"
 	k8s_common "github.com/kumahq/kuma/pkg/plugins/common/k8s"
 	mesh_k8s "github.com/kumahq/kuma/pkg/plugins/resources/k8s/native/api/v1alpha1"
 )
 
-func NewMeshValidatorWebhook(validator managers_mesh.MeshValidator, converter k8s_common.Converter, resourceManager manager.ResourceManager) k8s_common.AdmissionValidator {
+func NewMeshValidatorWebhook(
+	validator managers_mesh.MeshValidator,
+	converter k8s_common.Converter,
+	unsafeDelete bool,
+) k8s_common.AdmissionValidator {
 	return &MeshValidator{
-		validator:       validator,
-		converter:       converter,
-		resourceManager: resourceManager,
+		validator:    validator,
+		converter:    converter,
+		unsafeDelete: unsafeDelete,
 	}
 }
 
 type MeshValidator struct {
-	validator       managers_mesh.MeshValidator
-	converter       k8s_common.Converter
-	decoder         *admission.Decoder
-	resourceManager manager.ResourceManager
+	validator    managers_mesh.MeshValidator
+	converter    k8s_common.Converter
+	decoder      admission.Decoder
+	unsafeDelete bool
 }
 
-func (h *MeshValidator) InjectDecoder(d *admission.Decoder) error {
+func (h *MeshValidator) InjectDecoder(d admission.Decoder) {
 	h.decoder = d
-	return nil
 }
 
 func (h *MeshValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
@@ -48,8 +50,10 @@ func (h *MeshValidator) Handle(ctx context.Context, req admission.Request) admis
 }
 
 func (h *MeshValidator) ValidateDelete(ctx context.Context, req admission.Request) admission.Response {
-	if err := h.validator.ValidateDelete(ctx, req.Name); err != nil {
-		return admission.Errored(http.StatusBadRequest, err)
+	if !h.unsafeDelete {
+		if err := h.validator.ValidateDelete(ctx, req.Name); err != nil {
+			return admission.Errored(http.StatusBadRequest, err)
+		}
 	}
 	return admission.Allowed("")
 }
@@ -65,7 +69,7 @@ func (h *MeshValidator) ValidateCreate(ctx context.Context, req admission.Reques
 	}
 	if err := h.validator.ValidateCreate(ctx, req.Name, coreRes); err != nil {
 		if kumaErr, ok := err.(*validators.ValidationError); ok {
-			return convertSpecValidationError(kumaErr, k8sRes)
+			return convertSpecValidationError(kumaErr, false, k8sRes)
 		}
 		return admission.Denied(err.Error())
 	}
@@ -93,7 +97,7 @@ func (h *MeshValidator) ValidateUpdate(ctx context.Context, req admission.Reques
 
 	if err := h.validator.ValidateUpdate(ctx, oldCoreRes, coreRes); err != nil {
 		if kumaErr, ok := err.(*validators.ValidationError); ok {
-			return convertSpecValidationError(kumaErr, k8sRes)
+			return convertSpecValidationError(kumaErr, false, k8sRes)
 		}
 		return admission.Denied(err.Error())
 	}

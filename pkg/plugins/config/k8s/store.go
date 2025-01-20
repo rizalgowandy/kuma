@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/pkg/errors"
@@ -12,11 +13,13 @@ import (
 	kube_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/kumahq/kuma/api/mesh/v1alpha1"
 	system_proto "github.com/kumahq/kuma/api/system/v1alpha1"
 	config_model "github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	common_k8s "github.com/kumahq/kuma/pkg/plugins/common/k8s"
+	"github.com/kumahq/kuma/pkg/plugins/resources/k8s"
 )
 
 var _ core_store.ResourceStore = &KubernetesStore{}
@@ -62,6 +65,11 @@ func (s *KubernetesStore) Create(ctx context.Context, r core_model.Resource, fs 
 			configMapKey: configRes.Spec.Config,
 		},
 	}
+
+	labels, annotations := k8s.SplitLabelsAndAnnotations(opts.Labels, cm.GetAnnotations())
+	cm.GetObjectMeta().SetLabels(labels)
+	cm.GetObjectMeta().SetAnnotations(annotations)
+
 	if opts.Owner != nil {
 		k8sOwner, err := s.converter.ToKubernetesObject(opts.Owner)
 		if err != nil {
@@ -77,11 +85,13 @@ func (s *KubernetesStore) Create(ctx context.Context, r core_model.Resource, fs 
 	r.SetMeta(&KubernetesMetaAdapter{cm.ObjectMeta})
 	return nil
 }
+
 func (s *KubernetesStore) Update(ctx context.Context, r core_model.Resource, fs ...core_store.UpdateOptionsFunc) error {
 	configRes, ok := r.(*config_model.ConfigResource)
 	if !ok {
 		return newInvalidTypeError()
 	}
+	opts := core_store.NewUpdateOptions(fs...)
 	cm := &kube_core.ConfigMap{
 		TypeMeta: kube_meta.TypeMeta{
 			Kind:       "ConfigMap",
@@ -93,6 +103,16 @@ func (s *KubernetesStore) Update(ctx context.Context, r core_model.Resource, fs 
 			configMapKey: configRes.Spec.Config,
 		},
 	}
+
+	updateLabels := cm.GetLabels()
+	if opts.ModifyLabels {
+		updateLabels = opts.Labels
+	}
+
+	labels, annotations := k8s.SplitLabelsAndAnnotations(updateLabels, cm.GetAnnotations())
+	cm.GetObjectMeta().SetLabels(labels)
+	cm.GetObjectMeta().SetAnnotations(annotations)
+
 	if err := s.client.Update(ctx, cm); err != nil {
 		if kube_apierrs.IsConflict(err) {
 			return core_store.ErrorResourceConflict(r.Descriptor().Name, r.GetMeta().GetName(), r.GetMeta().GetMesh())
@@ -102,6 +122,7 @@ func (s *KubernetesStore) Update(ctx context.Context, r core_model.Resource, fs 
 	r.SetMeta(&KubernetesMetaAdapter{cm.ObjectMeta})
 	return nil
 }
+
 func (s *KubernetesStore) Delete(ctx context.Context, r core_model.Resource, fs ...core_store.DeleteOptionsFunc) error {
 	configRes, ok := r.(*config_model.ConfigResource)
 	if !ok {
@@ -124,6 +145,7 @@ func (s *KubernetesStore) Delete(ctx context.Context, r core_model.Resource, fs 
 	}
 	return s.client.Delete(ctx, cm)
 }
+
 func (s *KubernetesStore) Get(ctx context.Context, r core_model.Resource, fs ...core_store.GetOptionsFunc) error {
 	configRes, ok := r.(*config_model.ConfigResource)
 	if !ok {
@@ -141,6 +163,7 @@ func (s *KubernetesStore) Get(ctx context.Context, r core_model.Resource, fs ...
 	r.SetMeta(&KubernetesMetaAdapter{cm.ObjectMeta})
 	return nil
 }
+
 func (s *KubernetesStore) List(ctx context.Context, rs core_model.ResourceList, fs ...core_store.ListOptionsFunc) error {
 	configRes, ok := rs.(*config_model.ConfigResourceList)
 	if !ok {
@@ -186,6 +209,19 @@ func (m *KubernetesMetaAdapter) GetCreationTime() time.Time {
 
 func (m *KubernetesMetaAdapter) GetModificationTime() time.Time {
 	return m.GetObjectMeta().GetCreationTimestamp().Time
+}
+
+func (m *KubernetesMetaAdapter) GetLabels() map[string]string {
+	labels := maps.Clone(m.GetObjectMeta().GetLabels())
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	if displayName, ok := m.GetObjectMeta().GetAnnotations()[v1alpha1.DisplayName]; ok {
+		labels[v1alpha1.DisplayName] = displayName
+	} else {
+		labels[v1alpha1.DisplayName] = m.GetObjectMeta().GetName()
+	}
+	return labels
 }
 
 func newInvalidTypeError() error {

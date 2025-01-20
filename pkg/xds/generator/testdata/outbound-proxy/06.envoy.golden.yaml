@@ -1,11 +1,10 @@
 resources:
-- name: es2-_0_
+- name: es2-ff6df687ce12e5f4
   resource:
     '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
-    connectTimeout: 10s
-    dnsLookupFamily: V4_ONLY
+    connectTimeout: 100s
     loadAssignment:
-      clusterName: es2-_0_
+      clusterName: es2-ff6df687ce12e5f4
       endpoints:
       - lbEndpoints:
         - endpoint:
@@ -20,13 +19,13 @@ resources:
                 kuma.io/protocol: http2
               envoy.transport_socket_match:
                 kuma.io/protocol: http2
-    name: es2-_0_
-    type: STRICT_DNS
+    name: es2-ff6df687ce12e5f4
+    type: STATIC
     typedExtensionProtocolOptions:
       envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
         '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
         commonHttpProtocolOptions:
-          idleTimeout: 0s
+          idleTimeout: 103s
         explicitHttpConfig:
           http2ProtocolOptions: {}
 - name: outbound:127.0.0.1:18082
@@ -42,8 +41,12 @@ resources:
       - name: envoy.filters.network.http_connection_manager
         typedConfig:
           '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          commonHttpProtocolOptions:
+            idleTimeout: 103s
           httpFilters:
           - name: envoy.filters.http.router
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           routeConfig:
             name: outbound:es2
             requestHeadersToAdd:
@@ -60,7 +63,13 @@ resources:
                   prefix: /
                 route:
                   autoHostRewrite: true
-                  cluster: es2-_0_
+                  cluster: es2-ff6df687ce12e5f4
+                  timeout: 102s
           statPrefix: es2
+          streamIdleTimeout: 0s
+    metadata:
+      filterMetadata:
+        io.kuma.tags:
+          kuma.io/service: es2
     name: outbound:127.0.0.1:18082
     trafficDirection: OUTBOUND

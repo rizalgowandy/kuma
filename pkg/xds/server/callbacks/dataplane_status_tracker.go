@@ -2,9 +2,10 @@ package callbacks
 
 import (
 	"context"
+	"strings"
 	"sync"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core"
@@ -64,11 +65,12 @@ func (c *dataplaneStatusTracker) OnStreamOpen(ctx context.Context, streamID int6
 	defer c.mu.Unlock()
 
 	// initialize subscription
+	now := core.Now()
 	subscription := &mesh_proto.DiscoverySubscription{
 		Id:                     core.NewUUID(),
 		ControlPlaneInstanceId: c.runtimeInfo.GetInstanceId(),
-		ConnectTime:            util_proto.MustTimestampProto(core.Now()),
-		Status:                 mesh_proto.NewSubscriptionStatus(),
+		ConnectTime:            util_proto.MustTimestampProto(now),
+		Status:                 mesh_proto.NewSubscriptionStatus(now),
 		Version:                mesh_proto.NewVersion(),
 	}
 	// initialize state per ADS stream
@@ -79,7 +81,7 @@ func (c *dataplaneStatusTracker) OnStreamOpen(ctx context.Context, streamID int6
 	// save
 	c.streams[streamID] = state
 
-	statusTrackerLog.V(1).Info("OnStreamOpen", "context", ctx, "streamid", streamID, "type", typ, "subscription", subscription)
+	statusTrackerLog.V(1).Info("proxy connecting", "streamID", streamID, "type", typ, "subscriptionID", subscription.Id)
 	return nil
 }
 
@@ -89,6 +91,10 @@ func (c *dataplaneStatusTracker) OnStreamClosed(streamID int64) {
 	defer c.mu.Unlock()
 
 	state := c.streams[streamID]
+	if state == nil {
+		statusTrackerLog.Info("[WARNING] proxy disconnected but no state in the status_tracker", "streamID", streamID)
+		return
+	}
 
 	delete(c.streams, streamID)
 
@@ -101,7 +107,18 @@ func (c *dataplaneStatusTracker) OnStreamClosed(streamID int64) {
 	// trigger final flush
 	state.Close()
 
-	statusTrackerLog.V(1).Info("OnStreamClosed", "streamid", streamID, "subscription", subscription)
+	log := statusTrackerLog.WithValues(
+		"streamID", streamID,
+		"proxyName", state.dataplaneId.Name,
+		"mesh", state.dataplaneId.Mesh,
+		"subscriptionID", state.subscription.Id,
+	)
+
+	if statusTrackerLog.V(1).Enabled() {
+		log = log.WithValues("subscription", subscription)
+	}
+
+	log.Info("proxy disconnected")
 }
 
 // OnStreamRequest is called once a request is received on a stream.
@@ -116,24 +133,39 @@ func (c *dataplaneStatusTracker) OnStreamRequest(streamID int64, req util_xds.Di
 	defer state.mu.Unlock()
 
 	if state.dataplaneId == (core_model.ResourceKey{}) {
-		var dpType core_model.ResourceType
-		md := core_xds.DataplaneMetadataFromXdsMetadata(req.Metadata())
-
-		// If the dataplane was started with a resource YAML, then it
-		// will be serialized in the node metadata and we would know
-		// the underlying type directly. Since that is optional, we
-		// can't depend on it here, so we map from the proxy type,
-		// which is guaranteed.
-		switch md.GetProxyType() {
-		case mesh_proto.IngressProxyType:
-			dpType = core_mesh.ZoneIngressType
-		case mesh_proto.DataplaneProxyType:
-			dpType = core_mesh.DataplaneType
-		}
-
 		// Infer the Dataplane ID.
 		if proxyId, err := core_xds.ParseProxyIdFromString(req.NodeId()); err == nil {
 			state.dataplaneId = proxyId.ToResourceKey()
+			var dpType core_model.ResourceType
+			md := core_xds.DataplaneMetadataFromXdsMetadata(req.Metadata())
+
+			// If the dataplane was started with a resource YAML, then it
+			// will be serialized in the node metadata and we would know
+			// the underlying type directly. Since that is optional, we
+			// can't depend on it here, so we map from the proxy type,
+			// which is guaranteed.
+			switch md.GetProxyType() {
+			case mesh_proto.IngressProxyType:
+				dpType = core_mesh.ZoneIngressType
+			case mesh_proto.DataplaneProxyType:
+				dpType = core_mesh.DataplaneType
+			case mesh_proto.EgressProxyType:
+				dpType = core_mesh.ZoneEgressType
+			}
+
+			log := statusTrackerLog.WithValues(
+				"proxyName", state.dataplaneId.Name,
+				"mesh", state.dataplaneId.Mesh,
+				"streamID", streamID,
+				"type", md.GetProxyType(),
+				"dpVersion", md.GetVersion().GetKumaDp().GetVersion(),
+				"subscriptionID", state.subscription.Id,
+			)
+			if statusTrackerLog.V(1).Enabled() {
+				log = log.WithValues("node", req.Node())
+			}
+			log.Info("proxy connected")
+
 			if md.GetVersion() != nil {
 				state.subscription.Version = md.GetVersion()
 			} else {
@@ -146,20 +178,40 @@ func (c *dataplaneStatusTracker) OnStreamRequest(streamID int64, req util_xds.Di
 		}
 	}
 
-	// update Dataplane status
 	subscription := state.subscription
+	log := statusTrackerLog.WithValues(
+		"proxyName", state.dataplaneId.Name,
+		"mesh", state.dataplaneId.Mesh,
+		"streamID", streamID,
+		"type", shortEnvoyType(req.GetTypeUrl()),
+		"resourceVersion", req.VersionInfo(),
+	)
+	if statusTrackerLog.V(1).Enabled() {
+		log = log.WithValues(
+			"resourceNames", req.GetResourceNames(),
+			"subscriptionID", subscription.Id,
+			"nonce", req.GetResponseNonce(),
+		)
+	}
+
+	// update Dataplane status
 	if req.GetResponseNonce() != "" {
 		subscription.Status.LastUpdateTime = util_proto.MustTimestampProto(core.Now())
 		if req.HasErrors() {
+			log.Info("config rejected")
 			subscription.Status.Total.ResponsesRejected++
 			subscription.Status.StatsOf(req.GetTypeUrl()).ResponsesRejected++
 		} else {
+			log.V(1).Info("config accepted")
 			subscription.Status.Total.ResponsesAcknowledged++
 			subscription.Status.StatsOf(req.GetTypeUrl()).ResponsesAcknowledged++
 		}
+	} else {
+		if !statusTrackerLog.V(1).Enabled() { // it was already added, no need to add it twice
+			log = log.WithValues("resourceNames", req.GetResourceNames())
+		}
+		log.Info("config requested")
 	}
-
-	statusTrackerLog.V(1).Info("OnStreamRequest", "streamid", streamID, "request", req, "subscription", subscription)
 	return nil
 }
 
@@ -179,7 +231,32 @@ func (c *dataplaneStatusTracker) OnStreamResponse(streamID int64, req util_xds.D
 	subscription.Status.Total.ResponsesSent++
 	subscription.Status.StatsOf(resp.GetTypeUrl()).ResponsesSent++
 
-	statusTrackerLog.V(1).Info("OnStreamResponse", "streamid", streamID, "request", req, "response", resp, "subscription", subscription)
+	log := statusTrackerLog.WithValues(
+		"proxyName", state.dataplaneId.Name,
+		"mesh", state.dataplaneId.Mesh,
+		"streamID", streamID,
+		"type", shortEnvoyType(req.GetTypeUrl()),
+		"resourceVersion", resp.VersionInfo(),
+		"requestedResourceNames", req.GetResourceNames(),
+		"resourceCount", len(resp.GetResources()),
+	)
+	if statusTrackerLog.V(1).Enabled() {
+		log = log.WithValues(
+			"subscriptionID", subscription.Id,
+			"nonce", resp.GetNonce(),
+		)
+	}
+
+	log.V(1).Info("config sent")
+}
+
+// To keep logs short, we want to log "Listeners" instead of full qualified Envoy type url name
+func shortEnvoyType(typeURL string) string {
+	segments := strings.Split(typeURL, ".")
+	if len(segments) <= 1 {
+		return typeURL
+	}
+	return segments[len(segments)-1]
 }
 
 func (c *dataplaneStatusTracker) GetStatusAccessor(streamID int64) (SubscriptionStatusAccessor, bool) {

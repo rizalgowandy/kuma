@@ -3,7 +3,7 @@ resources:
   resource:
     '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
     altStatName: kuma_metrics_hijacker
-    connectTimeout: 10s
+    connectTimeout: 5s
     loadAssignment:
       clusterName: kuma:metrics:hijacker
       endpoints:
@@ -21,6 +21,7 @@ resources:
       socketAddress:
         address: 192.168.0.1
         portValue: 8765
+    enableReusePort: false
     filterChains:
     - filters:
       - name: envoy.filters.network.http_connection_manager
@@ -28,6 +29,8 @@ resources:
           '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           httpFilters:
           - name: envoy.filters.http.router
+            typedConfig:
+              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           routeConfig:
             validateClusters: false
             virtualHosts:
@@ -39,7 +42,7 @@ resources:
                   prefix: /even-more-non-standard-path
                 route:
                   cluster: kuma:metrics:hijacker
-                  prefixRewrite: /
+                  prefixRewrite: /?filter=123.*&usedonly
           statPrefix: kuma_metrics_prometheus
     name: kuma:metrics:prometheus
     trafficDirection: INBOUND

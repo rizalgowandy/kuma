@@ -1,8 +1,7 @@
 package mesh_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	. "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
@@ -10,9 +9,7 @@ import (
 )
 
 var _ = Describe("MeshResource", func() {
-
 	Describe("Default()", func() {
-
 		type testCase struct {
 			input    string
 			expected string
@@ -55,6 +52,7 @@ var _ = Describe("MeshResource", func() {
                       path: /metrics
                       tags:
                         kuma.io/service: dataplane-metrics
+                      tls: {}
 `,
 			}),
 			Entry("when defaults are set", testCase{
@@ -69,7 +67,8 @@ var _ = Describe("MeshResource", func() {
                       port: 1234
                       tags:
                         kuma.io/service: dataplane-metrics
-                      skipMTLS: true
+                      tls:
+                        mode: activeMTLSBackend
 `,
 				expected: `
                 metrics:
@@ -82,7 +81,37 @@ var _ = Describe("MeshResource", func() {
                       port: 1234
                       tags:
                         kuma.io/service: dataplane-metrics
+                      tls: {}
+`,
+			}),
+			Entry("when skipMTLS is set should translate to tls", testCase{
+				input: `
+                metrics:
+                  enabledBackend: prometheus-1
+                  backends:
+                  - name: prometheus-1
+                    type: prometheus
+                    conf:
+                      path: /non-standard-path
+                      port: 1234
+                      tags:
+                        kuma.io/service: dataplane-metrics
                       skipMTLS: true
+`,
+				expected: `
+                metrics:
+                  enabledBackend: prometheus-1
+                  backends:
+                  - name: prometheus-1
+                    type: prometheus
+                    conf:
+                      path: /non-standard-path
+                      port: 1234
+                      skipMTLS: true
+                      tags:
+                        kuma.io/service: dataplane-metrics
+                      tls:
+                        mode: disabled
 `,
 			}),
 		)
@@ -95,6 +124,36 @@ var _ = Describe("MeshResource", func() {
 `,
 				expected: `
                 metrics: {}
+`,
+			}),
+			Entry("when mode is set", testCase{
+				input: `
+                metrics:
+                  enabledBackend: prometheus-1
+                  backends:
+                  - name: prometheus-1
+                    type: prometheus
+                    conf:
+                      path: /non-standard-path
+                      port: 1234
+                      tags:
+                        kuma.io/service: dataplane-metrics
+                      tls:
+                        mode: providedTLS
+`,
+				expected: `
+                metrics:
+                  enabledBackend: prometheus-1
+                  backends:
+                  - name: prometheus-1
+                    type: prometheus
+                    conf:
+                      path: /non-standard-path
+                      port: 1234
+                      tags:
+                        kuma.io/service: dataplane-metrics
+                      tls:
+                        mode: providedTLS
 `,
 			}),
 		)

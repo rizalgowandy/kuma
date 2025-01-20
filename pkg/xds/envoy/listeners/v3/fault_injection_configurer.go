@@ -9,13 +9,13 @@ import (
 	envoy_type_matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
+	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/util/proto"
-	envoy_routes "github.com/kumahq/kuma/pkg/xds/envoy/routes/v3"
 	"github.com/kumahq/kuma/pkg/xds/envoy/tags"
 )
 
 type FaultInjectionConfigurer struct {
-	FaultInjections []*mesh_proto.FaultInjection
+	FaultInjections []*core_mesh.FaultInjectionResource
 }
 
 func (f *FaultInjectionConfigurer) Configure(filterChain *envoy_listener.FilterChain) error {
@@ -26,14 +26,14 @@ func (f *FaultInjectionConfigurer) Configure(filterChain *envoy_listener.FilterC
 	// specific source matches come first.
 	for _, fi := range f.FaultInjections {
 		config := &envoy_http_fault.HTTPFault{
-			Delay: convertDelay(fi.Conf.GetDelay()),
-			Abort: convertAbort(fi.Conf.GetAbort()),
+			Delay: convertDelay(fi.Spec.Conf.GetDelay()),
+			Abort: convertAbort(fi.Spec.Conf.GetAbort()),
 			Headers: []*envoy_route.HeaderMatcher{
-				createHeaders(fi.SourceTags()),
+				createHeaders(fi.Spec.SourceTags()),
 			},
 		}
 
-		rrl, err := convertResponseRateLimit(fi.Conf.GetResponseBandwidth())
+		rrl, err := convertResponseRateLimit(fi.Spec.Conf.GetResponseBandwidth())
 		if err != nil {
 			return err
 		}
@@ -69,12 +69,9 @@ func createHeaders(selectors []mesh_proto.SingleValueTagSet) *envoy_route.Header
 	regexOR := tags.RegexOR(selectorRegexs...)
 
 	return &envoy_route.HeaderMatcher{
-		Name: envoy_routes.TagsHeaderName,
+		Name: tags.TagsHeaderName,
 		HeaderMatchSpecifier: &envoy_route.HeaderMatcher_SafeRegexMatch{
 			SafeRegexMatch: &envoy_type_matcher.RegexMatcher{
-				EngineType: &envoy_type_matcher.RegexMatcher_GoogleRe2{
-					GoogleRe2: &envoy_type_matcher.RegexMatcher_GoogleRE2{},
-				},
 				Regex: regexOR,
 			},
 		},

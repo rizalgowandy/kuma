@@ -4,7 +4,7 @@ package kuma.mesh.v1alpha1;
 
 option go_package = "github.com/kumahq/kuma/api/mesh/v1alpha1";
 
-import "mesh/options.proto";
+import "api/mesh/options.proto";
 import "google/protobuf/timestamp.proto";
 import "validate/validate.proto";
 
@@ -14,10 +14,10 @@ message DataplaneInsight {
   option (kuma.mesh.resource).name = "DataplaneInsightResource";
   option (kuma.mesh.resource).type = "DataplaneInsight";
   option (kuma.mesh.resource).package = "mesh";
-  option (kuma.mesh.resource).skip_validation = true;
   option (kuma.mesh.resource).kds.send_to_global = true;
   option (kuma.mesh.resource).ws.name = "dataplane-insight";
   option (kuma.mesh.resource).ws.read_only = true;
+  option (kuma.mesh.resource).scope_namespace = true;
 
   // List of ADS subscriptions created by a given Dataplane.
   repeated DiscoverySubscription subscriptions = 1;
@@ -124,6 +124,9 @@ message Version {
 
   // Version of Envoy
   EnvoyVersion envoy = 2;
+
+  // Versions of other dependencies, i.e. CoreDNS
+  map<string, string> dependencies = 3;
 }
 
 // KumaDpVersion describes details of Kuma Dataplane version
@@ -140,6 +143,9 @@ message KumaDpVersion {
 
   // Build date of Kuma Dataplane version
   string buildDate = 4;
+
+  // True iff Kuma DP version is compatible with Kuma CP version
+  bool kumaCpCompatible = 5;
 }
 
 // EnvoyVersion describes details of Envoy version
@@ -150,4 +156,7 @@ message EnvoyVersion {
 
   // Full build tag of Envoy version
   string build = 2;
+
+  // True iff Envoy version is compatible with Kuma DP version
+  bool kumaDpCompatible = 3;
 }

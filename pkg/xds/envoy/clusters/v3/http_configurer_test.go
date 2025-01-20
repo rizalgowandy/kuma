@@ -1,7 +1,7 @@
 package clusters_test
 
 import (
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -10,10 +10,10 @@ import (
 )
 
 var _ = Describe("HttpConfigurer", func() {
-
 	It("should generate proper Envoy config", func() {
 		// given
 		expected := `
+        name: http
         typedExtensionProtocolOptions:
           envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
             '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
@@ -21,7 +21,7 @@ var _ = Describe("HttpConfigurer", func() {
               httpProtocolOptions: {}`
 
 		// when
-		cluster, err := clusters.NewClusterBuilder(envoy.APIV3).
+		cluster, err := clusters.NewClusterBuilder(envoy.APIV3, "http").
 			Configure(clusters.Http()).
 			Build()
 

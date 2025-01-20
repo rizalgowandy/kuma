@@ -7,9 +7,11 @@ import (
 	envoy_common "github.com/kumahq/kuma/pkg/xds/envoy"
 	envoy_names "github.com/kumahq/kuma/pkg/xds/envoy/names"
 	envoy_routes "github.com/kumahq/kuma/pkg/xds/envoy/routes"
+	envoy_virtual_hosts "github.com/kumahq/kuma/pkg/xds/envoy/virtualhosts"
 )
 
 type HttpOutboundRouteConfigurer struct {
+	Name    string
 	Service string
 	Routes  envoy_common.Routes
 	DpTags  mesh_proto.MultiValueTagSet
@@ -18,13 +20,18 @@ type HttpOutboundRouteConfigurer struct {
 var _ FilterChainConfigurer = &HttpOutboundRouteConfigurer{}
 
 func (c *HttpOutboundRouteConfigurer) Configure(filterChain *envoy_listener.FilterChain) error {
+	var name string
+	if c.Name == "" {
+		name = envoy_names.GetOutboundRouteName(c.Service)
+	} else {
+		name = c.Name
+	}
 	static := HttpStaticRouteConfigurer{
-		Builder: envoy_routes.NewRouteConfigurationBuilder(envoy_common.APIV3).
-			Configure(envoy_routes.CommonRouteConfiguration(envoy_names.GetOutboundRouteName(c.Service))).
+		Builder: envoy_routes.NewRouteConfigurationBuilder(envoy_common.APIV3, name).
+			Configure(envoy_routes.CommonRouteConfiguration()).
 			Configure(envoy_routes.TagsHeader(c.DpTags)).
-			Configure(envoy_routes.VirtualHost(envoy_routes.NewVirtualHostBuilder(envoy_common.APIV3).
-				Configure(envoy_routes.CommonVirtualHost(c.Service)).
-				Configure(envoy_routes.Routes(c.Routes)))),
+			Configure(envoy_routes.VirtualHost(envoy_virtual_hosts.NewVirtualHostBuilder(envoy_common.APIV3, c.Service).
+				Configure(envoy_virtual_hosts.Routes(c.Routes)))),
 	}
 
 	return static.Configure(filterChain)

@@ -26,11 +26,23 @@ func (vo *VirtualOutbound) Equal(other *VirtualOutbound) bool {
 }
 
 const (
-	OriginHost    = "host"
 	OriginService = "service"
+	OriginKube    = "kubernetes"
 )
 
-var OriginVirtualOutbound = func(name string) string { return "virtual-outbound:" + name }
+const (
+	VirtualOutboundPrefix = "virtual-outbound:"
+	HostPrefix            = "external-service:"
+	GatewayPrefix         = "mesh-gateway:"
+)
+
+var (
+	OriginVirtualOutbound = func(name string) string { return VirtualOutboundPrefix + name }
+	OriginHost            = func(name string) string { return HostPrefix + name }
+	OriginGateway         = func(mesh string, name string, hostname string) string {
+		return fmt.Sprintf("%s%s:%s:%s", GatewayPrefix, mesh, name, hostname)
+	}
+)
 
 type OutboundEntry struct {
 	Port   uint32

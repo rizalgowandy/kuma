@@ -15,13 +15,13 @@ func (d *TrafficLogResource) Validate() error {
 func (d *TrafficLogResource) validateSources() validators.ValidationError {
 	return ValidateSelectors(validators.RootedAt("sources"), d.Spec.Sources, ValidateSelectorsOpts{
 		RequireAtLeastOneSelector: true,
-		ValidateSelectorOpts: ValidateSelectorOpts{
+		ValidateTagsOpts: ValidateTagsOpts{
 			RequireService:       true,
 			RequireAtLeastOneTag: true,
 		},
 	})
 }
 
-func (d *TrafficLogResource) validateDestinations() (err validators.ValidationError) {
+func (d *TrafficLogResource) validateDestinations() validators.ValidationError {
 	return ValidateSelectors(validators.RootedAt("destinations"), d.Spec.Destinations, OnlyServiceTagAllowed)
 }

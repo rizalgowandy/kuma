@@ -24,19 +24,38 @@ func DefaultAccessConfig() AccessConfig {
 				Users:  []string{"mesh-system:admin"},
 				Groups: []string{"mesh-system:admin"},
 			},
+			GenerateZoneToken: GenerateZoneTokenStaticAccessConfig{
+				Users:  []string{"mesh-system:admin"},
+				Groups: []string{"mesh-system:admin"},
+			},
+			ViewConfigDump: ViewConfigDumpStaticAccessConfig{
+				Users:  []string{},
+				Groups: []string{"mesh-system:unauthenticated", "mesh-system:authenticated"},
+			},
+			ViewStats: ViewStatsStaticAccessConfig{
+				Users:  []string{},
+				Groups: []string{"mesh-system:unauthenticated", "mesh-system:authenticated"},
+			},
+			ViewClusters: ViewClustersStaticAccessConfig{
+				Users:  []string{},
+				Groups: []string{"mesh-system:unauthenticated", "mesh-system:authenticated"},
+			},
+			ControlPlaneMetadata: ControlPlaneMetadataStaticAccessConfig{
+				Users:  []string{},
+				Groups: []string{"mesh-system:unauthenticated", "mesh-system:authenticated"},
+			},
 		},
 	}
 }
 
-// AccessConfig defines a configuration for acccess control
+// AccessConfig defines a configuration for access control
 type AccessConfig struct {
-	// Type of the access strategy (available values: "static")
-	Type string `yaml:"type" envconfig:"KUMA_ACCESS_TYPE"`
-	// Configuration of static access strategy
-	Static StaticAccessConfig `yaml:"static"`
-}
+	config.BaseConfig
 
-func (r AccessConfig) Sanitize() {
+	// Type of the access strategy (available values: "static")
+	Type string `json:"type" envconfig:"KUMA_ACCESS_TYPE"`
+	// Configuration of static access strategy
+	Static StaticAccessConfig `json:"static"`
 }
 
 func (r AccessConfig) Validate() error {
@@ -51,30 +70,75 @@ var _ config.Config = &AccessConfig{}
 // StaticAccessConfig a static access strategy configuration
 type StaticAccessConfig struct {
 	// AdminResources defines an access to admin resources (Secret/GlobalSecret)
-	AdminResources AdminResourcesStaticAccessConfig `yaml:"adminResources"`
+	AdminResources AdminResourcesStaticAccessConfig `json:"adminResources"`
 	// GenerateDPToken defines an access to generating dataplane token
-	GenerateDPToken GenerateDPTokenStaticAccessConfig `yaml:"generateDpToken"`
-	// GenerateDPToken defines an access to generating user token
-	GenerateUserToken GenerateUserTokenStaticAccessConfig `yaml:"generateUserToken"`
+	GenerateDPToken GenerateDPTokenStaticAccessConfig `json:"generateDpToken"`
+	// GenerateUserToken defines an access to generating user token
+	GenerateUserToken GenerateUserTokenStaticAccessConfig `json:"generateUserToken"`
+	// GenerateZoneToken defines an access to generating zone token
+	GenerateZoneToken GenerateZoneTokenStaticAccessConfig `json:"generateZoneToken"`
+	// ViewConfigDump defines an access to getting envoy config dump
+	ViewConfigDump ViewConfigDumpStaticAccessConfig `json:"viewConfigDump"`
+	// ViewStats defines an access to getting envoy stats
+	ViewStats ViewStatsStaticAccessConfig `json:"viewStats"`
+	// ViewClusters defines an access to getting envoy clusters
+	ViewClusters ViewClustersStaticAccessConfig `json:"viewClusters"`
+	// ControlPlaneMetadata defines an access for control-plane metadata (for example config)
+	ControlPlaneMetadata ControlPlaneMetadataStaticAccessConfig `json:"controlPlaneMetadata"`
 }
 
 type AdminResourcesStaticAccessConfig struct {
 	// List of users that are allowed to access admin resources
-	Users []string `yaml:"users" envconfig:"KUMA_ACCESS_STATIC_ADMIN_RESOURCES_USERS"`
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_ADMIN_RESOURCES_USERS"`
 	// List of groups that are allowed to access admin resources
-	Groups []string `yaml:"groups" envconfig:"KUMA_ACCESS_STATIC_ADMIN_RESOURCES_GROUPS"`
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_ADMIN_RESOURCES_GROUPS"`
 }
 
 type GenerateDPTokenStaticAccessConfig struct {
 	// List of users that are allowed to generate dataplane token
-	Users []string `yaml:"users" envconfig:"KUMA_ACCESS_STATIC_GENERATE_DP_TOKEN_USERS"`
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_GENERATE_DP_TOKEN_USERS"`
 	// List of groups that are allowed to generate dataplane token
-	Groups []string `yaml:"groups" envconfig:"KUMA_ACCESS_STATIC_GENERATE_DP_TOKEN_GROUPS"`
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_GENERATE_DP_TOKEN_GROUPS"`
 }
 
 type GenerateUserTokenStaticAccessConfig struct {
 	// List of users that are allowed to generate user token
-	Users []string `yaml:"users" envconfig:"KUMA_ACCESS_STATIC_GENERATE_USER_TOKEN_USERS"`
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_GENERATE_USER_TOKEN_USERS"`
 	// List of groups that are allowed to generate user token
-	Groups []string `yaml:"groups" envconfig:"KUMA_ACCESS_STATIC_GENERATE_USER_TOKEN_GROUPS"`
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_GENERATE_USER_TOKEN_GROUPS"`
+}
+
+type GenerateZoneTokenStaticAccessConfig struct {
+	// List of users that are allowed to generate zone token
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_GENERATE_ZONE_TOKEN_USERS"`
+	// List of groups that are allowed to generate zone token
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_GENERATE_ZONE_TOKEN_GROUPS"`
+}
+
+type ViewConfigDumpStaticAccessConfig struct {
+	// List of users that are allowed to get envoy config dump
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_GET_CONFIG_DUMP_USERS"`
+	// List of groups that are allowed to get envoy config dump
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_GET_CONFIG_DUMP_GROUPS"`
+}
+
+type ViewStatsStaticAccessConfig struct {
+	// List of users that are allowed to get envoy config stats
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_VIEW_STATS_USERS"`
+	// List of groups that are allowed to get envoy config stats
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_VIEW_STATS_GROUPS"`
+}
+
+type ViewClustersStaticAccessConfig struct {
+	// List of users that are allowed to get envoy config clusters
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_VIEW_CLUSTERS_USERS"`
+	// List of groups that are allowed to get envoy config clusters
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_VIEW_CLUSTERS_GROUPS"`
+}
+
+type ControlPlaneMetadataStaticAccessConfig struct {
+	// List of users that are allowed to access control-plane metadata
+	Users []string `json:"users" envconfig:"KUMA_ACCESS_STATIC_CONTROL_PLANE_METADATA_USERS"`
+	// List of groups that are allowed to access control-plane metadata
+	Groups []string `json:"groups" envconfig:"KUMA_ACCESS_STATIC_CONTROL_PLANE_METADATA_GROUPS"`
 }

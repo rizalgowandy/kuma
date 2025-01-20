@@ -18,20 +18,21 @@ const (
 	PartiallyDegraded = Status("Partially degraded")
 )
 
-func (t *DataplaneOverviewResource) GetStatus() (Status, []string) {
+func (t *DataplaneOverviewResource) Status() (Status, []string) {
 	proxyOnline := t.Spec.DataplaneInsight.IsOnline()
 
 	var errs []string
 
 	for _, inbound := range t.Spec.Dataplane.Networking.Inbound {
-		if inbound.Health != nil && !inbound.Health.Ready {
+		if (inbound.Health != nil && !inbound.Health.Ready) || inbound.State == mesh_proto.Dataplane_Networking_Inbound_NotReady {
 			errs = append(errs, fmt.Sprintf("inbound[port=%d,svc=%s] is not ready", inbound.Port, inbound.Tags[mesh_proto.ServiceTag]))
 		}
 	}
 
 	allInboundsOffline := len(errs) == len(t.Spec.Dataplane.Networking.Inbound)
 	allInboundsOnline := len(errs) == 0
-	if t.Spec.Dataplane.IsDelegatedGateway() {
+
+	if t.Spec.Dataplane.GetNetworking().GetGateway() != nil {
 		allInboundsOffline = false
 		allInboundsOnline = true
 	}

@@ -8,12 +8,9 @@ import (
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/config/core"
+	"github.com/kumahq/kuma/test/framework/envoy_admin"
+	"github.com/kumahq/kuma/test/framework/kumactl"
 )
-
-type Clusters interface {
-	GetCluster(name string) Cluster
-	Cluster
-}
 
 type InstallationMode string
 
@@ -30,21 +27,30 @@ type kumaDeploymentOptions struct {
 	verbose *bool
 
 	// cp specific
-	ctlOpts              map[string]string
-	globalAddress        string
-	installationMode     InstallationMode
-	skipDefaultMesh      bool
-	helmReleaseName      string
-	helmChartPath        *string
-	helmChartVersion     string
-	helmOpts             map[string]string
-	noHelmOpts           []string
-	env                  map[string]string
-	ingress              bool
-	cni                  bool
-	cpReplicas           int
-	hdsDisabled          bool
-	runPostgresMigration bool
+	ctlOpts                     map[string]string
+	globalAddress               string
+	installationMode            InstallationMode
+	skipDefaultMesh             bool
+	helmReleaseName             string
+	helmChartPath               *string
+	helmChartVersion            string
+	helmOpts                    map[string]string
+	noHelmOpts                  []string
+	env                         map[string]string
+	zoneIngress                 bool
+	zoneIngressEnvoyAdminTunnel bool
+	zoneEgress                  bool
+	zoneEgressEnvoyAdminTunnel  bool
+	cni                         bool
+	cniNamespace                string
+	cpReplicas                  int
+	hdsDisabled                 bool
+	runPostgresMigration        bool
+	yamlConfig                  string
+	apiHeaders                  []string
+	zoneName                    string
+	verifyKuma                  bool
+	setupKumactl                bool
 
 	// Functions to apply to each mesh after the control plane
 	// is provisioned.
@@ -53,10 +59,12 @@ type kumaDeploymentOptions struct {
 
 func (k *kumaDeploymentOptions) apply(opts ...KumaDeploymentOption) {
 	// Set defaults.
-	k.isipv6 = IsIPv6()
+	k.isipv6 = Config.IPV6
 	k.installationMode = KumactlInstallationMode
 	k.env = map[string]string{}
 	k.meshUpdateFuncs = map[string][]func(*mesh_proto.Mesh) *mesh_proto.Mesh{}
+	k.verifyKuma = true
+	k.setupKumactl = true
 
 	// Apply options.
 	for _, o := range opts {
@@ -82,30 +90,39 @@ type appDeploymentOptions struct {
 	verbose *bool
 
 	// app specific
-	namespace       string
-	appname         string
-	name            string
-	appYaml         string
-	appArgs         []string
-	token           string
-	transparent     bool
-	builtindns      *bool // true by default
-	protocol        string
-	serviceName     string
-	serviceVersion  string
-	serviceInstance string
-	mesh            string
-	dpVersion       string
-	kumactlFlow     bool
-	concurrency     int
-	omitDataplane   bool
-	proxyOnly       bool
-	serviceProbe    bool
+	namespace             string
+	appname               string
+	name                  string
+	appYaml               string
+	appArgs               []string
+	token                 string
+	transparent           *bool
+	builtindns            *bool // true by default
+	protocol              string
+	serviceName           string
+	serviceVersion        string
+	serviceInstance       string
+	mesh                  string
+	dpVersion             string
+	kumactlFlow           bool
+	concurrency           int
+	omitDataplane         bool
+	proxyOnly             bool
+	serviceProbe          bool
+	reachableServices     []string
+	appendDataplaneConfig string
+	boundToContainerIp    bool
+	serviceAddress        string
+	dpEnvs                map[string]string
+	additionalTags        map[string]string
+
+	dockerVolumes       []string
+	dockerContainerName string
 }
 
 func (d *appDeploymentOptions) apply(opts ...AppDeploymentOption) {
 	// Set defaults.
-	d.isipv6 = IsIPv6()
+	d.isipv6 = Config.IPV6
 
 	// Apply options.
 	for _, o := range opts {
@@ -130,8 +147,10 @@ type GenericOption struct {
 	App  AppOptionFunc
 }
 
-var _ KumaDeploymentOption = &GenericOption{}
-var _ AppDeploymentOption = &GenericOption{}
+var (
+	_ KumaDeploymentOption = &GenericOption{}
+	_ AppDeploymentOption  = &GenericOption{}
+)
 
 func (o *GenericOption) ApplyApp(opts *appDeploymentOptions) {
 	o.App(opts)
@@ -239,15 +258,60 @@ func WithoutHelmOpt(name string) KumaDeploymentOption {
 	})
 }
 
+func ClearNoHelmOpts() KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.noHelmOpts = nil
+	})
+}
+
 func WithEnv(name, value string) KumaDeploymentOption {
 	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
 		o.env[name] = value
 	})
 }
 
+func WithEnvs(entries map[string]string) KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		for k, v := range entries {
+			o.env[k] = v
+		}
+	})
+}
+
+func WithYamlConfig(cfg string) KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.yamlConfig = cfg
+	})
+}
+
+func WithIngressEnvoyAdminTunnel() KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.zoneIngressEnvoyAdminTunnel = true
+	})
+}
+
 func WithIngress() KumaDeploymentOption {
 	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
-		o.ingress = true
+		o.zoneIngress = true
+	})
+}
+
+func WithEgressEnvoyAdminTunnel() KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.zoneEgressEnvoyAdminTunnel = true
+	})
+}
+
+type CNIVersion string
+
+const (
+	CNIVersion1 CNIVersion = "v1"
+	CNIVersion2 CNIVersion = "v2"
+)
+
+func WithEgress() KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.zoneEgress = true
 	})
 }
 
@@ -257,21 +321,29 @@ func WithCNI() KumaDeploymentOption {
 	})
 }
 
+func WithCNINamespace(namespace string) KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.cniNamespace = namespace
+	})
+}
+
 func WithGlobalAddress(address string) KumaDeploymentOption {
 	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
 		o.globalAddress = address
 	})
 }
 
-// WithCtlOpt allows arbitrary options to be passed to kuma, which is important
+// WithCtlOpts allows arbitrary options to be passed to kuma, which is important
 // for using test/framework in other libraries where additional options may have
 // been added.
-func WithCtlOpt(name, value string) KumaDeploymentOption {
+func WithCtlOpts(opts map[string]string) KumaDeploymentOption {
 	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
 		if o.ctlOpts == nil {
 			o.ctlOpts = map[string]string{}
 		}
-		o.ctlOpts[name] = value
+		for name, value := range opts {
+			o.ctlOpts[name] = value
+		}
 	})
 }
 
@@ -284,6 +356,30 @@ type MeshUpdateFunc func(mesh *mesh_proto.Mesh) *mesh_proto.Mesh
 func WithMeshUpdate(mesh string, u MeshUpdateFunc) KumaDeploymentOption {
 	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
 		o.meshUpdateFuncs[mesh] = append(o.meshUpdateFuncs[mesh], u)
+	})
+}
+
+func WithApiHeaders(headers ...string) KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.apiHeaders = headers
+	})
+}
+
+func WithZoneName(zoneName string) KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.zoneName = zoneName
+	})
+}
+
+func WithoutVerifyingKuma() KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.verifyKuma = false
+	})
+}
+
+func WithoutConfiguringKumactl() KumaDeploymentOption {
+	return KumaOptionFunc(func(o *kumaDeploymentOptions) {
+		o.setupKumactl = false
 	})
 }
 
@@ -328,6 +424,12 @@ func WithServiceName(name string) AppDeploymentOption {
 	})
 }
 
+func WithAppendDataplaneYaml(config string) AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.appendDataplaneConfig = config
+	})
+}
+
 func WithServiceVersion(version string) AppDeploymentOption {
 	return AppOptionFunc(func(o *appDeploymentOptions) {
 		o.serviceVersion = version
@@ -352,6 +454,12 @@ func ServiceProbe() AppDeploymentOption {
 	})
 }
 
+func WithServiceAddress(serviceAddress string) AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.serviceAddress = serviceAddress
+	})
+}
+
 // WithDPVersion only works with Universal now
 func WithDPVersion(version string) AppDeploymentOption {
 	return AppOptionFunc(func(o *appDeploymentOptions) {
@@ -368,6 +476,13 @@ func WithNamespace(namespace string) AppDeploymentOption {
 func WithMesh(mesh string) AppDeploymentOption {
 	return AppOptionFunc(func(o *appDeploymentOptions) {
 		o.mesh = mesh
+	})
+}
+
+// BoundToContainerIp only works with Universal
+func BoundToContainerIp() AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.boundToContainerIp = true
 	})
 }
 
@@ -391,7 +506,19 @@ func WithToken(token string) AppDeploymentOption {
 
 func WithTransparentProxy(transparent bool) AppDeploymentOption {
 	return AppOptionFunc(func(o *appDeploymentOptions) {
-		o.transparent = transparent
+		o.transparent = &transparent
+	})
+}
+
+func WithAdditionalTags(tags map[string]string) AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.additionalTags = tags
+	})
+}
+
+func WithDpEnvs(envs map[string]string) AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.dpEnvs = envs
 	})
 }
 
@@ -404,6 +531,24 @@ func WithBuiltinDNS(builtindns bool) AppDeploymentOption {
 func WithConcurrency(concurrency int) AppDeploymentOption {
 	return AppOptionFunc(func(o *appDeploymentOptions) {
 		o.concurrency = concurrency
+	})
+}
+
+func WithReachableServices(services ...string) AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.reachableServices = services
+	})
+}
+
+func WithDockerVolumes(volumes ...string) AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.dockerVolumes = append(o.dockerVolumes, volumes...)
+	})
+}
+
+func WithDockerContainerName(name string) AppDeploymentOption {
+	return AppOptionFunc(func(o *appDeploymentOptions) {
+		o.dockerContainerName = name
 	})
 }
 
@@ -420,25 +565,27 @@ type Cluster interface {
 	// Generic
 	DeployKuma(mode core.CpMode, opts ...KumaDeploymentOption) error
 	GetKuma() ControlPlane
+	GetKumaCPLogs() (string, error)
 	VerifyKuma() error
-	DeleteKuma(opts ...KumaDeploymentOption) error
-	InjectDNS(namespace ...string) error
-	GetKumactlOptions() *KumactlOptions
+	DeleteKuma() error
+	GetKumactlOptions() *kumactl.KumactlOptions
 	Deployment(name string) Deployment
 	Deploy(deployment Deployment) error
 	DeleteDeployment(name string) error
 	WithTimeout(timeout time.Duration) Cluster
 	WithRetries(retries int) Cluster
+	GetZoneEgressEnvoyTunnel() envoy_admin.Tunnel
+	GetZoneIngressEnvoyTunnel() envoy_admin.Tunnel
 	Verbose() bool
+	Install(fn InstallFunc) error
+	ZoneName() string
 
 	// K8s
 	GetKubectlOptions(namespace ...string) *k8s.KubectlOptions
 	CreateNamespace(namespace string) error
 	DeleteNamespace(namespace string) error
 	DeployApp(fs ...AppDeploymentOption) error
-	DeleteApp(namespace, appname string) error
 	Exec(namespace, podName, containerName string, cmd ...string) (string, string, error)
-	ExecWithRetries(namespace, podName, containerName string, cmd ...string) (string, string, error)
 
 	// Testing
 	GetTesting() testing.TestingT
@@ -446,11 +593,16 @@ type Cluster interface {
 
 type ControlPlane interface {
 	GetName() string
-	GetKumaCPLogs() (string, error)
 	GetMetrics() (string, error)
+	GetMonitoringAssignment(clientId string) (string, error)
 	GetKDSServerAddress() string
-	GetGlobaStatusAPI() string
+	GetKDSInsecureServerAddress() string
+	GetXDSServerAddress() string
+	GetGlobalStatusAPI() string
 	GetAPIServerAddress() string
 	GenerateDpToken(mesh, serviceName string) (string, error)
 	GenerateZoneIngressToken(zone string) (string, error)
+	GenerateZoneEgressToken(zone string) (string, error)
+	GenerateZoneToken(zone string, scope []string) (string, error)
+	Exec(cmd ...string) (string, string, error)
 }

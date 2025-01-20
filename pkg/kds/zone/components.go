@@ -1,116 +1,133 @@
 package zone
 
 import (
+	"context"
+
 	"github.com/pkg/errors"
 
+	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/config"
 	"github.com/kumahq/kuma/pkg/config/core/resources/store"
 	"github.com/kumahq/kuma/pkg/core"
-	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
-	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/registry"
 	core_runtime "github.com/kumahq/kuma/pkg/core/runtime"
 	"github.com/kumahq/kuma/pkg/core/runtime/component"
-	kds_client "github.com/kumahq/kuma/pkg/kds/client"
 	"github.com/kumahq/kuma/pkg/kds/mux"
-	kds_server "github.com/kumahq/kuma/pkg/kds/server"
-	sync_store "github.com/kumahq/kuma/pkg/kds/store"
-	"github.com/kumahq/kuma/pkg/kds/util"
+	"github.com/kumahq/kuma/pkg/kds/service"
+	kds_client_v2 "github.com/kumahq/kuma/pkg/kds/v2/client"
+	kds_server_v2 "github.com/kumahq/kuma/pkg/kds/v2/server"
+	kds_sync_store_v2 "github.com/kumahq/kuma/pkg/kds/v2/store"
 	resources_k8s "github.com/kumahq/kuma/pkg/plugins/resources/k8s"
-	k8s_model "github.com/kumahq/kuma/pkg/plugins/resources/k8s/native/pkg/model"
-	"github.com/kumahq/kuma/pkg/tokens/builtin/zoneingress"
 )
 
 var (
-	kdsZoneLog = core.Log.WithName("kds-zone")
+	kdsZoneLog      = core.Log.WithName("kds-zone")
+	kdsDeltaZoneLog = core.Log.WithName("kds-delta-zone")
 )
 
 func Setup(rt core_runtime.Runtime) error {
+	if !rt.Config().IsFederatedZoneCP() {
+		// Only run on zone
+		return nil
+	}
 	zone := rt.Config().Multizone.Zone.Name
 	reg := registry.Global()
-	kdsServer, err := kds_server.New(kdsZoneLog, rt, reg.ObjectTypes(model.HasKDSFlag(model.ProvidedByZone)),
-		zone, rt.Config().Multizone.Zone.KDS.RefreshInterval,
-		rt.KDSContext().ZoneProvidedFilter, false)
+	kdsCtx := rt.KDSContext()
+
+	kdsServerV2, err := kds_server_v2.New(
+		kdsZoneLog,
+		rt,
+		reg.ObjectTypes(model.HasKDSFlag(model.ZoneToGlobalFlag)),
+		zone,
+		rt.Config().Multizone.Zone.KDS.RefreshInterval.Duration,
+		kdsCtx.ZoneProvidedFilter,
+		kdsCtx.ZoneResourceMapper,
+		rt.Config().Multizone.Zone.KDS.NackBackoff.Duration,
+	)
 	if err != nil {
 		return err
 	}
-	resourceSyncer := sync_store.NewResourceSyncer(kdsZoneLog, rt.ResourceStore())
+	resourceSyncerV2, err := kds_sync_store_v2.NewResourceSyncer(kdsDeltaZoneLog, rt.ResourceStore(), rt.Transactions(), rt.Metrics(), rt.Extensions())
+	if err != nil {
+		return err
+	}
 	kubeFactory := resources_k8s.NewSimpleKubeFactory()
 	cfg := rt.Config()
-	cfgForDisplay, err := config.ConfigForDisplay(&cfg)
-	if err != nil {
-		return errors.Wrap(err, "could not construct config for display")
-	}
-	cfgJson, err := config.ToJson(cfgForDisplay)
+	cfgJson, err := config.ConfigForDisplay(&cfg)
 	if err != nil {
 		return errors.Wrap(err, "could not marshall config to json")
 	}
-	onSessionStarted := mux.OnSessionStartedFunc(func(session mux.Session) error {
-		log := kdsZoneLog.WithValues("peer-id", session.PeerID())
-		log.Info("new session created")
-		go func() {
-			if err := kdsServer.StreamKumaResources(session.ServerStream()); err != nil {
-				log.Error(err, "StreamKumaResources finished with an error")
-			}
-		}()
-		sink := kds_client.NewKDSSink(log, reg.ObjectTypes(model.HasKDSFlag(model.ConsumedByZone)), kds_client.NewKDSStream(session.ClientStream(), zone, string(cfgJson)),
-			Callbacks(rt, resourceSyncer, rt.Config().Store.Type == store.KubernetesStore, zone, kubeFactory),
+
+	onGlobalToZoneSyncStarted := mux.OnGlobalToZoneSyncStartedFunc(func(stream mesh_proto.KDSSyncService_GlobalToZoneSyncClient, errChan chan error) {
+		log := kdsDeltaZoneLog.WithValues("kds-version", "v2")
+		syncClient := kds_client_v2.NewKDSSyncClient(
+			log,
+			reg.ObjectTypes(model.HasKDSFlag(model.GlobalToZoneSelector)),
+			kds_client_v2.NewDeltaKDSStream(stream, zone, rt, cfgJson),
+			kds_sync_store_v2.ZoneSyncCallback(
+				stream.Context(),
+				rt.KDSContext().Configs,
+				resourceSyncerV2,
+				rt.Config().Store.Type == store.KubernetesStore,
+				zone,
+				kubeFactory,
+				rt.Config().Store.Kubernetes.SystemNamespace,
+			),
+			rt.Config().Multizone.Zone.KDS.ResponseBackoff.Duration,
 		)
 		go func() {
-			if err := sink.Receive(); err != nil {
-				log.Error(err, "KDSSink finished with an error")
+			err := syncClient.Receive()
+			if err != nil && !errors.Is(err, context.Canceled) {
+				err = errors.Wrap(err, "GlobalToZoneSyncClient finished with an error")
+				select {
+				case errChan <- err:
+				default:
+					log.Error(err, "failed to write error to closed channel")
+				}
+			} else {
+				log.V(1).Info("GlobalToZoneSyncClient finished gracefully")
 			}
 		}()
-		return nil
 	})
+
+	onZoneToGlobalSyncStarted := mux.OnZoneToGlobalSyncStartedFunc(func(stream mesh_proto.KDSSyncService_ZoneToGlobalSyncClient, errChan chan error) {
+		log := kdsDeltaZoneLog.WithValues("kds-version", "v2", "peer-id", "global")
+		log.Info("ZoneToGlobalSync new session created")
+		session := kds_server_v2.NewServerStream(stream)
+		go func() {
+			err := kdsServerV2.ZoneToGlobal(session)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				err = errors.Wrap(err, "ZoneToGlobalSync finished with an error")
+				select {
+				case errChan <- err:
+				default:
+					log.Error(err, "failed to write error to closed channel")
+				}
+			} else {
+				log.V(1).Info("ZoneToGlobalSync finished gracefully")
+			}
+		}()
+	})
+
 	muxClient := mux.NewClient(
+		rt.KDSContext().ZoneClientCtx,
 		rt.Config().Multizone.Zone.GlobalAddress,
 		zone,
-		onSessionStarted,
+		onGlobalToZoneSyncStarted,
+		onZoneToGlobalSyncStarted,
 		*rt.Config().Multizone.Zone.KDS,
+		rt.Config().Experimental,
 		rt.Metrics(),
-		rt.KDSContext().ZoneClientCtx,
+		service.NewEnvoyAdminProcessor(
+			rt.ReadOnlyResourceManager(),
+			rt.EnvoyAdminClient(),
+		),
 	)
-	return rt.Add(component.NewResilientComponent(kdsZoneLog.WithName("kds-mux-client"), muxClient))
-}
-
-func Callbacks(rt core_runtime.Runtime, syncer sync_store.ResourceSyncer, k8sStore bool, localZone string, kubeFactory resources_k8s.KubeFactory) *kds_client.Callbacks {
-	return &kds_client.Callbacks{
-		OnResourcesReceived: func(clusterID string, rs model.ResourceList) error {
-			if k8sStore && rs.GetItemType() != system.ConfigType && rs.GetItemType() != system.SecretType && rs.GetItemType() != system.GlobalSecretType {
-				// if type of Store is Kubernetes then we want to store upstream resources in dedicated Namespace.
-				// KubernetesStore parses Name and considers substring after the last dot as a Namespace's Name.
-				// System resources are not in the kubeFactory therefore we need explicit ifs for them
-				kubeObject, err := kubeFactory.NewObject(rs.NewItem())
-				if err != nil {
-					return errors.Wrap(err, "could not convert object")
-				}
-				if kubeObject.Scope() == k8s_model.ScopeNamespace {
-					util.AddSuffixToNames(rs.GetItems(), "default")
-				}
-			}
-			if rs.GetItemType() == mesh.DataplaneType {
-				return syncer.Sync(rs, sync_store.PrefilterBy(func(r model.Resource) bool {
-					return r.(*mesh.DataplaneResource).Spec.IsZoneIngress(localZone)
-				}))
-			}
-			if rs.GetItemType() == mesh.ZoneIngressType {
-				return syncer.Sync(rs, sync_store.PrefilterBy(func(r model.Resource) bool {
-					return r.(*mesh.ZoneIngressResource).IsRemoteIngress(localZone)
-				}))
-			}
-			if rs.GetItemType() == system.ConfigType {
-				return syncer.Sync(rs, sync_store.PrefilterBy(func(r model.Resource) bool {
-					return rt.KDSContext().Configs[r.GetMeta().GetName()]
-				}))
-			}
-			if rs.GetItemType() == system.GlobalSecretType {
-				return syncer.Sync(rs, sync_store.PrefilterBy(func(r model.Resource) bool {
-					return r.GetMeta().GetName() == zoneingress.SigningKeyResourceKey().Name
-				}))
-			}
-			return syncer.Sync(rs)
-		},
-	}
+	return rt.Add(component.NewResilientComponent(
+		kdsZoneLog.WithName("kds-mux-client"),
+		muxClient,
+		rt.Config().General.ResilientComponentBaseBackoff.Duration,
+		rt.Config().General.ResilientComponentMaxBackoff.Duration,
+	))
 }

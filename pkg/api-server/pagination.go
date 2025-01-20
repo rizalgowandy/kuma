@@ -4,13 +4,15 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful/v3"
 
 	"github.com/kumahq/kuma/pkg/api-server/types"
 )
 
-const maxPageSize = 1000
-const defaultPageSize = 100
+const (
+	maxPageSize     = 1000
+	defaultPageSize = 100
+)
 
 type page struct {
 	size   int

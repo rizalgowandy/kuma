@@ -1,12 +1,11 @@
 //go:build !windows
 // +build !windows
 
-package envoy
+package envoy_test
 
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,20 +13,21 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kumahq/kuma/app/kuma-dp/pkg/dataplane/envoy"
 	kuma_dp "github.com/kumahq/kuma/pkg/config/app/kuma-dp"
+	config_types "github.com/kumahq/kuma/pkg/config/types"
 	"github.com/kumahq/kuma/pkg/test"
 )
 
 var _ = Describe("Envoy", func() {
-
 	var configDir string
 
 	BeforeEach(func() {
 		var err error
-		configDir, err = ioutil.TempDir("", "")
+		configDir, err = os.MkdirTemp("", "")
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -59,7 +59,7 @@ var _ = Describe("Envoy", func() {
 		errCh = make(chan error)
 	})
 
-	RunMockEnvoy := func(dataplane *Envoy) {
+	RunMockEnvoy := func(dataplane *envoy.Envoy) {
 		go func() {
 			errCh <- dataplane.Start(stopCh)
 		}()
@@ -83,26 +83,24 @@ var _ = Describe("Envoy", func() {
 			// given
 			cfg := kuma_dp.Config{
 				Dataplane: kuma_dp.Dataplane{
-					DrainTime: 15 * time.Second,
+					DrainTime: config_types.Duration{Duration: 15 * time.Second},
 				},
 				DataplaneRuntime: kuma_dp.DataplaneRuntime{
-					BinaryPath: filepath.Join("testdata", "envoy-mock.exit-0.sh"),
-					ConfigDir:  configDir,
+					BinaryPath:    filepath.Join("testdata", "envoy-mock.exit-0.sh"),
+					ConfigDir:     configDir,
+					EnvoyLogLevel: "off",
 				},
-			}
-			sampleConfig := func(string, kuma_dp.Config, BootstrapParams) ([]byte, error) {
-				return []byte(`node:
-  id: example`), nil
 			}
 			expectedConfigFile := filepath.Join(configDir, "bootstrap.yaml")
 
 			By("starting a mock dataplane")
 			// when
-			dataplane, err := New(Opts{
-				Config:    cfg,
-				Generator: sampleConfig,
-				Stdout:    outWriter,
-				Stderr:    errWriter,
+			dataplane, err := envoy.New(envoy.Opts{
+				Config: cfg,
+				BootstrapConfig: []byte(`node:
+  id: example`),
+				Stdout: outWriter,
+				Stderr: errWriter,
 			})
 			Expect(err).To(Succeed())
 
@@ -119,19 +117,19 @@ var _ = Describe("Envoy", func() {
 			// and
 			if runtime.GOOS == "linux" {
 				Expect(strings.TrimSpace(buf.String())).To(Equal(
-					fmt.Sprintf("--config-path %s --drain-time-s 15 --disable-hot-restart --log-level off --cpuset-threads",
+					fmt.Sprintf("--config-path %s --drain-time-s 15 --drain-strategy immediate --disable-hot-restart --log-level off --cpuset-threads",
 						expectedConfigFile)),
 				)
 			} else {
 				Expect(strings.TrimSpace(buf.String())).To(Equal(
-					fmt.Sprintf("--config-path %s --drain-time-s 15 --disable-hot-restart --log-level off",
+					fmt.Sprintf("--config-path %s --drain-time-s 15 --drain-strategy immediate --disable-hot-restart --log-level off",
 						expectedConfigFile)),
 				)
 			}
 
 			By("verifying the contents Envoy config file")
 			// when
-			actual, err := ioutil.ReadFile(expectedConfigFile)
+			actual, err := os.ReadFile(expectedConfigFile)
 			// then
 			Expect(err).ToNot(HaveOccurred())
 			// and
@@ -145,29 +143,26 @@ var _ = Describe("Envoy", func() {
 			// given
 			cfg := kuma_dp.Config{
 				Dataplane: kuma_dp.Dataplane{
-					DrainTime: 15 * time.Second,
+					DrainTime: config_types.Duration{Duration: 15 * time.Second},
 				},
 				DataplaneRuntime: kuma_dp.DataplaneRuntime{
-					BinaryPath:  filepath.Join("testdata", "envoy-mock.exit-0.sh"),
-					ConfigDir:   configDir,
-					Concurrency: 9,
+					BinaryPath:    filepath.Join("testdata", "envoy-mock.exit-0.sh"),
+					ConfigDir:     configDir,
+					Concurrency:   9,
+					EnvoyLogLevel: "off",
 				},
-			}
-
-			sampleConfig := func(string, kuma_dp.Config, BootstrapParams) ([]byte, error) {
-				return []byte(`node:
-  id: example`), nil
 			}
 
 			expectedConfigFile := filepath.Join(configDir, "bootstrap.yaml")
 
 			By("starting a mock dataplane")
 			// when
-			dataplane, err := New(Opts{
-				Config:    cfg,
-				Generator: sampleConfig,
-				Stdout:    outWriter,
-				Stderr:    errWriter,
+			dataplane, err := envoy.New(envoy.Opts{
+				Config: cfg,
+				BootstrapConfig: []byte(`node:
+  id: example`),
+				Stdout: outWriter,
+				Stderr: errWriter,
 			})
 			Expect(err).To(Succeed())
 
@@ -183,7 +178,7 @@ var _ = Describe("Envoy", func() {
 			Expect(err).ToNot(HaveOccurred())
 			// and
 			Expect(strings.TrimSpace(buf.String())).To(Equal(
-				fmt.Sprintf("--config-path %s --drain-time-s 15 --disable-hot-restart --log-level off --concurrency 9",
+				fmt.Sprintf("--config-path %s --drain-time-s 15 --drain-strategy immediate --disable-hot-restart --log-level off --concurrency 9",
 					expectedConfigFile)),
 			)
 		}))
@@ -196,17 +191,14 @@ var _ = Describe("Envoy", func() {
 					ConfigDir:  configDir,
 				},
 			}
-			sampleConfig := func(string, kuma_dp.Config, BootstrapParams) ([]byte, error) {
-				return nil, nil
-			}
 
 			By("starting a mock dataplane")
 			// when
-			dataplane, err := New(Opts{
-				Config:    cfg,
-				Generator: sampleConfig,
-				Stdout:    &bytes.Buffer{},
-				Stderr:    &bytes.Buffer{},
+			dataplane, err := envoy.New(envoy.Opts{
+				Config:          cfg,
+				BootstrapConfig: []byte{},
+				Stdout:          &bytes.Buffer{},
+				Stderr:          &bytes.Buffer{},
 			})
 			// then
 			Expect(err).ToNot(HaveOccurred())
@@ -228,50 +220,27 @@ var _ = Describe("Envoy", func() {
 		}))
 
 		It("should return an error if Envoy binary path is not found", test.Within(10*time.Second, func() {
-			// given
 			cfg := kuma_dp.Config{
 				DataplaneRuntime: kuma_dp.DataplaneRuntime{
-					BinaryPath: filepath.Join("testdata"),
+					BinaryPath: "nonexistent",
 					ConfigDir:  configDir,
 				},
 			}
-			sampleConfig := func(string, kuma_dp.Config, BootstrapParams) ([]byte, error) {
-				return nil, nil
-			}
-
-			By("starting a mock dataplane")
-			// when
-			dataplane, err := New(Opts{
-				Config:    cfg,
-				Generator: sampleConfig,
-				Stdout:    &bytes.Buffer{},
-				Stderr:    &bytes.Buffer{},
+			_, err := envoy.New(envoy.Opts{
+				Config:          cfg,
+				BootstrapConfig: []byte{},
+				Stdout:          &bytes.Buffer{},
+				Stderr:          &bytes.Buffer{},
 			})
-			// then
-			Expect(dataplane).To(BeNil())
-			// and
-			Expect(err.Error()).To(ContainSubstring(("could not find binary in any of the following paths")))
+
+			Expect(err).To(HaveOccurred())
 		}))
 	})
 
 	Describe("Parse version", func() {
 		It("should properly read envoy version for unix-based systems", func() {
-			// given
-			cfg := kuma_dp.Config{
-				DataplaneRuntime: kuma_dp.DataplaneRuntime{
-					BinaryPath: filepath.Join("testdata", "envoy-mock.exit-0.sh"),
-					ConfigDir:  configDir,
-				},
-			}
-
 			// when
-			dataplane, err := New(Opts{
-				Config: cfg,
-				Stdout: &bytes.Buffer{},
-				Stderr: &bytes.Buffer{},
-			})
-			Expect(err).ToNot(HaveOccurred())
-			version, err := dataplane.version()
+			version, err := envoy.GetEnvoyVersion(filepath.Join("testdata", "envoy-mock.exit-0.sh"))
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
@@ -280,22 +249,8 @@ var _ = Describe("Envoy", func() {
 		})
 
 		It("should properly read envoy version with label for unix-based systems", func() {
-			// given
-			cfg := kuma_dp.Config{
-				DataplaneRuntime: kuma_dp.DataplaneRuntime{
-					BinaryPath: filepath.Join("testdata", "envoy-mock.with-label.sh"),
-					ConfigDir:  configDir,
-				},
-			}
-
 			// when
-			dataplane, err := New(Opts{
-				Config: cfg,
-				Stdout: &bytes.Buffer{},
-				Stderr: &bytes.Buffer{},
-			})
-			Expect(err).ToNot(HaveOccurred())
-			version, err := dataplane.version()
+			version, err := envoy.GetEnvoyVersion(filepath.Join("testdata", "envoy-mock.with-label.sh"))
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
@@ -304,22 +259,8 @@ var _ = Describe("Envoy", func() {
 		})
 
 		It("should properly read envoy version for windows", func() {
-			// given
-			cfg := kuma_dp.Config{
-				DataplaneRuntime: kuma_dp.DataplaneRuntime{
-					BinaryPath: filepath.Join("testdata", "envoy-mock-windows.exit-0.sh"),
-					ConfigDir:  configDir,
-				},
-			}
-
 			// when
-			dataplane, err := New(Opts{
-				Config: cfg,
-				Stdout: &bytes.Buffer{},
-				Stderr: &bytes.Buffer{},
-			})
-			Expect(err).ToNot(HaveOccurred())
-			version, err := dataplane.version()
+			version, err := envoy.GetEnvoyVersion(filepath.Join("testdata", "envoy-mock-windows.exit-0.sh"))
 
 			// then
 			Expect(err).ToNot(HaveOccurred())

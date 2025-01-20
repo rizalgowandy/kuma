@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
@@ -14,7 +13,6 @@ import (
 )
 
 var _ = Describe("version", func() {
-
 	var backupBuildInfo kuma_version.BuildInfo
 	BeforeEach(func() {
 		backupBuildInfo = kuma_version.Build
@@ -45,6 +43,7 @@ var _ = Describe("version", func() {
 		func(given testCase) {
 			// setup
 			kuma_version.Build = kuma_version.BuildInfo{
+				Product:   "Kuma",
 				Version:   "1.2.3",
 				GitTag:    "v1.2.3",
 				GitCommit: "91ce236824a9d875601679aa80c63783fb0e8725",
@@ -69,21 +68,21 @@ var _ = Describe("version", func() {
 		Entry("app version --detailed", testCase{
 			args: []string{"version", "--detailed"},
 			expected: `
-Product:    Kuma
-Version:    1.2.3
-Git Tag:    v1.2.3
-Git Commit: 91ce236824a9d875601679aa80c63783fb0e8725
-Build Date: 2019-08-07T11:26:06Z
+Product:       Kuma
+Version:       1.2.3
+Git Tag:       v1.2.3
+Git Commit:    91ce236824a9d875601679aa80c63783fb0e8725
+Build Date:    2019-08-07T11:26:06Z
 `,
 		}),
 		Entry("app version -a", testCase{
 			args: []string{"version", "-a"},
 			expected: `
-Product:    Kuma
-Version:    1.2.3
-Git Tag:    v1.2.3
-Git Commit: 91ce236824a9d875601679aa80c63783fb0e8725
-Build Date: 2019-08-07T11:26:06Z
+Product:       Kuma
+Version:       1.2.3
+Git Tag:       v1.2.3
+Git Commit:    91ce236824a9d875601679aa80c63783fb0e8725
+Build Date:    2019-08-07T11:26:06Z
 `,
 		}),
 	)

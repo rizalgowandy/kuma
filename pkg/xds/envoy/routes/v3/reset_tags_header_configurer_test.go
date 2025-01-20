@@ -1,7 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -10,10 +10,9 @@ import (
 )
 
 var _ = Describe("ResetTagsHeaderConfigurer", func() {
-
 	It("should generate proper Envoy config", func() {
 		// when
-		routeConfiguration, err := routes.NewRouteConfigurationBuilder(envoy.APIV3).
+		routeConfiguration, err := routes.NewRouteConfigurationBuilder(envoy.APIV3, "route_configuration").
 			Configure(routes.ResetTagsHeader()).
 			Build()
 		// then
@@ -25,6 +24,7 @@ var _ = Describe("ResetTagsHeaderConfigurer", func() {
 		Expect(err).ToNot(HaveOccurred())
 		// and
 		Expect(actual).To(MatchYAML(`
+            name: route_configuration
             requestHeadersToRemove:
               - x-kuma-tags`))
 	})

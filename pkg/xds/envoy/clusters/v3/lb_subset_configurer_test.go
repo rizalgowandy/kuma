@@ -1,31 +1,30 @@
 package clusters_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	"github.com/kumahq/kuma/pkg/xds/envoy"
 	"github.com/kumahq/kuma/pkg/xds/envoy/clusters"
+	"github.com/kumahq/kuma/pkg/xds/envoy/tags"
 )
 
 var _ = Describe("LbSubset", func() {
-
 	type testCase struct {
 		clusterName string
-		tags        envoy.TagKeysSlice
+		tags        tags.TagKeysSlice
 		expected    string
 	}
 
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			cluster, err := clusters.NewClusterBuilder(envoy.APIV3).
-				Configure(clusters.EdsCluster(given.clusterName)).
+			cluster, err := clusters.NewClusterBuilder(envoy.APIV3, given.clusterName).
+				Configure(clusters.EdsCluster()).
 				Configure(clusters.LbSubset(given.tags)).
-				Configure(clusters.Timeout(core_mesh.ProtocolTCP, DefaultTimeout())).
+				Configure(clusters.Timeout(DefaultTimeout(), core_mesh.ProtocolTCP)).
 				Build()
 
 			// then
@@ -37,7 +36,7 @@ var _ = Describe("LbSubset", func() {
 		},
 		Entry("LbSubset is empty if there are no tags", testCase{
 			clusterName: "backend",
-			tags:        []envoy.TagKeys{},
+			tags:        []tags.TagKeys{},
 			expected: `
             connectTimeout: 5s
             edsClusterConfig:
@@ -49,7 +48,7 @@ var _ = Describe("LbSubset", func() {
 		}),
 		Entry("LbSubset is set when more than service tag is set", testCase{
 			clusterName: "backend",
-			tags: []envoy.TagKeys{
+			tags: []tags.TagKeys{
 				{"version"},
 				{"cluster", "version"},
 			},

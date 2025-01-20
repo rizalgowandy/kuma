@@ -7,6 +7,7 @@ import (
 
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_service_health "github.com/envoyproxy/go-control-plane/envoy/service/health/v3"
+	envoy_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
+	"github.com/kumahq/kuma/pkg/core/user"
 	"github.com/kumahq/kuma/pkg/core/xds"
 	hds_callbacks "github.com/kumahq/kuma/pkg/hds/callbacks"
 	hds_metrics "github.com/kumahq/kuma/pkg/hds/metrics"
@@ -46,10 +48,11 @@ func NewCallbacks(
 	log logr.Logger,
 	resourceManager manager.ResourceManager,
 	readOnlyResourceManager manager.ReadOnlyResourceManager,
-	cache util_xds_v3.SnapshotCache,
+	cache envoy_cache.SnapshotCache,
 	config *dp_server.HdsConfig,
-	hasher util_xds_v3.NodeHash,
+	hasher envoy_cache.NodeHash,
 	metrics *hds_metrics.Metrics,
+	defaultAdminPort uint32,
 ) hds_callbacks.Callbacks {
 	return &tracker{
 		resourceManager:    resourceManager,
@@ -61,8 +64,7 @@ func NewCallbacks(
 		reconciler: &reconciler{
 			cache:     cache,
 			hasher:    hasher,
-			versioner: util_xds_v3.SnapshotAutoVersioner{UUID: core.NewUUID},
-			generator: NewSnapshotGenerator(readOnlyResourceManager, config),
+			generator: NewSnapshotGenerator(readOnlyResourceManager, config, defaultAdminPort),
 		},
 	}
 }
@@ -114,12 +116,10 @@ func (t *tracker) OnHealthCheckRequest(streamID xds.StreamID, req *envoy_service
 	streams.activeStreams[streamID] = true
 
 	if streams.watchdogCancel == nil { // watchdog was not started yet
-		stopCh := make(chan struct{})
-		streams.watchdogCancel = func() {
-			close(stopCh)
-		}
+		ctx, cancel := context.WithCancel(context.Background())
+		streams.watchdogCancel = cancel
 		// kick off watchdog for that Dataplane
-		go t.newWatchdog(req.Node).Start(stopCh)
+		go t.newWatchdog(req.Node).Start(ctx)
 		t.log.V(1).Info("started Watchdog for a Dataplane", "streamid", streamID, "proxyId", proxyId, "dataplaneKey", dataplaneKey)
 	}
 	t.dpStreams[dataplaneKey] = streams
@@ -127,24 +127,24 @@ func (t *tracker) OnHealthCheckRequest(streamID xds.StreamID, req *envoy_service
 	return nil
 }
 
-func (t *tracker) newWatchdog(node *envoy_core.Node) watchdog.Watchdog {
+func (t *tracker) newWatchdog(node *envoy_core.Node) util_xds_v3.Watchdog {
 	return &watchdog.SimpleWatchdog{
 		NewTicker: func() *time.Ticker {
-			return time.NewTicker(t.config.RefreshInterval)
+			return time.NewTicker(t.config.RefreshInterval.Duration)
 		},
-		OnTick: func() error {
+		OnTick: func(ctx context.Context) error {
 			start := core.Now()
 			defer func() {
 				t.metrics.HdsGenerations.Observe(float64(core.Now().Sub(start).Milliseconds()))
 			}()
-			return t.reconciler.Reconcile(node)
+			return t.reconciler.Reconcile(ctx, node)
 		},
 		OnError: func(err error) {
 			t.metrics.HdsGenerationsErrors.Inc()
 			t.log.Error(err, "OnTick() failed")
 		},
 		OnStop: func() {
-			if err := t.reconciler.Clear(node); err != nil {
+			if err := t.reconciler.Clear(context.Background(), node); err != nil {
 				t.log.Error(err, "OnTick() failed")
 			}
 		},
@@ -153,6 +153,10 @@ func (t *tracker) newWatchdog(node *envoy_core.Node) watchdog.Watchdog {
 
 func (t *tracker) OnEndpointHealthResponse(streamID xds.StreamID, resp *envoy_service_health.EndpointHealthResponse) error {
 	t.metrics.ResponsesReceivedMetric.Inc()
+
+	healthMap := map[uint32]bool{}
+	envoyHealth := true // if there is no Envoy HC, assume it's healthy
+
 	for _, clusterHealth := range resp.GetClusterEndpointsHealth() {
 		if len(clusterHealth.LocalityEndpointsHealth) == 0 {
 			continue
@@ -162,18 +166,25 @@ func (t *tracker) OnEndpointHealthResponse(streamID xds.StreamID, resp *envoy_se
 		}
 		status := clusterHealth.LocalityEndpointsHealth[0].EndpointsHealth[0].HealthStatus
 		health := status == envoy_core.HealthStatus_HEALTHY || status == envoy_core.HealthStatus_UNKNOWN
-		port, err := names.GetPortForLocalClusterName(clusterHealth.ClusterName)
-		if err != nil {
-			return err
+
+		if clusterHealth.ClusterName == names.GetEnvoyAdminClusterName() {
+			envoyHealth = health
+		} else {
+			port, err := names.GetPortForLocalClusterName(clusterHealth.ClusterName)
+			if err != nil {
+				return err
+			}
+			healthMap[port] = health
 		}
-		if err := t.updateDataplane(streamID, port, health); err != nil {
-			return err
-		}
+	}
+	if err := t.updateDataplane(streamID, healthMap, envoyHealth); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (t *tracker) updateDataplane(streamID xds.StreamID, port uint32, ready bool) error {
+func (t *tracker) updateDataplane(streamID xds.StreamID, healthMap map[uint32]bool, envoyHealth bool) error {
+	ctx := user.Ctx(context.Background(), user.ControlPlane)
 	t.RLock()
 	defer t.RUnlock()
 	dataplaneKey, hasAssociation := t.streamsAssociation[streamID]
@@ -182,19 +193,31 @@ func (t *tracker) updateDataplane(streamID xds.StreamID, port uint32, ready bool
 	}
 
 	dp := mesh.NewDataplaneResource()
-	if err := t.resourceManager.Get(context.Background(), dp, store.GetBy(dataplaneKey)); err != nil {
+	if err := t.resourceManager.Get(ctx, dp, store.GetBy(dataplaneKey)); err != nil {
 		return err
 	}
 
 	changed := false
 	for _, inbound := range dp.Spec.Networking.Inbound {
 		intf := dp.Spec.Networking.ToInboundInterface(inbound)
-		if intf.WorkloadPort != port {
-			continue
+		workloadHealth, exist := healthMap[intf.WorkloadPort]
+		if exist {
+			workloadHealth = workloadHealth && envoyHealth
+		} else {
+			workloadHealth = envoyHealth
 		}
-		if inbound.Health == nil || inbound.Health.Ready != ready {
+		if workloadHealth && inbound.State == mesh_proto.Dataplane_Networking_Inbound_NotReady {
+			inbound.State = mesh_proto.Dataplane_Networking_Inbound_Ready
+			// write health for backwards compatibility with Kuma 2.5 and older
 			inbound.Health = &mesh_proto.Dataplane_Networking_Inbound_Health{
-				Ready: ready,
+				Ready: true,
+			}
+			changed = true
+		} else if !workloadHealth && inbound.State == mesh_proto.Dataplane_Networking_Inbound_Ready {
+			inbound.State = mesh_proto.Dataplane_Networking_Inbound_NotReady
+			// write health for backwards compatibility with Kuma 2.5 and older
+			inbound.Health = &mesh_proto.Dataplane_Networking_Inbound_Health{
+				Ready: false,
 			}
 			changed = true
 		}
@@ -202,7 +225,7 @@ func (t *tracker) updateDataplane(streamID xds.StreamID, port uint32, ready bool
 
 	if changed {
 		t.log.V(1).Info("status updated", "dataplaneKey", dataplaneKey)
-		return t.resourceManager.Update(context.Background(), dp)
+		return t.resourceManager.Update(ctx, dp)
 	}
 
 	return nil

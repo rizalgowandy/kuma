@@ -3,15 +3,18 @@ package memory
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/kumahq/kuma/pkg/core/resources/model"
+	"github.com/pkg/errors"
+
+	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/registry"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/events"
-	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
 type resourceKey struct {
@@ -24,13 +27,15 @@ type memoryStoreRecord struct {
 	resourceKey
 	Version          memoryVersion
 	Spec             string
+	Status           string
 	CreationTime     time.Time
 	ModificationTime time.Time
 	Children         []*resourceKey
+	Labels           map[string]string
 }
 type memoryStoreRecords = []*memoryStoreRecord
 
-var _ model.ResourceMeta = &memoryMeta{}
+var _ core_model.ResourceMeta = &memoryMeta{}
 
 type memoryMeta struct {
 	Name             string
@@ -38,14 +43,15 @@ type memoryMeta struct {
 	Version          memoryVersion
 	CreationTime     time.Time
 	ModificationTime time.Time
+	Labels           map[string]string
 }
 
 func (m memoryMeta) GetName() string {
 	return m.Name
 }
 
-func (m memoryMeta) GetNameExtensions() model.ResourceNameExtensions {
-	return model.ResourceNameExtensionsUnsupported
+func (m memoryMeta) GetNameExtensions() core_model.ResourceNameExtensions {
+	return core_model.ResourceNameExtensionsUnsupported
 }
 
 func (m memoryMeta) GetMesh() string {
@@ -62,6 +68,10 @@ func (m memoryMeta) GetCreationTime() time.Time {
 
 func (m memoryMeta) GetModificationTime() time.Time {
 	return m.ModificationTime
+}
+
+func (m memoryMeta) GetLabels() map[string]string {
+	return m.Labels
 }
 
 type memoryVersion uint64
@@ -90,18 +100,28 @@ func NewStore() store.ResourceStore {
 	return &memoryStore{}
 }
 
+func ClearStore(resourceStore store.ResourceStore) {
+	c := resourceStore.(*memoryStore)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = memoryStoreRecords{}
+}
+
 func (c *memoryStore) SetEventWriter(writer events.Emitter) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.eventWriter = writer
 }
 
-func (c *memoryStore) Create(_ context.Context, r model.Resource, fs ...store.CreateOptionsFunc) error {
+func (c *memoryStore) Create(_ context.Context, r core_model.Resource, fs ...store.CreateOptionsFunc) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	opts := store.NewCreateOptions(fs...)
 	// Name must be provided via CreateOptions
+	if opts.Name == "" && opts.Mesh == "" {
+		return errors.New("you must pass store.CreateBy or store.CreateByKey as a parameter")
+	}
 	if _, record := c.findRecord(string(r.Descriptor().Name), opts.Name, opts.Mesh); record != nil {
 		return store.ErrorResourceAlreadyExists(r.Descriptor().Name, opts.Name, opts.Mesh)
 	}
@@ -112,16 +132,14 @@ func (c *memoryStore) Create(_ context.Context, r model.Resource, fs ...store.Cr
 		Version:          initialVersion(),
 		CreationTime:     opts.CreationTime,
 		ModificationTime: opts.CreationTime,
+		Labels:           maps.Clone(opts.Labels),
 	}
 
 	// fill the meta
 	r.SetMeta(meta)
 
 	// convert into storage representation
-	record, err := c.marshalRecord(
-		string(r.Descriptor().Name),
-		meta,
-		r.GetSpec())
+	record, err := c.marshalRecord(string(r.Descriptor().Name), meta, r.GetSpec(), r.GetStatus())
 	if err != nil {
 		return err
 	}
@@ -141,14 +159,14 @@ func (c *memoryStore) Create(_ context.Context, r model.Resource, fs ...store.Cr
 			c.eventWriter.Send(events.ResourceChangedEvent{
 				Operation: events.Create,
 				Type:      r.Descriptor().Name,
-				Key:       model.MetaToResourceKey(r.GetMeta()),
+				Key:       core_model.MetaToResourceKey(r.GetMeta()),
 			})
 		}()
 	}
 	return nil
 }
 
-func (c *memoryStore) Update(_ context.Context, r model.Resource, fs ...store.UpdateOptionsFunc) error {
+func (c *memoryStore) Update(_ context.Context, r core_model.Resource, fs ...store.UpdateOptionsFunc) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -161,44 +179,53 @@ func (c *memoryStore) Update(_ context.Context, r model.Resource, fs ...store.Up
 
 	// Name must be provided via r.GetMeta()
 	mesh := r.GetMeta().GetMesh()
-	idx, record := c.findRecord(string(r.Descriptor().Name), r.GetMeta().GetName(), mesh)
+	_, record := c.findRecord(string(r.Descriptor().Name), r.GetMeta().GetName(), mesh)
 	if record == nil || meta.Version != record.Version {
 		return store.ErrorResourceConflict(r.Descriptor().Name, r.GetMeta().GetName(), r.GetMeta().GetMesh())
 	}
 	meta.Version = meta.Version.Next()
 	meta.ModificationTime = opts.ModificationTime
+	if opts.ModifyLabels {
+		meta.Labels = maps.Clone(opts.Labels)
+	}
+	r.SetMeta(meta)
 
-	record, err := c.marshalRecord(
-		string(r.Descriptor().Name),
-		meta,
-		r.GetSpec())
+	record.Version = meta.Version
+	record.ModificationTime = meta.ModificationTime
+	record.Labels = meta.Labels
+
+	content, err := core_model.ToJSON(r.GetSpec())
 	if err != nil {
 		return err
 	}
+	record.Spec = string(content)
+	if r.Descriptor().HasStatus {
+		content, err := core_model.ToJSON(r.GetStatus())
+		if err != nil {
+			return err
+		}
+		record.Status = string(content)
+	}
 
-	// persist
-	c.records[idx] = record
-
-	r.SetMeta(meta)
 	if c.eventWriter != nil {
 		go func() {
 			c.eventWriter.Send(events.ResourceChangedEvent{
 				Operation: events.Update,
 				Type:      r.Descriptor().Name,
-				Key:       model.MetaToResourceKey(r.GetMeta()),
+				Key:       core_model.MetaToResourceKey(r.GetMeta()),
 			})
 		}()
 	}
 	return nil
 }
 
-func (c *memoryStore) Delete(ctx context.Context, r model.Resource, fs ...store.DeleteOptionsFunc) error {
+func (c *memoryStore) Delete(ctx context.Context, r core_model.Resource, fs ...store.DeleteOptionsFunc) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.delete(ctx, r, fs...)
+	return c.delete(r, fs...)
 }
 
-func (c *memoryStore) delete(ctx context.Context, r model.Resource, fs ...store.DeleteOptionsFunc) error {
+func (c *memoryStore) delete(r core_model.Resource, fs ...store.DeleteOptionsFunc) error {
 	opts := store.NewDeleteOptions(fs...)
 
 	_, ok := (r.GetMeta()).(memoryMeta)
@@ -214,16 +241,16 @@ func (c *memoryStore) delete(ctx context.Context, r model.Resource, fs ...store.
 	for _, child := range record.Children {
 		_, childRecord := c.findRecord(child.ResourceType, child.Name, child.Mesh)
 		if childRecord == nil {
-			return store.ErrorResourceNotFound(model.ResourceType(child.ResourceType), child.Name, child.Mesh)
+			continue // resource was already deleted
 		}
-		obj, err := registry.Global().NewObject(model.ResourceType(child.ResourceType))
+		obj, err := registry.Global().NewObject(core_model.ResourceType(child.ResourceType))
 		if err != nil {
 			return fmt.Errorf("MemoryStore.Delete() couldn't unmarshal child resource")
 		}
 		if err := c.unmarshalRecord(childRecord, obj); err != nil {
 			return fmt.Errorf("MemoryStore.Delete() couldn't unmarshal child resource")
 		}
-		if err := c.delete(ctx, obj, store.DeleteByKey(childRecord.Name, childRecord.Mesh)); err != nil {
+		if err := c.delete(obj, store.DeleteByKey(childRecord.Name, childRecord.Mesh)); err != nil {
 			return fmt.Errorf("MemoryStore.Delete() couldn't delete linked child resource")
 		}
 	}
@@ -233,7 +260,7 @@ func (c *memoryStore) delete(ctx context.Context, r model.Resource, fs ...store.
 			c.eventWriter.Send(events.ResourceChangedEvent{
 				Operation: events.Delete,
 				Type:      r.Descriptor().Name,
-				Key: model.ResourceKey{
+				Key: core_model.ResourceKey{
 					Mesh: opts.Mesh,
 					Name: opts.Name,
 				},
@@ -243,7 +270,7 @@ func (c *memoryStore) delete(ctx context.Context, r model.Resource, fs ...store.
 	return nil
 }
 
-func (c *memoryStore) Get(_ context.Context, r model.Resource, fs ...store.GetOptionsFunc) error {
+func (c *memoryStore) Get(_ context.Context, r core_model.Resource, fs ...store.GetOptionsFunc) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -254,18 +281,18 @@ func (c *memoryStore) Get(_ context.Context, r model.Resource, fs ...store.GetOp
 		return store.ErrorResourceNotFound(r.Descriptor().Name, opts.Name, opts.Mesh)
 	}
 	if opts.Version != "" && opts.Version != record.Version.String() {
-		return store.ErrorResourcePreconditionFailed(r.Descriptor().Name, opts.Name, opts.Mesh)
+		return store.ErrorResourceConflict(r.Descriptor().Name, opts.Name, opts.Mesh)
 	}
 	return c.unmarshalRecord(record, r)
 }
 
-func (c *memoryStore) List(_ context.Context, rs model.ResourceList, fs ...store.ListOptionsFunc) error {
+func (c *memoryStore) List(_ context.Context, rs core_model.ResourceList, fs ...store.ListOptionsFunc) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	opts := store.NewListOptions(fs...)
 
-	records := c.findRecords(string(rs.GetItemType()), opts.Mesh)
+	records := c.findRecords(string(rs.GetItemType()), opts.Mesh, opts.NameContains)
 
 	for i := 0; i < len(records); i++ {
 		r := rs.NewItem()
@@ -281,7 +308,8 @@ func (c *memoryStore) List(_ context.Context, rs model.ResourceList, fs ...store
 }
 
 func (c *memoryStore) findRecord(
-	resourceType string, name string, mesh string) (int, *memoryStoreRecord) {
+	resourceType string, name string, mesh string,
+) (int, *memoryStoreRecord) {
 	for idx, rec := range c.records {
 		if rec.ResourceType == resourceType &&
 			rec.Name == name &&
@@ -292,21 +320,35 @@ func (c *memoryStore) findRecord(
 	return -1, nil
 }
 
-func (c *memoryStore) findRecords(
-	resourceType string, mesh string) []*memoryStoreRecord {
+func (c *memoryStore) findRecords(resourceType string, mesh string, contains string) []*memoryStoreRecord {
 	res := make([]*memoryStoreRecord, 0)
 	for _, rec := range c.records {
-		if rec.ResourceType == resourceType &&
-			(mesh == "" || rec.Mesh == mesh) {
-			res = append(res, rec)
+		if rec.ResourceType != resourceType {
+			continue
 		}
+		if mesh != "" && rec.Mesh != mesh {
+			continue
+		}
+		if contains != "" && !strings.Contains(rec.Name, contains) {
+			continue
+		}
+		res = append(res, rec)
 	}
 	return res
 }
 
-func (c *memoryStore) marshalRecord(resourceType string, meta memoryMeta, spec model.ResourceSpec) (*memoryStoreRecord, error) {
+func (c *memoryStore) marshalRecord(
+	resourceType string,
+	meta memoryMeta,
+	spec core_model.ResourceSpec,
+	status core_model.ResourceStatus,
+) (*memoryStoreRecord, error) {
 	// convert spec into storage representation
-	content, err := util_proto.ToJSON(spec)
+	content, err := core_model.ToJSON(spec)
+	if err != nil {
+		return nil, err
+	}
+	statusContent, err := core_model.ToJSON(status)
 	if err != nil {
 		return nil, err
 	}
@@ -319,18 +361,26 @@ func (c *memoryStore) marshalRecord(resourceType string, meta memoryMeta, spec m
 		},
 		Version:          meta.Version,
 		Spec:             string(content),
+		Status:           string(statusContent),
 		CreationTime:     meta.CreationTime,
 		ModificationTime: meta.ModificationTime,
+		Labels:           meta.Labels,
 	}, nil
 }
 
-func (c *memoryStore) unmarshalRecord(s *memoryStoreRecord, r model.Resource) error {
+func (c *memoryStore) unmarshalRecord(s *memoryStoreRecord, r core_model.Resource) error {
 	r.SetMeta(memoryMeta{
 		Name:             s.Name,
 		Mesh:             s.Mesh,
 		Version:          s.Version,
 		CreationTime:     s.CreationTime,
 		ModificationTime: s.ModificationTime,
+		Labels:           s.Labels,
 	})
-	return util_proto.FromJSON([]byte(s.Spec), r.GetSpec())
+	if r.Descriptor().HasStatus {
+		if err := core_model.FromJSON([]byte(s.Status), r.GetStatus()); err != nil {
+			return err
+		}
+	}
+	return core_model.FromJSON([]byte(s.Spec), r.GetSpec())
 }

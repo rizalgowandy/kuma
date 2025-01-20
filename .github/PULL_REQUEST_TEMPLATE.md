@@ -1,27 +1,20 @@
-### Summary
+## Motivation
 
-SUMMARY_GOES_HERE
+<!-- Why are we doing this change -->
 
-### Full changelog
+## Implementation information
 
-* [Implement ...]
-* [Fix ...]
+<!-- Explain how this was done and potentially alternatives considered and discarded -->
 
-### Issues resolved
+## Supporting documentation
 
-Fix #XXX
+<!-- Is there a MADR? An Issue? A related PR? -->
 
-### Documentation
+Fix #XX
 
-- [ ] Link to the website [documentation PR](https://github.com/kumahq/kuma-website/pull/XXX)
-
-### Testing
-
-- [ ] Unit tests
-- [ ] E2E tests
-- [ ] Manual testing on Universal
-- [ ] Manual testing on Kubernetes 
-
-### Backwards compatibility
-
-- [ ] Add `backport-to-stable` label if the code is backwards compatible. Otherwise, list breaking changes.
+<!--
+> Changelog: skip
+-->
+<!--
+Uncomment the above section to explicitly set a [`> Changelog:` entry here](https://github.com/kumahq/kuma/blob/master/CONTRIBUTING.md#submitting-a-patch)?
+-->

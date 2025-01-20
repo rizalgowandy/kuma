@@ -1,10 +1,9 @@
 package mesh_test
 
 import (
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -23,7 +22,9 @@ var _ = Describe("ProxyTemplate", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				// when
-				err = proxyTemplate.Validate()
+				err = proxyTemplate.ValidateWithProfiles(map[string]struct{}{
+					"default-proxy": {},
+				})
 				// then
 				Expect(err).ToNot(HaveOccurred())
 			},
@@ -319,7 +320,11 @@ var _ = Describe("ProxyTemplate", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				// when
-				verr := proxyTemplate.Validate()
+				verr := proxyTemplate.ValidateWithProfiles(map[string]struct{}{
+					"default-proxy": {},
+					"egress-proxy":  {},
+					"ingress-proxy": {},
+				})
 				// and
 				actual, err := yaml.Marshal(verr)
 
@@ -352,7 +357,7 @@ var _ = Describe("ProxyTemplate", func() {
 				expected: `
                 violations:
                 - field: conf.imports[0]
-                  message: 'profile not found. Available profiles: default-proxy'`,
+                  message: 'profile not found. Available profiles: default-proxy,egress-proxy,ingress-proxy'`,
 			}),
 			Entry("resources empty fields", testCase{
 				proxyTemplate: `

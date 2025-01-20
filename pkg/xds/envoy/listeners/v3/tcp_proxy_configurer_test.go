@@ -1,8 +1,7 @@
 package v3_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/core/xds"
@@ -12,9 +11,7 @@ import (
 )
 
 var _ = Describe("TcpProxyConfigurer", func() {
-
 	type testCase struct {
-		listenerName     string
 		listenerProtocol xds.SocketAddressProtocol
 		listenerAddress  string
 		listenerPort     uint32
@@ -26,10 +23,9 @@ var _ = Describe("TcpProxyConfigurer", func() {
 	DescribeTable("should generate proper Envoy config with metadata",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(InboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
-					Configure(TcpProxyWithMetadata(given.statsName, given.clusters...)))).
+			listener, err := NewInboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
+					Configure(TcpProxyDeprecatedWithMetadata(given.statsName, given.clusters...)))).
 				Build()
 			// then
 			Expect(err).ToNot(HaveOccurred())
@@ -41,7 +37,6 @@ var _ = Describe("TcpProxyConfigurer", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("basic tcp_proxy with a single destination cluster", testCase{
-			listenerName:    "inbound:192.168.0.1:8080",
 			listenerAddress: "192.168.0.1",
 			listenerPort:    8080,
 			statsName:       "localhost:8080",
@@ -57,6 +52,7 @@ var _ = Describe("TcpProxyConfigurer", func() {
           socketAddress:
             address: 192.168.0.1
             portValue: 8080
+        enableReusePort: false
         filterChains:
         - filters:
           - name: envoy.filters.network.tcp_proxy
@@ -71,7 +67,6 @@ var _ = Describe("TcpProxyConfigurer", func() {
 `,
 		}),
 		Entry("basic tcp_proxy with weighted destination clusters", testCase{
-			listenerName:    "inbound:127.0.0.1:5432",
 			listenerAddress: "127.0.0.1",
 			listenerPort:    5432,
 			statsName:       "db",
@@ -92,6 +87,7 @@ var _ = Describe("TcpProxyConfigurer", func() {
               socketAddress:
                 address: 127.0.0.1
                 portValue: 5432
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.tcp_proxy
@@ -120,10 +116,9 @@ var _ = Describe("TcpProxyConfigurer", func() {
 	DescribeTable("should generate proper Envoy config without metadata",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(InboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
-					Configure(TcpProxy(given.statsName, given.clusters...)))).
+			listener, err := NewInboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
+					Configure(TcpProxyDeprecated(given.statsName, given.clusters...)))).
 				Build()
 			// then
 			Expect(err).ToNot(HaveOccurred())
@@ -135,7 +130,6 @@ var _ = Describe("TcpProxyConfigurer", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("basic tcp_proxy with a single destination cluster", testCase{
-			listenerName:    "inbound:192.168.0.1:8080",
 			listenerAddress: "192.168.0.1",
 			listenerPort:    8080,
 			statsName:       "localhost:8080",
@@ -153,6 +147,7 @@ var _ = Describe("TcpProxyConfigurer", func() {
           socketAddress:
             address: 192.168.0.1
             portValue: 8080
+        enableReusePort: false
         filterChains:
         - filters:
           - name: envoy.filters.network.tcp_proxy
@@ -163,7 +158,6 @@ var _ = Describe("TcpProxyConfigurer", func() {
 `,
 		}),
 		Entry("basic tcp_proxy with weighted destination clusters", testCase{
-			listenerName:    "inbound:127.0.0.1:5432",
 			listenerAddress: "127.0.0.1",
 			listenerPort:    5432,
 			statsName:       "db",
@@ -175,12 +169,14 @@ var _ = Describe("TcpProxyConfigurer", func() {
 				envoy_common.NewCluster(
 					envoy_common.WithService("db-1"),
 					envoy_common.WithWeight(90),
-				)},
+				),
+			},
 			expected: `
             address:
               socketAddress:
                 address: 127.0.0.1
                 portValue: 5432
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.tcp_proxy

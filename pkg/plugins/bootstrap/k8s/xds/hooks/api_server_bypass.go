@@ -13,7 +13,7 @@ import (
 
 const (
 	OriginApiServerBypass            = "apiServerBypass"
-	apiServerBypassHookResourcesName = "plugins:bootstrap:k8s:hooks:apiServerBypass"
+	apiServerBypassHookResourcesName = "plugins:bootstrap:k8s:hooks:apiServerBypass" // #nosec G101 -- no idea why gosec things this is a secret
 )
 
 type ApiServerBypass struct {
@@ -34,15 +34,14 @@ func (h ApiServerBypass) Modify(resources *core_xds.ResourceSet, ctx xds_context
 	if proxy.Dataplane == nil {
 		return nil
 	}
-	// backwards compatibility
-	if proxy.Dataplane.Spec.IsIngress() || ctx.Mesh.Resource.Spec.IsPassthrough() {
+	if ctx.Mesh.Resource.Spec.IsPassthrough() {
 		return nil
 	}
 
-	listener, err := envoy_listeners.NewListenerBuilder(proxy.APIVersion).
-		Configure(envoy_listeners.OutboundListener(apiServerBypassHookResourcesName, h.Address, h.Port, core_xds.SocketAddressProtocolTCP)).
-		Configure(envoy_listeners.FilterChain(envoy_listeners.NewFilterChainBuilder(proxy.APIVersion).
-			Configure(envoy_listeners.TcpProxy(apiServerBypassHookResourcesName, envoy_common.NewCluster(envoy_common.WithService(apiServerBypassHookResourcesName)))))).
+	listener, err := envoy_listeners.NewOutboundListenerBuilder(proxy.APIVersion, h.Address, h.Port, core_xds.SocketAddressProtocolTCP).
+		WithOverwriteName(apiServerBypassHookResourcesName).
+		Configure(envoy_listeners.FilterChain(envoy_listeners.NewFilterChainBuilder(proxy.APIVersion, envoy_common.AnonymousResource).
+			Configure(envoy_listeners.TcpProxyDeprecated(apiServerBypassHookResourcesName, envoy_common.NewCluster(envoy_common.WithService(apiServerBypassHookResourcesName)))))).
 		Configure(envoy_listeners.NoBindToPort()).
 		Configure(envoy_listeners.OriginalDstForwarder()).
 		Build()
@@ -50,8 +49,9 @@ func (h ApiServerBypass) Modify(resources *core_xds.ResourceSet, ctx xds_context
 		return errors.Wrapf(err, "could not generate listener: %s", apiServerBypassHookResourcesName)
 	}
 
-	cluster, err := envoy_clusters.NewClusterBuilder(proxy.APIVersion).
-		Configure(envoy_clusters.PassThroughCluster(apiServerBypassHookResourcesName)).
+	cluster, err := envoy_clusters.NewClusterBuilder(proxy.APIVersion, apiServerBypassHookResourcesName).
+		Configure(envoy_clusters.PassThroughCluster()).
+		Configure(envoy_clusters.DefaultTimeout()).
 		Build()
 	if err != nil {
 		return errors.Wrapf(err, "could not generate cluster: %s", apiServerBypassHookResourcesName)

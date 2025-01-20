@@ -8,6 +8,7 @@ import (
 	"github.com/asaskevich/govalidator"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
+	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	"github.com/kumahq/kuma/pkg/core/validators"
 )
 
@@ -15,13 +16,23 @@ func (es *ExternalServiceResource) Validate() error {
 	var err validators.ValidationError
 	err.Add(validateExternalServiceNetworking(es.Spec.GetNetworking()))
 
-	err.Add(validateTags(es.Spec.Tags))
-	if _, exist := es.Spec.Tags[mesh_proto.ServiceTag]; !exist {
-		err.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ServiceTag), `tag has to exist`)
+	validateProtocol := func(path validators.PathBuilder, selector map[string]string) validators.ValidationError {
+		var result validators.ValidationError
+		if value, exist := selector[mesh_proto.ProtocolTag]; exist {
+			if ParseProtocol(value) == ProtocolUnknown {
+				err.AddViolationAt(path.Key(mesh_proto.ProtocolTag), fmt.Sprintf("tag %q has an invalid value %q. %s", mesh_proto.ProtocolTag, value, AllowedValuesHint(SupportedProtocols.Strings()...)))
+			}
+		}
+		return result
 	}
-	if value, exist := es.Spec.Tags[mesh_proto.ProtocolTag]; exist {
-		if ParseProtocol(value) == ProtocolUnknown {
-			err.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ProtocolTag), fmt.Sprintf("tag %q has an invalid value %q. %s", mesh_proto.ProtocolTag, value, AllowedValuesHint(SupportedProtocols.Strings()...)))
+	err.Add(ValidateTags(validators.RootedAt("tags"), es.Spec.Tags, ValidateTagsOpts{
+		RequireService:      true,
+		ExtraTagsValidators: []TagsValidatorFunc{validateProtocol},
+	}))
+
+	if service := es.Spec.GetService(); service != "" {
+		if host, _, e := net.SplitHostPort(es.Spec.GetNetworking().GetAddress()); e == nil && service == host {
+			err.AddViolationAt(validators.RootedAt("tags").Key(mesh_proto.ServiceTag), "cannot be the same as networking.address")
 		}
 	}
 
@@ -40,6 +51,9 @@ func validateExternalServiceNetworking(networking *mesh_proto.ExternalService_Ne
 	if networking.GetTls().GetServerName() != nil && networking.GetTls().GetServerName().GetValue() == "" {
 		err.AddViolationAt(path.Field("tls").Field("serverName"), "cannot be empty")
 	}
+	err.Add(system.ValidateDataSource(path.Field("tls").Field("caCert"), networking.GetTls().GetCaCert()))
+	err.Add(system.ValidateDataSource(path.Field("tls").Field("clientCert"), networking.GetTls().GetClientCert()))
+	err.Add(system.ValidateDataSource(path.Field("tls").Field("clientKey"), networking.GetTls().GetClientKey()))
 	return err
 }
 

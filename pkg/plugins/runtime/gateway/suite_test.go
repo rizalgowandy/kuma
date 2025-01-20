@@ -3,33 +3,33 @@ package gateway_test
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 	"testing"
 
 	"github.com/Nordix/simple-ipam/pkg/ipam"
 	envoy_types "github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	cache_v3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
-	"github.com/golang/protobuf/proto"
-	. "github.com/onsi/ginkgo"
+	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	kuma_cp "github.com/kumahq/kuma/pkg/config/app/kuma-cp"
 	"github.com/kumahq/kuma/pkg/core"
-	"github.com/kumahq/kuma/pkg/core/faultinjections"
-	"github.com/kumahq/kuma/pkg/core/logs"
-	"github.com/kumahq/kuma/pkg/core/permissions"
 	"github.com/kumahq/kuma/pkg/core/plugins"
-	"github.com/kumahq/kuma/pkg/core/ratelimits"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
+	rest_v1alpha1 "github.com/kumahq/kuma/pkg/core/resources/model/rest/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/resources/registry"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/core/runtime"
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
+	"github.com/kumahq/kuma/pkg/dns/vips"
+	"github.com/kumahq/kuma/pkg/plugins/runtime/gateway/metadata"
 	"github.com/kumahq/kuma/pkg/test"
 	test_runtime "github.com/kumahq/kuma/pkg/test/runtime"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -37,6 +37,7 @@ import (
 	xds_context "github.com/kumahq/kuma/pkg/xds/context"
 	"github.com/kumahq/kuma/pkg/xds/envoy"
 	"github.com/kumahq/kuma/pkg/xds/secrets"
+	"github.com/kumahq/kuma/pkg/xds/server"
 	"github.com/kumahq/kuma/pkg/xds/sync"
 )
 
@@ -69,12 +70,12 @@ type ProtoSnapshot struct {
 // implements the json.Marshaler so that the resulting JSON fully
 // expands embedded Any protobufs (which are otherwise serialized
 // as byte arrays).
-func MakeProtoResource(resources cache_v3.Resources) ProtoResource {
+func MakeProtoResource(resources map[string]envoy_types.ResourceWithTTL) ProtoResource {
 	result := ProtoResource{
 		Resources: map[string]ProtoMessage{},
 	}
 
-	for name, values := range resources.Items {
+	for name, values := range resources {
 		result.Resources[name] = ProtoMessage{
 			Message: values.Resource,
 		}
@@ -83,81 +84,62 @@ func MakeProtoResource(resources cache_v3.Resources) ProtoResource {
 	return result
 }
 
-func MakeProtoSnapshot(snap cache_v3.Snapshot) ProtoSnapshot {
+func MakeProtoSnapshot(snap cache_v3.ResourceSnapshot) ProtoSnapshot {
 	return ProtoSnapshot{
-		Clusters:  MakeProtoResource(snap.Resources[envoy_types.Cluster]),
-		Endpoints: MakeProtoResource(snap.Resources[envoy_types.Endpoint]),
-		Listeners: MakeProtoResource(snap.Resources[envoy_types.Listener]),
-		Routes:    MakeProtoResource(snap.Resources[envoy_types.Route]),
-		Runtimes:  MakeProtoResource(snap.Resources[envoy_types.Runtime]),
-		Secrets:   MakeProtoResource(snap.Resources[envoy_types.Secret]),
+		Clusters:  MakeProtoResource(snap.GetResourcesAndTTL(resource.ClusterType)),
+		Endpoints: MakeProtoResource(snap.GetResourcesAndTTL(resource.EndpointType)),
+		Listeners: MakeProtoResource(snap.GetResourcesAndTTL(resource.ListenerType)),
+		Routes:    MakeProtoResource(snap.GetResourcesAndTTL(resource.RouteType)),
+		Runtimes:  MakeProtoResource(snap.GetResourcesAndTTL(resource.RuntimeType)),
+		Secrets:   MakeProtoResource(snap.GetResourcesAndTTL(resource.SecretType)),
 	}
-}
-
-type mockMetadataTracker struct{}
-
-func (m mockMetadataTracker) Metadata(dpKey core_model.ResourceKey) *core_xds.DataplaneMetadata {
-	return nil
 }
 
 func MakeGeneratorContext(rt runtime.Runtime, key core_model.ResourceKey) (*xds_context.Context, *core_xds.Proxy) {
 	b := sync.DataplaneProxyBuilder{
-		CachingResManager:    rt.ReadOnlyResourceManager(),
-		NonCachingResManager: rt.ResourceManager(),
-		LookupIP:             rt.LookupIP(),
-		DataSourceLoader:     rt.DataSourceLoader(),
-		MetadataTracker:      mockMetadataTracker{},
-		PermissionMatcher: permissions.TrafficPermissionsMatcher{
-			ResourceManager: rt.ReadOnlyResourceManager(),
-		},
-		LogsMatcher: logs.TrafficLogsMatcher{
-			ResourceManager: rt.ReadOnlyResourceManager(),
-		},
-		FaultInjectionMatcher: faultinjections.FaultInjectionMatcher{
-			ResourceManager: rt.ReadOnlyResourceManager(),
-		},
-		RateLimitMatcher: ratelimits.RateLimitMatcher{
-			ResourceManager: rt.ReadOnlyResourceManager(),
-		},
 		Zone:       rt.Config().Multizone.Zone.Name,
 		APIVersion: envoy.APIV3,
 	}
 
-	mesh := core_mesh.NewMeshResource()
-	Expect(rt.ReadOnlyResourceManager().Get(context.TODO(), mesh, store.GetByKey(key.Mesh, core_model.NoMesh))).
-		To(Succeed())
+	cache, err := cla.NewCache(rt.Config().Store.Cache.ExpirationTime.Duration, rt.Metrics())
+	Expect(err).To(Succeed())
 
-	dataplanes := core_mesh.DataplaneResourceList{}
-	Expect(rt.ResourceManager().List(context.TODO(), &dataplanes, store.ListByMesh(key.Mesh))).
-		To(Succeed())
-
-	cache, err := cla.NewCache(
-		rt.ReadOnlyResourceManager(),
-		rt.Config().Multizone.Zone.Name,
-		rt.Config().Store.Cache.ExpirationTime,
-		rt.LookupIP(), rt.Metrics())
+	idProvider, err := secrets.NewIdentityProvider(rt.CaManagers(), rt.Metrics())
 	Expect(err).To(Succeed())
 
 	secrets, err := secrets.NewSecrets(
-		secrets.NewCaProvider(rt.CaManagers()),
-		secrets.NewIdentityProvider(rt.CaManagers()),
+		rt.CAProvider(),
+		idProvider,
 		rt.Metrics(),
 	)
 	Expect(err).To(Succeed())
 
-	control, err := xds_context.BuildControlPlaneContext(rt.Config(), cache, secrets)
+	cpCtx := &xds_context.ControlPlaneContext{
+		CLACache: cache,
+		Secrets:  secrets,
+		Zone:     rt.Config().Multizone.Zone.Name,
+	}
+
+	meshCtxBuilder := xds_context.NewMeshContextBuilder(
+		rt.ReadOnlyResourceManager(),
+		server.MeshResourceTypes(),
+		rt.LookupIP(),
+		rt.Config().Multizone.Zone.Name,
+		vips.NewPersistence(rt.ReadOnlyResourceManager(), rt.ConfigManager(), false),
+		rt.Config().DNSServer.Domain,
+		rt.Config().DNSServer.ServiceVipPort,
+		xds_context.AnyToAnyReachableServicesGraphBuilder,
+	)
+
+	meshCtx, err := meshCtxBuilder.Build(context.TODO(), key.Mesh)
 	Expect(err).To(Succeed())
 
 	ctx := xds_context.Context{
-		ControlPlane: control,
-		Mesh: xds_context.MeshContext{
-			Resource:   mesh,
-			Dataplanes: &dataplanes,
-		},
-		EnvoyAdminClient: nil,
+		ControlPlane: cpCtx,
+		Mesh:         meshCtx,
 	}
 
-	proxy, err := b.Build(key, &ctx)
+	proxy, err := b.Build(context.TODO(), key, meshCtx)
 	Expect(err).To(Succeed())
 
 	return &ctx, proxy
@@ -185,7 +167,7 @@ func FetchNamedFixture(
 // StoreNamedFixture reads the given YAML file name from the testdata
 // directory, then stores it in the runtime resource manager.
 func StoreNamedFixture(rt runtime.Runtime, name string) error {
-	bytes, err := ioutil.ReadFile(path.Join("testdata", name))
+	bytes, err := os.ReadFile(path.Join("testdata", name))
 	if err != nil {
 		return err
 	}
@@ -196,7 +178,7 @@ func StoreNamedFixture(rt runtime.Runtime, name string) error {
 // StoreInlineFixture stores or updates the given YAML object in the
 // runtime resource manager.
 func StoreInlineFixture(rt runtime.Runtime, object []byte) error {
-	r, err := rest.UnmarshallToCore(object)
+	r, err := rest.YAML.UnmarshalCore(object)
 	if err != nil {
 		return err
 	}
@@ -207,13 +189,15 @@ func StoreInlineFixture(rt runtime.Runtime, object []byte) error {
 // StoreFixture stores or updates the given resource in the runtime
 // resource manager.
 func StoreFixture(mgr manager.ResourceManager, r core_model.Resource) error {
+	ctx := context.Background()
+
 	key := core_model.MetaToResourceKey(r.GetMeta())
 	current, err := registry.Global().NewObject(r.Descriptor().Name)
 	if err != nil {
 		return err
 	}
 
-	return manager.Upsert(mgr, key, current,
+	return manager.Upsert(ctx, mgr, key, current,
 		func(resource core_model.Resource) error {
 			return resource.SetSpec(r.GetSpec())
 		},
@@ -223,17 +207,31 @@ func StoreFixture(mgr manager.ResourceManager, r core_model.Resource) error {
 // BuildRuntime returns a fabricated test Runtime instance with which
 // the gateway plugin is registered.
 func BuildRuntime() (runtime.Runtime, error) {
-	builder, err := test_runtime.BuilderFor(context.Background(), kuma_cp.DefaultConfig())
+	config := kuma_cp.DefaultConfig()
+	builder, err := test_runtime.BuilderFor(context.Background(), config)
 	if err != nil {
+		return nil, err
+	}
+
+	var plugin plugins.BootstrapPlugin
+	for _, p := range plugins.Plugins().BootstrapPlugins() {
+		if p.Name() == metadata.PluginName {
+			plugin = p
+			break
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := plugin.BeforeBootstrap(builder, config); err != nil {
+		return nil, err
+	}
+	if err := plugin.AfterBootstrap(builder, config); err != nil {
 		return nil, err
 	}
 
 	rt, err := builder.Build()
 	if err != nil {
-		return nil, err
-	}
-
-	if err := plugins.Plugins().RuntimePlugins()["gateway"].Customize(rt); err != nil {
 		return nil, err
 	}
 
@@ -301,7 +299,7 @@ func (d *DataplaneGenerator) generate(
 	d.NextPort++
 
 	dp := core_mesh.NewDataplaneResource()
-	dp.SetMeta(&rest.ResourceMeta{
+	dp.SetMeta(&rest_v1alpha1.ResourceMeta{
 		Type:             string(dp.Descriptor().Name),
 		Mesh:             "default",
 		Name:             resourceName,
@@ -318,7 +316,8 @@ func (d *DataplaneGenerator) generate(
 					mesh_proto.ServiceTag:  serviceName,
 					mesh_proto.ProtocolTag: "http",
 				},
-			}},
+			},
+		},
 	}
 
 	for i := 0; i < len(tags); i += 2 {
@@ -331,6 +330,20 @@ func (d *DataplaneGenerator) generate(
 var _ = BeforeSuite(func() {
 	// Ensure that the plugin is registered so that tests at least
 	// have a chance of working.
-	_, registered := plugins.Plugins().RuntimePlugins()["gateway"]
-	Expect(registered).To(BeTrue(), "gateway plugin is registered")
+	Expect(plugins.Plugins().BootstrapPlugins()).To(
+		WithTransform(func(in []plugins.BootstrapPlugin) []string {
+			var out []string
+			for _, p := range in {
+				out = append(out, string(p.Name()))
+			}
+			return out
+		}, ContainElement(metadata.PluginName)))
+	Expect(plugins.Plugins().ProxyPlugins()).To(
+		WithTransform(func(in map[plugins.PluginName]plugins.ProxyPlugin) []string {
+			var out []string
+			for k := range in {
+				out = append(out, string(k))
+			}
+			return out
+		}, ContainElement(metadata.PluginName)))
 })

@@ -3,10 +3,9 @@ package manager_test
 import (
 	"context"
 
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	system_proto "github.com/kumahq/kuma/api/system/v1alpha1"
@@ -28,7 +27,6 @@ import (
 )
 
 var _ = Describe("Secret Validator", func() {
-
 	var validator secrets_manager.SecretValidator
 	var resManager core_manager.ResourceManager
 	var caManagers core_ca.Managers
@@ -39,7 +37,7 @@ var _ = Describe("Secret Validator", func() {
 		caManagers = core_ca.Managers{}
 		secrets_manager.NewSecretValidator(caManagers, memoryStore)
 		validator = secrets_manager.NewSecretValidator(caManagers, memoryStore)
-		secManager := secrets_manager.NewSecretManager(secrets_store.NewSecretStore(memoryStore), cipher.None(), validator)
+		secManager := secrets_manager.NewSecretManager(secrets_store.NewSecretStore(memoryStore), cipher.None(), validator, false)
 
 		caManagers["builtin"] = ca_builtin.NewBuiltinCaManager(secManager)
 		caManagers["provided"] = ca_provided.NewProvidedCaManager(core_datasource.NewDataSourceLoader(secManager))

@@ -2,15 +2,18 @@ package api_server
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
+	"strings"
 
-	"github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful/v3"
 
 	"github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
+	rest_unversioned "github.com/kumahq/kuma/pkg/core/resources/model/rest/unversioned"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
 	rest_errors "github.com/kumahq/kuma/pkg/core/rest/errors"
 	"github.com/kumahq/kuma/pkg/insights"
@@ -18,6 +21,7 @@ import (
 
 type serviceInsightEndpoints struct {
 	resourceEndpoints
+	addressPortGenerator func(string) string
 }
 
 func (s *serviceInsightEndpoints) addFindEndpoint(ws *restful.WebService, pathPrefix string) {
@@ -30,12 +34,16 @@ func (s *serviceInsightEndpoints) addFindEndpoint(ws *restful.WebService, pathPr
 
 func (s *serviceInsightEndpoints) findResource(request *restful.Request, response *restful.Response) {
 	service := request.PathParameter("service")
-	meshName := s.meshFromRequest(request)
+	meshName, err := s.meshFromRequest(request)
+	if err != nil {
+		rest_errors.HandleError(request.Request.Context(), response, err, "Failed to retrieve Mesh")
+		return
+	}
 
 	serviceInsight := mesh.NewServiceInsightResource()
-	err := s.resManager.Get(request.Request.Context(), serviceInsight, store.GetByKey(insights.ServiceInsightName(meshName), meshName))
+	err = s.resManager.Get(request.Request.Context(), serviceInsight, store.GetBy(insights.ServiceInsightKey(meshName)))
 	if err != nil {
-		rest_errors.HandleError(response, err, "Could not retrieve a resource")
+		rest_errors.HandleError(request.Request.Context(), response, err, "Could not retrieve a resource")
 	} else {
 		stat := serviceInsight.Spec.Services[service]
 		if stat == nil {
@@ -43,9 +51,12 @@ func (s *serviceInsightEndpoints) findResource(request *restful.Request, respons
 				Dataplanes: &v1alpha1.ServiceInsight_Service_DataplaneStat{},
 			}
 		}
-		res := rest.From.Resource(serviceInsight)
+		s.fillStaticInfo(service, stat)
+		out := rest.From.Resource(serviceInsight)
+		res := out.(*rest_unversioned.Resource)
 		res.Meta.Name = service
 		res.Spec = stat
+		removeDisplayNameLabel(res)
 		if err := response.WriteAsJson(res); err != nil {
 			core.Log.Error(err, "Could not write the response")
 		}
@@ -57,31 +68,66 @@ func (s *serviceInsightEndpoints) addListEndpoint(ws *restful.WebService, pathPr
 		Doc(fmt.Sprintf("List of %s", s.descriptor.Name)).
 		Param(ws.PathParameter("size", "size of page").DataType("int")).
 		Param(ws.PathParameter("offset", "offset of page to list").DataType("string")).
+		Param(ws.QueryParameter("name", "a pattern to select only services that contain these characters").DataType("string")).
 		Returns(200, "OK", nil))
 }
 
 func (s *serviceInsightEndpoints) listResources(request *restful.Request, response *restful.Response) {
-	meshName := s.meshFromRequest(request)
-
-	serviceInsightList := &mesh.ServiceInsightResourceList{}
-	err := s.resManager.List(request.Request.Context(), serviceInsightList, store.ListByMesh(meshName))
+	meshName, err := s.meshFromRequest(request)
 	if err != nil {
-		rest_errors.HandleError(response, err, "Could not retrieve resources")
+		rest_errors.HandleError(request.Request.Context(), response, err, "Failed to retrieve Mesh")
 		return
 	}
 
-	restList := s.expandInsights(serviceInsightList)
+	serviceInsightList := &mesh.ServiceInsightResourceList{}
+	err = s.resManager.List(request.Request.Context(), serviceInsightList, store.ListByMesh(meshName))
+	if err != nil {
+		rest_errors.HandleError(request.Request.Context(), response, err, "Could not retrieve resources")
+		return
+	}
 
-	sort.Sort(rest.ByMeta(restList.Items))
-	restList.Total = uint32(len(restList.Items))
+	nameContains := request.QueryParameter("name")
+	filters := request.QueryParameter("type")
+	filterMap := map[v1alpha1.ServiceInsight_Service_Type]struct{}{}
+	if filters != "" {
+		for _, f := range strings.Split(filters, ",") {
+			f = strings.ToLower(strings.TrimSpace(f))
+			i, exists := v1alpha1.ServiceInsight_Service_Type_value[f]
+			if !exists {
+				rest_errors.HandleError(request.Request.Context(), response, rest_errors.NewBadRequestError("unsupported service type"), "Invalid response type")
+				return
+			}
+			filterMap[v1alpha1.ServiceInsight_Service_Type(i)] = struct{}{}
+		}
+	}
+
+	items := s.expandInsights(serviceInsightList, nameContains, func(service *v1alpha1.ServiceInsight_Service) bool {
+		if len(filterMap) == 0 {
+			return true
+		}
+		_, exists := filterMap[service.ServiceType]
+		return exists
+	})
+	restList := rest.ResourceList{
+		Total: uint32(len(items)),
+		Items: items,
+	}
 
 	if err := s.paginateResources(request, &restList); err != nil {
-		rest_errors.HandleError(response, err, "Could not paginate resources")
+		rest_errors.HandleError(request.Request.Context(), response, err, "Could not paginate resources")
 		return
 	}
 
 	if err := response.WriteAsJson(restList); err != nil {
-		rest_errors.HandleError(response, err, "Could not list resources")
+		rest_errors.HandleError(request.Request.Context(), response, err, "Could not list resources")
+	}
+}
+
+// fillStaticInfo fills static information, so we won't have to store this in the DB
+func (s *serviceInsightEndpoints) fillStaticInfo(name string, stat *v1alpha1.ServiceInsight_Service) {
+	stat.Dataplanes.Total = stat.Dataplanes.Online + stat.Dataplanes.Offline
+	if stat.ServiceType == v1alpha1.ServiceInsight_Service_internal {
+		stat.AddressPort = s.addressPortGenerator(name)
 	}
 }
 
@@ -91,17 +137,31 @@ func (s *serviceInsightEndpoints) listResources(request *restful.Request, respon
 // 2) Mesh+Name is a key on Universal, but not on Kubernetes, so if there are two services of the same name in different Meshes we would have problems with naming.
 // From the API perspective it's better to provide ServiceInsight per Service, not per Mesh.
 // For this reason, this method expand the one ServiceInsight resource for the mesh to resource per service
-func (s *serviceInsightEndpoints) expandInsights(serviceInsightList *mesh.ServiceInsightResourceList) rest.ResourceList {
-	restList := rest.ResourceList{}
+func (s *serviceInsightEndpoints) expandInsights(serviceInsightList *mesh.ServiceInsightResourceList, nameContains string, filterFn func(service *v1alpha1.ServiceInsight_Service) bool) []rest.Resource {
+	restItems := []rest.Resource{} // Needs to be set to avoid returning nil and have the api return []
 	for _, insight := range serviceInsightList.Items {
-		for serviceName, stat := range insight.Spec.Services {
-			res := rest.From.Resource(insight)
-			res.Meta.Name = serviceName
-			res.Spec = stat
-			restList.Items = append(restList.Items, res)
+		for serviceName, service := range insight.Spec.Services {
+			if strings.Contains(serviceName, nameContains) && filterFn(service) {
+				s.fillStaticInfo(serviceName, service)
+				out := rest.From.Resource(insight)
+				res := out.(*rest_unversioned.Resource)
+				res.Meta.Name = serviceName
+				res.Spec = service
+				removeDisplayNameLabel(res)
+				restItems = append(restItems, out)
+			}
 		}
 	}
-	return restList
+
+	sort.Slice(restItems, func(i, j int) bool {
+		metai := restItems[i].GetMeta()
+		metaj := restItems[j].GetMeta()
+		if metai.Mesh == metaj.Mesh {
+			return metai.Name < metaj.Name
+		}
+		return metai.Mesh < metaj.Mesh
+	})
+	return restItems
 }
 
 // paginateResources paginates resources manually, because we are expanding resources.
@@ -138,4 +198,14 @@ func (s *serviceInsightEndpoints) paginateResources(request *restful.Request, re
 
 	restList.Next = nextLink(request, nextOffset)
 	return nil
+}
+
+// Since the value of label "kuma.io/display-name" is same with the ServiceInsight resource name,
+// in which it looks weird for the API to each service. Ref: https://github.com/kumahq/kuma/issues/9729
+func removeDisplayNameLabel(resource *rest_unversioned.Resource) {
+	tmpMeta := resource.GetMeta()
+	maps.DeleteFunc(tmpMeta.Labels, func(key string, val string) bool {
+		return key == v1alpha1.DisplayName
+	})
+	resource.Meta = tmpMeta
 }

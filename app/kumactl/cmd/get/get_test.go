@@ -1,9 +1,7 @@
 package get_test
 
 import (
-	"path/filepath"
-
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
@@ -24,26 +22,6 @@ func hasSubCommand(cmd *cobra.Command, sub string) bool {
 	}
 
 	return false
-}
-
-func ExecuteRootCommand(cmd *cobra.Command, resourceName string, formatOpt string, pageOpt string) error {
-	args := []string{
-		"--config-file",
-		filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-		"get",
-		resourceName,
-	}
-
-	if formatOpt != "" {
-		args = append(args, formatOpt)
-	}
-
-	if pageOpt != "" {
-		args = append(args, pageOpt)
-	}
-
-	cmd.SetArgs(args)
-	return cmd.Execute()
 }
 
 var _ = Describe("kumactl get ", func() {
@@ -73,7 +51,7 @@ var _ = Describe("kumactl get ", func() {
 		It("should have get commands for all defined types", func() {
 			// when
 			all := registry.Global().ObjectDescriptors(model.HasKumactlEnabled())
-			Expect(len(getCmd.Commands()) > len(all)).To(BeTrue())
+			Expect(len(getCmd.Commands())).To(BeNumerically(">", len(all)))
 
 			// then
 			for _, sub := range all {

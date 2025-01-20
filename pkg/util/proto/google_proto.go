@@ -38,15 +38,17 @@ package proto
 import (
 	"fmt"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-type MergeFunction func(dst, src protoreflect.Message)
-type mergeOptions struct {
-	customMergeFn map[protoreflect.FullName]MergeFunction
-}
+type (
+	MergeFunction func(dst, src protoreflect.Message)
+	mergeOptions  struct {
+		customMergeFn map[protoreflect.FullName]MergeFunction
+	}
+)
 type OptionFn func(options mergeOptions) mergeOptions
 
 func MergeFunctionOptionFn(name protoreflect.FullName, function MergeFunction) OptionFn {
@@ -68,6 +70,10 @@ var ReplaceMergeFn MergeFunction = func(dst, src protoreflect.Message) {
 	})
 }
 
+func Replace(dst, src proto.Message) {
+	ReplaceMergeFn(dst.ProtoReflect(), src.ProtoReflect())
+}
+
 func Merge(dst, src proto.Message) {
 	duration := &durationpb.Duration{}
 	merge(dst, src, MergeFunctionOptionFn(duration.ProtoReflect().Descriptor().FullName(), ReplaceMergeFn))
@@ -79,7 +85,7 @@ func merge(dst, src proto.Message, opts ...OptionFn) {
 	for _, opt := range opts {
 		mo = opt(mo)
 	}
-	mo.mergeMessage(proto.MessageReflect(dst), proto.MessageReflect(src))
+	mo.mergeMessage(dst.ProtoReflect(), src.ProtoReflect())
 }
 
 func (o mergeOptions) mergeMessage(dst, src protoreflect.Message) {

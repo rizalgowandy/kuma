@@ -1,6 +1,7 @@
 package xds
 
 import (
+	"context"
 	"time"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -18,37 +19,86 @@ var TestSecretsInfo = &secrets.Info{
 			"web": true,
 		},
 	},
-	MTLS: &mesh_proto.Mesh_Mtls{
-		EnabledBackend: "ca-1",
-		Backends:       nil,
+	OwnMesh: secrets.MeshInfo{
+		MTLS: &mesh_proto.Mesh_Mtls{
+			EnabledBackend: "ca-1",
+			Backends:       nil,
+		},
 	},
 	IssuedBackend:     "ca-1",
 	SupportedBackends: []string{"ca-1"},
 }
 
 type TestSecrets struct {
+	GeneratedMeshCAs map[string]struct{}
 }
 
-func (t *TestSecrets) Get(*core_mesh.DataplaneResource, *core_mesh.MeshResource) (*core_xds.IdentitySecret, *core_xds.CaSecret, error) {
+func (ts *TestSecrets) get(meshes []*core_mesh.MeshResource) (*core_xds.IdentitySecret, map[string]*core_xds.CaSecret, *core_xds.CaSecret) {
 	identitySecret := &core_xds.IdentitySecret{
 		PemCerts: [][]byte{
 			[]byte("CERT"),
 		},
 		PemKey: []byte("KEY"),
 	}
-	ca := &core_xds.CaSecret{
+
+	cas := map[string]*core_xds.CaSecret{}
+	for _, mesh := range meshes {
+		if ts.GeneratedMeshCAs == nil {
+			ts.GeneratedMeshCAs = map[string]struct{}{}
+		}
+		ts.GeneratedMeshCAs[mesh.GetMeta().GetName()] = struct{}{}
+
+		cas[mesh.GetMeta().GetName()] = &core_xds.CaSecret{
+			PemCerts: [][]byte{
+				[]byte("CA"),
+			},
+		}
+	}
+
+	allInOne := &core_xds.CaSecret{
 		PemCerts: [][]byte{
-			[]byte("CA"),
+			[]byte("combined"),
 		},
 	}
-	return identitySecret, ca, nil
+
+	return identitySecret, cas, allInOne
 }
 
-func (t *TestSecrets) Info(dpKey model.ResourceKey) *secrets.Info {
+func (ts *TestSecrets) GetForZoneEgress(
+	_ context.Context,
+	_ *core_mesh.ZoneEgressResource,
+	mesh *core_mesh.MeshResource,
+) (*core_xds.IdentitySecret, *core_xds.CaSecret, error) {
+	identity, cas, _ := ts.get([]*core_mesh.MeshResource{mesh})
+
+	return identity, cas[mesh.GetMeta().GetName()], nil
+}
+
+func (ts *TestSecrets) GetForDataPlane(
+	_ context.Context,
+	_ *core_mesh.DataplaneResource,
+	mesh *core_mesh.MeshResource,
+	meshes []*core_mesh.MeshResource,
+) (*core_xds.IdentitySecret, map[string]*core_xds.CaSecret, error) {
+	identity, cas, _ := ts.get(append([]*core_mesh.MeshResource{mesh}, meshes...))
+	return identity, cas, nil
+}
+
+func (ts *TestSecrets) GetAllInOne(
+	_ context.Context,
+	mesh *core_mesh.MeshResource,
+	_ *core_mesh.DataplaneResource,
+	meshes []*core_mesh.MeshResource,
+) (*core_xds.IdentitySecret, *core_xds.CaSecret, error) {
+	identity, _, allInOne := ts.get(append([]*core_mesh.MeshResource{mesh}, meshes...))
+	return identity, allInOne, nil
+}
+
+func (*TestSecrets) Info(mesh_proto.ProxyType, model.ResourceKey) *secrets.Info {
 	return TestSecretsInfo
 }
 
-func (t *TestSecrets) Cleanup(dpKey model.ResourceKey) {
+func (*TestSecrets) Cleanup(mesh_proto.ProxyType, model.ResourceKey) {
 }
 
 var _ secrets.Secrets = &TestSecrets{}

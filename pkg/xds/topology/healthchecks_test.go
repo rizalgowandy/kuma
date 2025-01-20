@@ -4,8 +4,7 @@ import (
 	"context"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -16,13 +15,14 @@ import (
 	core_xds "github.com/kumahq/kuma/pkg/core/xds"
 	memory_resources "github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	. "github.com/kumahq/kuma/pkg/test/matchers"
+	"github.com/kumahq/kuma/pkg/test/resources/builders"
 	test_model "github.com/kumahq/kuma/pkg/test/resources/model"
+	"github.com/kumahq/kuma/pkg/test/resources/samples"
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	. "github.com/kumahq/kuma/pkg/xds/topology"
 )
 
 var _ = Describe("HealthCheck", func() {
-
 	var ctx context.Context
 	var rm core_manager.ResourceManager
 
@@ -32,7 +32,6 @@ var _ = Describe("HealthCheck", func() {
 	})
 
 	Describe("GetHealthChecks()", func() {
-
 		It("should pick the best matching HealthCheck for each destination service", func() {
 			// given
 			mesh := &core_mesh.MeshResource{ // mesh that is relevant to this test case
@@ -47,33 +46,16 @@ var _ = Describe("HealthCheck", func() {
 				},
 				Spec: &mesh_proto.Mesh{},
 			}
-			backend := &core_mesh.DataplaneResource{ // dataplane that is a source of traffic
-				Meta: &test_model.ResourceMeta{
-					Mesh: "demo",
-					Name: "backend",
-				},
-				Spec: &mesh_proto.Dataplane{
-					Networking: &mesh_proto.Dataplane_Networking{
-						Address: "192.168.0.1",
-						Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-							{
-								Tags:        map[string]string{"kuma.io/service": "backend", "region": "eu"},
-								Port:        8080,
-								ServicePort: 18080,
-							},
-							{
-								Tags:        map[string]string{"kuma.io/service": "frontend", "region": "eu"},
-								Port:        7070,
-								ServicePort: 17070,
-							},
-						},
-						Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-							{Service: "redis", Port: 10001},
-							{Service: "elastic", Port: 10002},
-						},
-					},
-				},
-			}
+
+			// dataplane that is a source of traffic
+			backend := builders.Dataplane().
+				WithMesh("demo").
+				WithAddress("192.168.0.1").
+				AddInboundOfTags(mesh_proto.ServiceTag, "backend", "region", "eu").
+				AddInboundOfTags(mesh_proto.ServiceTag, "frontend", "region", "eu").
+				AddOutboundsToServices("redis", "elastic").
+				Build()
+
 			destinations := core_xds.DestinationMap{
 				"redis":   core_xds.TagSelectorSet{mesh_proto.MatchService("redis")},
 				"elastic": core_xds.TagSelectorSet{mesh_proto.MatchService("elastic")},
@@ -213,8 +195,16 @@ var _ = Describe("HealthCheck", func() {
 								{Tags: map[string]string{"kuma.io/service": "backend"}},
 							},
 							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis"},
-								{Service: "elastic"},
+								{
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "redis",
+									},
+								},
+								{
+									Tags: map[string]string{
+										mesh_proto.ServiceTag: "elastic",
+									},
+								},
 							},
 						},
 					},
@@ -227,18 +217,9 @@ var _ = Describe("HealthCheck", func() {
 				expected:     nil,
 			}),
 			Entry("due to TrafficRoutes, a Dataplane might have more destinations than outbound interfaces", testCase{
-				dataplane: &core_mesh.DataplaneResource{
-					Spec: &mesh_proto.Dataplane{
-						Networking: &mesh_proto.Dataplane_Networking{
-							Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-								{Tags: map[string]string{"kuma.io/service": "backend"}},
-							},
-							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis"},
-							},
-						},
-					},
-				},
+				dataplane: samples.DataplaneBackendBuilder().
+					AddOutboundToService("redis").
+					Build(),
 				destinations: core_xds.DestinationMap{
 					"redis":   core_xds.TagSelectorSet{mesh_proto.MatchService("redis")},
 					"elastic": core_xds.TagSelectorSet{mesh_proto.MatchService("elastic")},
@@ -297,18 +278,9 @@ var _ = Describe("HealthCheck", func() {
 				},
 			}),
 			Entry("HealthChecks should be picked by latest creation time given two equally specific HealthChecks", testCase{
-				dataplane: &core_mesh.DataplaneResource{
-					Spec: &mesh_proto.Dataplane{
-						Networking: &mesh_proto.Dataplane_Networking{
-							Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-								{Tags: map[string]string{"kuma.io/service": "backend"}},
-							},
-							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis"},
-							},
-						},
-					},
-				},
+				dataplane: samples.DataplaneBackendBuilder().
+					AddOutboundToService("redis").
+					Build(),
 				destinations: core_xds.DestinationMap{
 					"redis": core_xds.TagSelectorSet{mesh_proto.MatchService("redis")},
 				},
@@ -363,18 +335,11 @@ var _ = Describe("HealthCheck", func() {
 				},
 			}),
 			Entry("HealthCheck with a `source` selector by 2 tags should win over a HealthCheck with a `source` selector by 1 tag", testCase{
-				dataplane: &core_mesh.DataplaneResource{
-					Spec: &mesh_proto.Dataplane{
-						Networking: &mesh_proto.Dataplane_Networking{
-							Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-								{Tags: map[string]string{"kuma.io/service": "backend", "region": "eu"}},
-							},
-							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis"},
-							},
-						},
-					},
-				},
+				dataplane: builders.Dataplane().
+					WithAddress("192.168.0.1").
+					WithInboundOfTags(mesh_proto.ServiceTag, "backend", "region", "eu").
+					AddOutboundToService("redis").
+					Build(),
 				destinations: core_xds.DestinationMap{
 					"redis": core_xds.TagSelectorSet{mesh_proto.MatchService("redis")},
 				},
@@ -427,18 +392,10 @@ var _ = Describe("HealthCheck", func() {
 				},
 			}),
 			Entry("HealthCheck with a `source` selector by an exact value should win over a HealthCheck with a `source` selector by a wildcard value", testCase{
-				dataplane: &core_mesh.DataplaneResource{
-					Spec: &mesh_proto.Dataplane{
-						Networking: &mesh_proto.Dataplane_Networking{
-							Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-								{Tags: map[string]string{"kuma.io/service": "backend", "region": "eu"}},
-							},
-							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis"},
-							},
-						},
-					},
-				},
+				dataplane: samples.DataplaneBackendBuilder().
+					WithInboundOfTags(mesh_proto.ServiceTag, "backend", "region", "eu").
+					AddOutboundToService("redis").
+					Build(),
 				destinations: core_xds.DestinationMap{
 					"redis": core_xds.TagSelectorSet{mesh_proto.MatchService("redis")},
 				},
@@ -491,18 +448,10 @@ var _ = Describe("HealthCheck", func() {
 				},
 			}),
 			Entry("HealthCheck with a `destination` selector by an exact value should win over a HealthCheck with a `destination` selector by a wildcard value", testCase{
-				dataplane: &core_mesh.DataplaneResource{
-					Spec: &mesh_proto.Dataplane{
-						Networking: &mesh_proto.Dataplane_Networking{
-							Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-								{Tags: map[string]string{"kuma.io/service": "backend", "region": "eu"}},
-							},
-							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis"},
-							},
-						},
-					},
-				},
+				dataplane: samples.DataplaneBackendBuilder().
+					WithInboundOfTags(mesh_proto.ServiceTag, "backend", "region", "eu").
+					AddOutboundToService("redis").
+					Build(),
 				destinations: core_xds.DestinationMap{
 					"redis": core_xds.TagSelectorSet{mesh_proto.MatchService("redis")},
 				},
@@ -555,18 +504,10 @@ var _ = Describe("HealthCheck", func() {
 				},
 			}),
 			Entry("in case if HealthChecks have equal aggregate ranks, most specific one should be selected based on last creation time", testCase{
-				dataplane: &core_mesh.DataplaneResource{
-					Spec: &mesh_proto.Dataplane{
-						Networking: &mesh_proto.Dataplane_Networking{
-							Inbound: []*mesh_proto.Dataplane_Networking_Inbound{
-								{Tags: map[string]string{"kuma.io/service": "backend", "region": "eu"}},
-							},
-							Outbound: []*mesh_proto.Dataplane_Networking_Outbound{
-								{Service: "redis"},
-							},
-						},
-					},
-				},
+				dataplane: samples.DataplaneBackendBuilder().
+					WithInboundOfTags(mesh_proto.ServiceTag, "backend", "region", "eu").
+					AddOutboundToService("redis").
+					Build(),
 				destinations: core_xds.DestinationMap{
 					"redis": core_xds.TagSelectorSet{mesh_proto.MatchService("redis")},
 				},
@@ -622,5 +563,4 @@ var _ = Describe("HealthCheck", func() {
 			}),
 		)
 	})
-
 })

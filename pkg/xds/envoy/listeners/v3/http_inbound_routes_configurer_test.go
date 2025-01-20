@@ -3,8 +3,7 @@ package v3_test
 import (
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -12,12 +11,10 @@ import (
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 	envoy_common "github.com/kumahq/kuma/pkg/xds/envoy"
 	. "github.com/kumahq/kuma/pkg/xds/envoy/listeners"
-	v3 "github.com/kumahq/kuma/pkg/xds/envoy/routes/v3"
 	"github.com/kumahq/kuma/pkg/xds/envoy/tags"
 )
 
 var _ = Describe("HttpInboundRouteConfigurer", func() {
-
 	routeWithRateLimiter := func(rateLimit *v1alpha1.RateLimit) envoy_common.Route {
 		route := envoy_common.NewRouteFromCluster(envoy_common.NewCluster(
 			envoy_common.WithService("localhost:8080"),
@@ -36,7 +33,7 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
 			}
 			regexOR := tags.RegexOR(selectorRegexs...)
 
-			route.Match.Headers[v3.TagsHeaderName] = &v1alpha1.TrafficRoute_Http_Match_StringMatcher{
+			route.Match.Headers[tags.TagsHeaderName] = &v1alpha1.TrafficRoute_Http_Match_StringMatcher{
 				MatcherType: &v1alpha1.TrafficRoute_Http_Match_StringMatcher_Regex{
 					Regex: regexOR,
 				},
@@ -47,7 +44,6 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
 	}
 
 	type testCase struct {
-		listenerName     string
 		listenerProtocol xds.SocketAddressProtocol
 		listenerAddress  string
 		listenerPort     uint32
@@ -60,9 +56,8 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
 	DescribeTable("should generate proper Envoy config",
 		func(given testCase) {
 			// when
-			listener, err := NewListenerBuilder(envoy_common.APIV3).
-				Configure(InboundListener(given.listenerName, given.listenerAddress, given.listenerPort, given.listenerProtocol)).
-				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3).
+			listener, err := NewInboundListenerBuilder(envoy_common.APIV3, given.listenerAddress, given.listenerPort, given.listenerProtocol).
+				Configure(FilterChain(NewFilterChainBuilder(envoy_common.APIV3, envoy_common.AnonymousResource).
 					Configure(HttpConnectionManager(given.statsName, true)).
 					Configure(HttpInboundRoutes(given.service, given.routes)))).
 				Build()
@@ -76,7 +71,6 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
 			Expect(actual).To(MatchYAML(given.expected))
 		},
 		Entry("basic http_connection_manager with a single destination cluster", testCase{
-			listenerName:    "inbound:192.168.0.1:8080",
 			listenerAddress: "192.168.0.1",
 			listenerPort:    8080,
 			statsName:       "localhost:8080",
@@ -89,6 +83,7 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
               socketAddress:
                 address: 192.168.0.1
                 portValue: 8080
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.http_connection_manager
@@ -99,6 +94,8 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                     uri: true
                   httpFilters:
                   - name: envoy.filters.http.router
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                   routeConfig:
                     name: inbound:backend
                     validateClusters: false
@@ -113,11 +110,11 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                           prefix: /
                         route:
                           cluster: localhost:8080
+                          timeout: 0s
                   statPrefix: localhost_8080
 `,
 		}),
 		Entry("basic http_connection_manager with a single destination cluster and rate limiter", testCase{
-			listenerName:    "inbound:192.168.0.1:8080",
 			listenerAddress: "192.168.0.1",
 			listenerPort:    8080,
 			statsName:       "localhost:8080",
@@ -149,6 +146,7 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
               socketAddress:
                 address: 192.168.0.1
                 portValue: 8080
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.http_connection_manager
@@ -159,6 +157,8 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                     uri: true
                   httpFilters:
                   - name: envoy.filters.http.router
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                   routeConfig:
                     name: inbound:backend
                     validateClusters: false
@@ -173,6 +173,7 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                           prefix: /
                         route:
                           cluster: localhost:8080
+                          timeout: 0s
                         typedPerFilterConfig:
                           envoy.filters.http.local_ratelimit:
                             '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
@@ -185,7 +186,7 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                                 numerator: 100
                               runtimeKey: local_rate_limit_enforced
                             responseHeadersToAdd:
-                            - append: false
+                            - appendAction: OVERWRITE_IF_EXISTS_OR_ADD
                               header:
                                 key: x-local-rate-limit
                                 value: "true"
@@ -200,7 +201,6 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
 `,
 		}),
 		Entry("basic http_connection_manager with a single destination cluster and rate limiter with sources", testCase{
-			listenerName:    "inbound:192.168.0.1:8080",
 			listenerAddress: "192.168.0.1",
 			listenerPort:    8080,
 			statsName:       "localhost:8080",
@@ -239,6 +239,7 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
               socketAddress:
                 address: 192.168.0.1
                 portValue: 8080
+            enableReusePort: false
             filterChains:
             - filters:
               - name: envoy.filters.network.http_connection_manager
@@ -249,6 +250,8 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                     uri: true
                   httpFilters:
                   - name: envoy.filters.http.router
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                   routeConfig:
                     name: inbound:backend
                     validateClusters: false
@@ -263,11 +266,11 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                           headers:
                           - name: x-kuma-tags
                             safeRegexMatch:
-                              googleRe2: {}
                               regex: .*&service=[^&]*web1[,&].*&version=[^&]*1\.0[,&].*
                           prefix: /
                         route:
                           cluster: localhost:8080
+                          timeout: 0s
                         typedPerFilterConfig:
                           envoy.filters.http.local_ratelimit:
                             '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
@@ -280,7 +283,7 @@ var _ = Describe("HttpInboundRouteConfigurer", func() {
                                 numerator: 100
                               runtimeKey: local_rate_limit_enforced
                             responseHeadersToAdd:
-                            - append: false
+                            - appendAction: OVERWRITE_IF_EXISTS_OR_ADD
                               header:
                                 key: x-local-rate-limit
                                 value: "true"

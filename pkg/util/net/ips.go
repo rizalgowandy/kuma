@@ -8,8 +8,14 @@ import (
 	"github.com/pkg/errors"
 )
 
+type AddressPredicate = func(address *net.IPNet) bool
+
+func NonLoopback(address *net.IPNet) bool {
+	return !address.IP.IsLoopback()
+}
+
 // GetAllIPs returns all IPs (IPv4 and IPv6) from the all network interfaces on the machine
-func GetAllIPs() ([]string, error) {
+func GetAllIPs(predicates ...AddressPredicate) ([]string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, errors.Wrap(err, "could not list network interfaces")
@@ -17,7 +23,16 @@ func GetAllIPs() ([]string, error) {
 	var result []string
 	for _, address := range addrs {
 		if ipnet, ok := address.(*net.IPNet); ok {
-			result = append(result, ipnet.IP.String())
+			matchedPredicate := true
+			for _, predicate := range predicates {
+				if !predicate(ipnet) {
+					matchedPredicate = false
+					break
+				}
+			}
+			if matchedPredicate {
+				result = append(result, ipnet.IP.String())
+			}
 		}
 	}
 	sort.Strings(result) // sort so IPv4 are the first elements in the list
@@ -31,4 +46,17 @@ func ToV6(ip string) string {
 		return fmt.Sprintf("::ffff:%x:%x", uint32(parsedIp[12])<<8+uint32(parsedIp[13]), uint32(parsedIp[14])<<8+uint32(parsedIp[15]))
 	}
 	return ip
+}
+
+func IsAddressIPv6(address string) bool {
+	if address == "" {
+		return false
+	}
+
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return false
+	}
+
+	return ip.To4() == nil
 }

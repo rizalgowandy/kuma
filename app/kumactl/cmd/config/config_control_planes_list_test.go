@@ -1,29 +1,23 @@
 package config_test
 
 import (
-	"bytes"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/kumahq/kuma/pkg/util/test"
+	"github.com/kumahq/kuma/app/kumactl/pkg/test"
 )
 
 var _ = Describe("kumactl config control-planes list", func() {
-
 	It("should display Control Planes from a given configuration file", func() {
 		// setup
-		rootCmd := test.DefaultTestingRootCmd()
-		buf := &bytes.Buffer{}
-		rootCmd.SetOut(buf)
-
-		// given
-		rootCmd.SetArgs([]string{
+		buf, _, rootCmd := test.DefaultTestingRootCmd(
 			"--config-file", filepath.Join("testdata", "config-control-planes-list.config.yaml"),
-			"config", "control-planes", "list"})
+			"config", "control-planes", "list",
+		)
 
 		// when
 		err := rootCmd.Execute()
@@ -31,7 +25,7 @@ var _ = Describe("kumactl config control-planes list", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
-		expected, err := ioutil.ReadFile(filepath.Join("testdata", "config-control-planes-list.golden.txt"))
+		expected, err := os.ReadFile(filepath.Join("testdata", "config-control-planes-list.golden.txt"))
 		// then
 		Expect(err).ToNot(HaveOccurred())
 		// and

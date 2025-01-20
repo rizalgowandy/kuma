@@ -10,12 +10,11 @@ import (
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
+	"github.com/kumahq/kuma/pkg/core/user"
 	model "github.com/kumahq/kuma/pkg/core/xds"
 )
 
-var (
-	templateResolverLog = core.Log.WithName("proxy-template-resolver")
-)
+var templateResolverLog = core.Log.WithName("xds").WithName("proxy-template-resolver")
 
 type ProxyTemplateResolver interface {
 	GetTemplate(proxy *model.Proxy) *mesh_proto.ProxyTemplate
@@ -27,21 +26,16 @@ type SimpleProxyTemplateResolver struct {
 
 func (r *SimpleProxyTemplateResolver) GetTemplate(proxy *model.Proxy) *mesh_proto.ProxyTemplate {
 	log := templateResolverLog.WithValues("dataplane", core_model.MetaToResourceKey(proxy.Dataplane.Meta))
-	ctx := context.Background()
+	ctx := user.Ctx(context.Background(), user.ControlPlane)
 	templateList := &core_mesh.ProxyTemplateResourceList{}
 	if err := r.ReadOnlyResourceManager.List(ctx, templateList, core_store.ListByMesh(proxy.Dataplane.Meta.GetMesh())); err != nil {
 		templateResolverLog.Error(err, "failed to list ProxyTemplates")
 		return nil
 	}
 
-	policies := make([]core_policy.DataplanePolicy, len(templateList.Items))
-	for i, proxyTemplate := range templateList.Items {
-		policies[i] = proxyTemplate
-	}
-
-	if bestMatchTemplate := core_policy.SelectDataplanePolicy(proxy.Dataplane, policies); bestMatchTemplate != nil {
+	if bestMatchTemplate := SelectProxyTemplate(proxy.Dataplane, templateList.Items); bestMatchTemplate != nil {
 		log.V(2).Info("found the best matching ProxyTemplate", "proxytemplate", core_model.MetaToResourceKey(bestMatchTemplate.GetMeta()))
-		return bestMatchTemplate.(*core_mesh.ProxyTemplateResource).Spec
+		return bestMatchTemplate.Spec
 	}
 
 	log.V(2).Info("no matching ProxyTemplate")
@@ -73,4 +67,15 @@ func (s sequentialResolver) GetTemplate(proxy *model.Proxy) *mesh_proto.ProxyTem
 // first successful resolver is returned.
 func SequentialResolver(r ...ProxyTemplateResolver) ProxyTemplateResolver {
 	return sequentialResolver(r)
+}
+
+func SelectProxyTemplate(dataplane *core_mesh.DataplaneResource, proxyTemplates []*core_mesh.ProxyTemplateResource) *core_mesh.ProxyTemplateResource {
+	policies := make([]core_policy.DataplanePolicy, len(proxyTemplates))
+	for i, proxyTemplate := range proxyTemplates {
+		policies[i] = proxyTemplate
+	}
+	if policy := core_policy.SelectDataplanePolicy(dataplane, policies); policy != nil {
+		return policy.(*core_mesh.ProxyTemplateResource)
+	}
+	return nil
 }

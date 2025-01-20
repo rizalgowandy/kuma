@@ -1,0 +1,82 @@
+name: pull request comment
+on:
+  issue_comment:
+    types: [created]
+env:
+  GH_USER: "github-actions[bot]"
+  GH_EMAIL: "<41898282+github-actions[bot]@users.noreply.github.com>"
+  CI_TOOLS_DIR: /home/runner/work/kuma/kuma/.ci_tools
+permissions:
+  contents: read
+jobs:
+  pr_comments:
+    timeout-minutes: 30
+    if: github.event.issue.pull_request != '' && (contains(github.event.comment.body, '/format') || contains(github.event.comment.body, '/golden_files'))
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Generate GitHub app token
+        id: github-app-token
+        uses: actions/create-github-app-token@c1a285145b9d317df6ced56c09f525b5c2b6f755 # v1.11.1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: check-maintainer
+        run: |
+          # Ensure the commenter is a maintainer
+          if [[ `gh api  '/repos/${{ github.repository }}/collaborators?permission=maintain' --paginate --jq '.[].login' | grep ${{ github.event.comment.user.login }}` ]]; then
+            gh api --method POST -f content='+1' ${{ github.event.comment.url }}/reactions
+          else
+            gh api --method POST -f content='-1' ${{ github.event.comment.url }}/reactions
+            echo "${{ github.event.comment.user.login }} is not a maintainer of the repo, can't run this action"
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ steps.github-app-token.outputs.token }}
+      - id: get-branch
+        run: |
+          echo "BRANCH_NAME=$(gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json headRefName --jq '.headRefName')" >> $GITHUB_ENV
+          echo "REPO=$(gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json headRepository,headRepositoryOwner --jq '[.headRepositoryOwner.login,.headRepository.name] | join("/")')" >> $GITHUB_ENV
+        env:
+          GITHUB_TOKEN: ${{ steps.github-app-token.outputs.token }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          repository: ${{ env.REPO }}
+          ref: ${{ env.BRANCH_NAME }}
+          token: ${{ steps.github-app-token.outputs.token }}
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ${{ env.CI_TOOLS_DIR }}
+          key: ${{ runner.os }}-${{ runner.arch }}-devtools-${{ hashFiles('mk/dependencies/deps.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-devtools
+      - run: |
+          make dev/tools
+      - name: format
+        if: contains(github.event.comment.body, '/format') # check the comment if it contains the keywords
+        run: |
+          make clean/generated generate format
+      - name: run golden_files
+        if: contains(github.event.comment.body, '/golden_files') # check the comment if it contains the keywords
+        run: |
+          make test UPDATE_GOLDEN_FILES=true
+          make test/transparentproxy UPDATE_GOLDEN_FILES=true
+      - name: commit and push fixes
+        env:
+          GITHUB_TOKEN: ${{ steps.github-app-token.outputs.token }}
+        run: |
+          if git diff --exit-code --stat; then
+            echo "No change detected, skipping git push"
+          else
+            git config user.name "${GH_USER}"
+            git config user.email "${GH_EMAIL}"
+            git commit -s -m "fix(ci): format files" .
+            git push
+          fi
+      - run: gh api --method POST -f content='hooray' ${{ github.event.comment.url }}/reactions
+        env:
+          GITHUB_TOKEN: ${{ steps.github-app-token.outputs.token }}

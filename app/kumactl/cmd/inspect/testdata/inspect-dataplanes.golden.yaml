@@ -18,7 +18,11 @@ items:
     mTLS:
       certificateExpirationTime: "2020-05-08T08:28:22Z"
       certificateRegenerations: 10
+      issuedBackend: ca-1
       lastCertificateRegeneration: "2019-07-16T19:48:08Z"
+      supportedBackends:
+      - ca-1
+      - ca-2
     subscriptions:
     - connectTime: "2018-07-17T16:05:36.995Z"
       controlPlaneInstanceId: node-001
@@ -28,6 +32,8 @@ items:
           responsesRejected: "1"
           responsesSent: "10"
       version:
+        dependencies:
+          coredns: 1.8.3
         envoy:
           build: hash/1.16.0/RELEASE
           version: 1.16.0
@@ -44,6 +50,8 @@ items:
           responsesRejected: "2"
           responsesSent: "20"
       version:
+        dependencies:
+          coredns: 1.8.3
         envoy:
           build: hash/1.16.1/RELEASE
           version: 1.16.1
@@ -88,6 +96,8 @@ items:
           responsesRejected: "1"
           responsesSent: "10"
       version:
+        dependencies:
+          coredns: 1.8.3
         envoy:
           build: hash/1.16.0/RELEASE
           version: 1.16.0
@@ -104,6 +114,8 @@ items:
           responsesRejected: "2"
           responsesSent: "20"
       version:
+        dependencies:
+          coredns: 1.8.3
         envoy:
           build: hash/1.16.1/RELEASE
           version: 1.16.1
@@ -135,7 +147,11 @@ items:
     mTLS:
       certificateExpirationTime: "2020-05-08T08:28:22Z"
       certificateRegenerations: 10
+      issuedBackend: ca-1
       lastCertificateRegeneration: "2019-07-16T19:48:08Z"
+      supportedBackends:
+      - ca-1
+      - ca-2
     subscriptions:
     - connectTime: "2018-07-17T16:05:36.995Z"
       controlPlaneInstanceId: node-001
@@ -145,6 +161,8 @@ items:
           responsesRejected: "1"
           responsesSent: "10"
       version:
+        dependencies:
+          coredns: 1.8.3
         envoy:
           build: hash/1.16.0/RELEASE
           version: 1.16.0
@@ -161,6 +179,8 @@ items:
           responsesRejected: "2"
           responsesSent: "20"
       version:
+        dependencies:
+          coredns: 1.8.3
         envoy:
           build: hash/1.16.1/RELEASE
           version: 1.16.1

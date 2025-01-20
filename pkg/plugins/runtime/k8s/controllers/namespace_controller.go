@@ -60,11 +60,11 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req kube_ctrl.Reque
 		return kube_ctrl.Result{}, nil
 	}
 
-	injected, _, err := metadata.Annotations(ns.Annotations).GetEnabled(metadata.KumaSidecarInjectionAnnotation)
+	_, labelExists, err := metadata.Annotations(ns.Labels).GetEnabled(metadata.KumaSidecarInjectionAnnotation)
 	if err != nil {
-		return kube_ctrl.Result{}, errors.Wrapf(err, "unable to check sidecar injection annotation on namespace %s", ns.Name)
+		return kube_ctrl.Result{}, errors.Wrapf(err, "unable to check sidecar injection label on namespace %s", ns.Name)
 	}
-	if injected {
+	if labelExists {
 		log.Info("creating NetworkAttachmentDefinition for CNI support")
 		err := r.createOrUpdateNetworkAttachmentDefinition(ctx, req.Name)
 		return kube_ctrl.Result{}, err
@@ -122,6 +122,7 @@ func (r *NamespaceReconciler) deleteNetworkAttachmentDefinition(ctx context.Cont
 
 func (r *NamespaceReconciler) SetupWithManager(mgr kube_ctrl.Manager) error {
 	return kube_ctrl.NewControllerManagedBy(mgr).
+		Named("kuma-namespace-controller").
 		For(&kube_core.Namespace{}, builder.WithPredicates(namespaceEvents)).
 		Complete(r)
 }

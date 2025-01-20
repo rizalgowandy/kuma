@@ -2,7 +2,7 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 
@@ -15,14 +15,14 @@ import (
 	"github.com/kumahq/kuma/pkg/xds/bootstrap/types"
 )
 
-var log = core.Log.WithName("bootstrap")
+var log = core.Log.WithName("xds").WithName("bootstrap")
 
 type BootstrapHandler struct {
 	Generator BootstrapGenerator
 }
 
 func (b *BootstrapHandler) Handle(resp http.ResponseWriter, req *http.Request) {
-	bytes, err := ioutil.ReadAll(req.Body)
+	bytes, err := io.ReadAll(req.Body)
 	if err != nil {
 		log.Error(err, "Could not read a request")
 		resp.WriteHeader(http.StatusInternalServerError)
@@ -35,38 +35,51 @@ func (b *BootstrapHandler) Handle(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	hostname, _, err := net.SplitHostPort(req.Host)
-	if err != nil {
-		log.Error(err, "Could not parse a request")
-		resp.WriteHeader(http.StatusBadRequest)
-		_, err := resp.Write([]byte("Invalid Host header"))
-		if err != nil {
-			log.Error(err, "Error while writing the response")
-			return
-		}
-		return
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
 	}
+
+	hostname, _, err := net.SplitHostPort(host)
+	if err != nil {
+		// The host doesn't have a port so we just use it directly
+		hostname = host
+	}
+
 	reqParams.Host = hostname
 	logger := log.WithValues("params", reqParams)
 
-	config, err := b.Generator.Generate(req.Context(), reqParams)
+	config, kumaDpBootstrap, err := b.Generator.Generate(req.Context(), reqParams)
 	if err != nil {
 		handleError(resp, err, logger)
 		return
 	}
 
-	bytes, err = proto.ToYAML(config)
+	bootstrapBytes, err := proto.ToYAML(config)
 	if err != nil {
 		logger.Error(err, "Could not convert to json")
 		resp.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	resp.Header().Set("content-type", "text/x-yaml")
-	// backwards compatibility
-	resp.Header().Set(types.BootstrapVersionHeader, string(types.BootstrapV3))
+	var responseBytes []byte
+	if req.Header.Get("accept") == "application/json" {
+		resp.Header().Set("content-type", "application/json")
+		response := createBootstrapResponse(bootstrapBytes, &kumaDpBootstrap)
+		responseBytes, err = json.Marshal(response)
+		if err != nil {
+			logger.Error(err, "Could not convert to json")
+			resp.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// backwards compatibility
+		resp.Header().Set("content-type", "text/x-yaml")
+		responseBytes = bootstrapBytes
+	}
+
 	resp.WriteHeader(http.StatusOK)
-	_, err = resp.Write(bytes)
+	_, err = resp.Write(responseBytes)
 	if err != nil {
 		logger.Error(err, "Error while writing the response")
 		return
@@ -74,7 +87,7 @@ func (b *BootstrapHandler) Handle(resp http.ResponseWriter, req *http.Request) {
 }
 
 func handleError(resp http.ResponseWriter, err error, logger logr.Logger) {
-	if err == DpTokenRequired || store.IsResourcePreconditionFailed(err) || validators.IsValidationError(err) {
+	if err == DpTokenRequired || validators.IsValidationError(err) {
 		resp.WriteHeader(http.StatusUnprocessableEntity)
 		_, err = resp.Write([]byte(err.Error()))
 		if err != nil {
@@ -95,4 +108,30 @@ func handleError(resp http.ResponseWriter, err error, logger logr.Logger) {
 	}
 	logger.Error(err, "Could not generate a bootstrap configuration")
 	resp.WriteHeader(http.StatusInternalServerError)
+}
+
+func createBootstrapResponse(bootstrap []byte, config *KumaDpBootstrap) *types.BootstrapResponse {
+	bootstrapConfig := types.BootstrapResponse{
+		Bootstrap: bootstrap,
+	}
+	aggregate := []types.Aggregate{}
+	for _, value := range config.AggregateMetricsConfig {
+		aggregate = append(aggregate, types.Aggregate{
+			Address: value.Address,
+			Name:    value.Name,
+			Port:    value.Port,
+			Path:    value.Path,
+		})
+	}
+	bootstrapConfig.KumaSidecarConfiguration = types.KumaSidecarConfiguration{
+		Metrics: types.MetricsConfiguration{
+			Aggregate: aggregate,
+		},
+		Networking: types.NetworkingConfiguration{
+			IsUsingTransparentProxy: config.NetworkingConfig.IsUsingTransparentProxy,
+			Address:                 config.NetworkingConfig.Address,
+			CorefileTemplate:        config.NetworkingConfig.CorefileTemplate,
+		},
+	}
+	return &bootstrapConfig
 }

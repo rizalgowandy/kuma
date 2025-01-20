@@ -1,8 +1,8 @@
 package v3
 
 import (
+	"fmt"
 	"math"
-	"regexp"
 	"strconv"
 
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
@@ -13,6 +13,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+
+	"github.com/kumahq/kuma/pkg/core/validators"
 )
 
 func UpdateHTTPConnectionManager(filterChain *envoy_listener.FilterChain, updateFunc func(manager *envoy_hcm.HttpConnectionManager) error) error {
@@ -63,13 +65,25 @@ func UpdateFilterConfig(filterChain *envoy_listener.FilterChain, filterName stri
 	return nil
 }
 
+type UnexpectedFilterConfigTypeError struct {
+	actual   proto.Message
+	expected proto.Message
+}
+
+func (e *UnexpectedFilterConfigTypeError) Error() string {
+	return fmt.Sprintf("filter config has unexpected type: expected %T, got %T", e.expected, e.actual)
+}
+
 func NewUnexpectedFilterConfigTypeError(actual, expected proto.Message) error {
-	return errors.Errorf("filter config has unexpected type: expected %T, got %T", expected, actual)
+	return &UnexpectedFilterConfigTypeError{
+		actual:   actual,
+		expected: expected,
+	}
 }
 
 func ConvertPercentage(percentage *wrapperspb.DoubleValue) *envoy_type.FractionalPercent {
-	const tenThousand = 10000
-	const million = 1000000
+	const tenThousand = 10_000
+	const hundred = 100
 
 	isInteger := func(f float64) bool {
 		return math.Floor(f) == f
@@ -83,24 +97,22 @@ func ConvertPercentage(percentage *wrapperspb.DoubleValue) *envoy_type.Fractiona
 		}
 	}
 
-	tenThousandTimes := tenThousand * value
-	if isInteger(tenThousandTimes) {
+	hundredTime := hundred * value
+	if isInteger(hundredTime) {
 		return &envoy_type.FractionalPercent{
-			Numerator:   uint32(tenThousandTimes),
+			Numerator:   uint32(hundredTime),
 			Denominator: envoy_type.FractionalPercent_TEN_THOUSAND,
 		}
 	}
 
 	return &envoy_type.FractionalPercent{
-		Numerator:   uint32(math.Round(million * value)),
+		Numerator:   uint32(math.Round(tenThousand * value)),
 		Denominator: envoy_type.FractionalPercent_MILLION,
 	}
 }
 
-var bandwidthRegex = regexp.MustCompile(`(\d*)\s?([gmk]?bps)`)
-
 func ConvertBandwidthToKbps(bandwidth string) (uint64, error) {
-	match := bandwidthRegex.FindStringSubmatch(bandwidth)
+	match := validators.BandwidthRegex.FindStringSubmatch(bandwidth)
 	value, err := strconv.Atoi(match[1])
 	if err != nil {
 		return 0, err
@@ -112,9 +124,9 @@ func ConvertBandwidthToKbps(bandwidth string) (uint64, error) {
 	switch units {
 	case "kbps":
 		factor = 1
-	case "mbps":
+	case "Mbps":
 		factor = 1000
-	case "gbps":
+	case "Gbps":
 		factor = 1000000
 	default:
 		return 0, errors.New("unsupported unit type")

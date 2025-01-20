@@ -2,8 +2,7 @@ package v3_test
 
 import (
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,7 +13,6 @@ import (
 )
 
 var _ = Describe("HTTP Filter modifications", func() {
-
 	type testCase struct {
 		listeners     []string
 		modifications []string
@@ -73,7 +71,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                       httpFilters:
                       - name: envoy.filters.http.router`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: addLast
                    value: |
@@ -120,7 +119,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8080
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: remove
 `,
@@ -162,7 +162,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8080
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: remove
                    match:
@@ -222,7 +223,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8081
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: remove
                    match:
@@ -300,7 +302,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8081
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: remove
                    match:
@@ -363,7 +366,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8080
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: addAfter
                    match:
@@ -412,7 +416,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8080
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: addAfter
                    match:
@@ -460,7 +465,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8080
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: addBefore
                    match:
@@ -513,7 +519,8 @@ var _ = Describe("HTTP Filter modifications", func() {
                 name: inbound:192.168.0.1:8080
                 trafficDirection: INBOUND`,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 httpFilter:
                    operation: patch
                    match:
@@ -544,6 +551,143 @@ var _ = Describe("HTTP Filter modifications", func() {
                           '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                           startChildSpan: true
                           dynamicStats: false
+                      - name: envoy.filters.http.gzip
+                      statPrefix: localhost_8080
+                name: inbound:192.168.0.1:8080
+                trafficDirection: INBOUND`,
+		}),
+		Entry("should patch resource matching listener tags", testCase{
+			listeners: []string{
+				`
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                      httpFilters:
+                      - name: envoy.filters.http.router
+                        typedConfig:
+                          '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                          startChildSpan: true
+                      - name: envoy.filters.http.gzip
+                      statPrefix: localhost_8080
+                name: inbound:192.168.0.1:8080
+                trafficDirection: INBOUND`,
+			},
+			modifications: []string{
+				`
+                httpFilter:
+                   operation: patch
+                   match:
+                     name: envoy.filters.http.router
+                     listenerTags:
+                       kuma.io/service: backend
+                   value: |
+                     typedConfig:
+                       '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                       dynamicStats: false
+`,
+			},
+			expected: `
+            resources:
+            - name: inbound:192.168.0.1:8080
+              resource:
+                '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                      httpFilters:
+                      - name: envoy.filters.http.router
+                        typedConfig:
+                          '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                          startChildSpan: true
+                          dynamicStats: false
+                      - name: envoy.filters.http.gzip
+                      statPrefix: localhost_8080
+                name: inbound:192.168.0.1:8080
+                trafficDirection: INBOUND`,
+		}),
+		Entry("should not patch resource not matching listener tags", testCase{
+			listeners: []string{
+				`
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                      httpFilters:
+                      - name: envoy.filters.http.router
+                        typedConfig:
+                          '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                          startChildSpan: true
+                      - name: envoy.filters.http.gzip
+                      statPrefix: localhost_8080
+                name: inbound:192.168.0.1:8080
+                trafficDirection: INBOUND`,
+			},
+			modifications: []string{
+				`
+                httpFilter:
+                   operation: patch
+                   match:
+                     name: envoy.filters.http.router
+                     listenerTags:
+                       kuma.io/service: web
+                   value: |
+                     typedConfig:
+                       '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                       dynamicStats: false
+`,
+			},
+			expected: `
+            resources:
+            - name: inbound:192.168.0.1:8080
+              resource:
+                '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+                address:
+                  socketAddress:
+                    address: 192.168.0.1
+                    portValue: 8080
+                metadata:
+                  filterMetadata:
+                    io.kuma.tags:
+                      kuma.io/service: backend
+                filterChains:
+                - filters:
+                  - name: envoy.filters.network.http_connection_manager
+                    typedConfig:
+                      '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                      httpFilters:
+                      - name: envoy.filters.http.router
+                        typedConfig:
+                          '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                          startChildSpan: true
                       - name: envoy.filters.http.gzip
                       statPrefix: localhost_8080
                 name: inbound:192.168.0.1:8080

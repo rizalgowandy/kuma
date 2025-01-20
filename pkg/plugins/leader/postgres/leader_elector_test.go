@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"cirello.io/pglock"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/kumahq/kuma/pkg/core/runtime/component"
@@ -23,11 +23,11 @@ var _ = Describe("postgresLeaderElector", func() {
 		Expect(c.Start()).To(Succeed())
 		cfg, err := c.Config()
 		Expect(err).ToNot(HaveOccurred())
-		sql, err := common_postgres.ConnectToDb(*cfg)
+		sql, err := common_postgres.ConnectToDb(cfg)
 		Expect(err).ToNot(HaveOccurred())
 
 		createElector := func(name string) component.LeaderElector {
-			client, err := pglock.New(sql,
+			client, err := pglock.UnsafeNew(sql,
 				pglock.WithLeaseDuration(500*time.Millisecond),
 				pglock.WithHeartbeatFrequency(100*time.Millisecond),
 				pglock.WithOwner(name),

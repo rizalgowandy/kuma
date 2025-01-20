@@ -4,14 +4,16 @@ import (
 	"context"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core"
 	core_ca "github.com/kumahq/kuma/pkg/core/ca"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
+	"github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
+	"github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/core/secrets/cipher"
 	secrets_manager "github.com/kumahq/kuma/pkg/core/secrets/manager"
 	secrets_store "github.com/kumahq/kuma/pkg/core/secrets/store"
@@ -23,8 +25,7 @@ import (
 	. "github.com/kumahq/kuma/pkg/xds/secrets"
 )
 
-var _ = Describe("Secrets", func() {
-
+var _ = Describe("Secrets", Ordered, func() {
 	var secrets Secrets
 	var metrics core_metrics.Metrics
 	var now time.Time
@@ -85,22 +86,52 @@ var _ = Describe("Secrets", func() {
 		}
 	}
 
+	newZoneEgress := func() *core_mesh.ZoneEgressResource {
+		return &core_mesh.ZoneEgressResource{
+			Meta: &model.ResourceMeta{
+				Mesh: "default",
+				Name: "ze-1",
+			},
+			Spec: &mesh_proto.ZoneEgress{
+				Networking: &mesh_proto.ZoneEgress_Networking{
+					Address: "192.168.0.1",
+					Port:    10002,
+				},
+			},
+		}
+	}
+
+	BeforeAll(func() {
+		// since we actually create a mesh, and it goes through validation we have a default limit of 1
+		core_mesh.AllowedMTLSBackends = 2
+	})
+
+	AfterAll(func() {
+		core_mesh.AllowedMTLSBackends = 1
+	})
+
 	BeforeEach(func() {
 		resStore := memory.NewStore()
-		secretManager := secrets_manager.NewSecretManager(secrets_store.NewSecretStore(resStore), cipher.None(), nil)
+		rm := manager.NewResourceManager(resStore)
+		secretManager := secrets_manager.NewSecretManager(secrets_store.NewSecretStore(resStore), cipher.None(), nil, false)
 		builtinCaManager := ca_builtin.NewBuiltinCaManager(secretManager)
 		caManagers := core_ca.Managers{
 			"builtin": builtinCaManager,
 		}
-		err := builtinCaManager.EnsureBackends(context.Background(), "default", newMesh().Spec.Mtls.Backends)
+		mesh := newMesh()
+		err := rm.Create(context.Background(), mesh, store.CreateByKey(core_model.DefaultMesh, core_model.NoMesh))
 		Expect(err).ToNot(HaveOccurred())
-
-		caProvider := NewCaProvider(caManagers)
-		identityProvider := NewIdentityProvider(caManagers)
+		err = builtinCaManager.EnsureBackends(context.Background(), mesh, mesh.Spec.Mtls.Backends)
+		Expect(err).ToNot(HaveOccurred())
 
 		m, err := core_metrics.NewMetrics("local")
 		Expect(err).ToNot(HaveOccurred())
 		metrics = m
+
+		caProvider, err := NewCaProvider(caManagers, metrics)
+		Expect(err).ToNot(HaveOccurred())
+		identityProvider, err := NewIdentityProvider(caManagers, metrics)
+		Expect(err).ToNot(HaveOccurred())
 
 		secrets, err = NewSecrets(caProvider, identityProvider, metrics)
 		Expect(err).ToNot(HaveOccurred())
@@ -111,112 +142,226 @@ var _ = Describe("Secrets", func() {
 		}
 	})
 
-	It("should generate cert and emit statistic and info", func() {
-		// when
-		identity, ca, err := secrets.Get(newDataplane(), newMesh())
+	Context("dataplane proxy", func() {
+		It("should generate cert and emit statistic and info", func() {
+			// when
+			identity, ca, err := secrets.GetForDataPlane(context.Background(), newDataplane(), newMesh(), nil)
 
-		// then certs are generated
-		Expect(err).ToNot(HaveOccurred())
-		Expect(identity.PemCerts).ToNot(BeEmpty())
-		Expect(identity.PemKey).ToNot(BeEmpty())
-		Expect(ca.PemCerts).ToNot(BeEmpty())
+			// then certs are generated
+			Expect(err).ToNot(HaveOccurred())
+			Expect(identity.PemCerts).ToNot(BeEmpty())
+			Expect(identity.PemKey).ToNot(BeEmpty())
+			Expect(ca).To(HaveLen(1))
+			Expect(ca["default"].PemCerts).ToNot(BeEmpty())
 
-		// and info is stored
-		info := secrets.Info(core_model.MetaToResourceKey(newDataplane().Meta))
-		Expect(info.Generation).To(Equal(now))
-		Expect(info.Expiration.Unix()).To(Equal(now.Add(1 * time.Hour).Unix()))
-		Expect(info.MTLS.EnabledBackend).To(Equal("ca-1"))
-		Expect(info.Tags).To(Equal(mesh_proto.MultiValueTagSet{
-			"kuma.io/service": map[string]bool{
-				"web": true,
-			},
-		}))
+			// and info is stored
+			info := secrets.Info(mesh_proto.DataplaneProxyType, core_model.MetaToResourceKey(newDataplane().Meta))
+			Expect(info.Generation).To(Equal(now))
+			Expect(info.Expiration.Unix()).To(Equal(now.Add(1 * time.Hour).Unix()))
+			Expect(info.OwnMesh.MTLS.EnabledBackend).To(Equal("ca-1"))
+			Expect(info.Tags).To(Equal(mesh_proto.MultiValueTagSet{
+				"kuma.io/service": map[string]bool{
+					"web": true,
+				},
+			}))
 
-		// and metric is published
-		Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(1.0))
+			// and metric is published
+			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(1.0))
+			Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(1)))
+		})
+
+		It("should not regenerate certs if nothing has changed", func() {
+			// given
+			identity, cas, err := secrets.GetForDataPlane(context.Background(), newDataplane(), newMesh(), nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// when
+			newIdentity, newCa, err := secrets.GetForDataPlane(context.Background(), newDataplane(), newMesh(), nil)
+
+			// then
+			Expect(err).ToNot(HaveOccurred())
+			Expect(identity).To(Equal(newIdentity))
+			Expect(cas).To(HaveLen(1))
+			Expect(newCa).To(HaveLen(1))
+			Expect(cas["default"]).To(Equal(newCa["default"]))
+			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(1.0))
+			Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(1)))
+		})
+
+		Context("should regenerate certificate", func() {
+			BeforeEach(func() {
+				_, _, err := secrets.GetForDataPlane(context.Background(), newDataplane(), newMesh(), nil)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("when mTLS settings has changed", func() {
+				// given
+				mesh := newMesh()
+				mesh.Spec.Mtls.EnabledBackend = "ca-2"
+
+				// when
+				_, _, err := secrets.GetForDataPlane(context.Background(), newDataplane(), mesh, nil)
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+				Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+				Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-2").GetSummary().GetSampleCount()).To(Equal(uint64(1)))
+			})
+
+			It("when dp tags has changed", func() {
+				// given
+				dataplane := newDataplane()
+				dataplane.Spec.Networking.Inbound[0].Tags["kuma.io/service"] = "web2"
+
+				// when
+				_, _, err := secrets.GetForDataPlane(context.Background(), dataplane, newMesh(), nil)
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+				Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+				Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(2)))
+			})
+
+			It("when cert is expiring", func() {
+				// given
+				now = now.Add(48*time.Minute + 1*time.Millisecond) // 4/5 of 60 minutes
+
+				// when
+				_, _, err := secrets.GetForDataPlane(context.Background(), newDataplane(), newMesh(), nil)
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+				Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+				Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(2)))
+			})
+
+			It("when cert was cleaned up", func() {
+				// given
+				secrets.Cleanup(mesh_proto.DataplaneProxyType, core_model.MetaToResourceKey(newDataplane().Meta))
+
+				// when
+				_, _, err := secrets.GetForDataPlane(context.Background(), newDataplane(), newMesh(), nil)
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+				Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+				Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(2)))
+			})
+		})
+
+		It("should cleanup certs", func() {
+			// given
+			_, _, err := secrets.GetForDataPlane(context.Background(), newDataplane(), newMesh(), nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			// when
+			secrets.Cleanup(mesh_proto.DataplaneProxyType, core_model.MetaToResourceKey(newDataplane().Meta))
+
+			// then
+			Expect(secrets.Info(mesh_proto.DataplaneProxyType, core_model.MetaToResourceKey(newDataplane().Meta))).To(BeNil())
+		})
 	})
 
-	It("should not regenerate certs if nothing has changed", func() {
-		// given
-		identity, ca, err := secrets.Get(newDataplane(), newMesh())
-		Expect(err).ToNot(HaveOccurred())
+	Context("zone egress", func() {
+		It("should generate cert and emit statistic and info", func() {
+			// when
+			identity, ca, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), newMesh())
 
-		// when
-		newIdentity, newCa, err := secrets.Get(newDataplane(), newMesh())
-
-		// then
-		Expect(err).ToNot(HaveOccurred())
-		Expect(identity).To(Equal(newIdentity))
-		Expect(ca).To(Equal(newCa))
-		Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(1.0))
-	})
-
-	Context("should regenerate certificate", func() {
-		BeforeEach(func() {
-			_, _, err := secrets.Get(newDataplane(), newMesh())
+			// then certs are generated
 			Expect(err).ToNot(HaveOccurred())
+			Expect(identity.PemCerts).ToNot(BeEmpty())
+			Expect(identity.PemKey).ToNot(BeEmpty())
+			Expect(ca.PemCerts).ToNot(BeEmpty())
+
+			// and info is stored
+			info := secrets.Info(mesh_proto.EgressProxyType, core_model.MetaToResourceKey(newZoneEgress().Meta))
+			Expect(info.Generation).To(Equal(now))
+			Expect(info.Expiration.Unix()).To(Equal(now.Add(1 * time.Hour).Unix()))
+			Expect(info.OwnMesh.MTLS.EnabledBackend).To(Equal("ca-1"))
+			Expect(info.Tags).To(Equal(mesh_proto.MultiValueTagSet{
+				"kuma.io/service": map[string]bool{
+					mesh_proto.ZoneEgressServiceName: true,
+				},
+			}))
+
+			// and metric is published
+			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(1.0))
+			Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(1)))
 		})
 
-		It("when mTLS settings has changed", func() {
+		It("should not regenerate certs if nothing has changed", func() {
 			// given
-			mesh := newMesh()
-			mesh.Spec.Mtls.EnabledBackend = "ca-2"
+			identity, ca, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), newMesh())
+			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			_, _, err := secrets.Get(newDataplane(), mesh)
+			newIdentity, newCa, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), newMesh())
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
-			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+			Expect(identity).To(Equal(newIdentity))
+			Expect(ca).To(Equal(newCa))
+			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(1.0))
+			Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(1)))
 		})
 
-		It("when dp tags has changed", func() {
+		Context("should regenerate certificate", func() {
+			BeforeEach(func() {
+				_, _, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), newMesh())
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("when mTLS settings has changed", func() {
+				// given
+				mesh := newMesh()
+				mesh.Spec.Mtls.EnabledBackend = "ca-2"
+
+				// when
+				_, _, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), mesh)
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+				Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+				Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-2").GetSummary().GetSampleCount()).To(Equal(uint64(1)))
+			})
+
+			It("when cert is expiring", func() {
+				// given
+				now = now.Add(48*time.Minute + 1*time.Millisecond) // 4/5 of 60 minutes
+
+				// when
+				_, _, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), newMesh())
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+				Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+				Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(2)))
+			})
+
+			It("when cert was cleaned up", func() {
+				// given
+				secrets.Cleanup(mesh_proto.EgressProxyType, core_model.MetaToResourceKey(newZoneEgress().Meta))
+
+				// when
+				_, _, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), newMesh())
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+				Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+				Expect(test_metrics.FindMetric(metrics, "ca_manager_get_cert", "backend_name", "ca-1").GetSummary().GetSampleCount()).To(Equal(uint64(2)))
+			})
+		})
+
+		It("should cleanup certs", func() {
 			// given
-			dataplane := newDataplane()
-			dataplane.Spec.Networking.Inbound[0].Tags["kuma.io/service"] = "web2"
+			_, _, err := secrets.GetForZoneEgress(context.Background(), newZoneEgress(), newMesh())
+			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			_, _, err := secrets.Get(dataplane, newMesh())
+			secrets.Cleanup(mesh_proto.EgressProxyType, core_model.MetaToResourceKey(newZoneEgress().Meta))
 
 			// then
-			Expect(err).ToNot(HaveOccurred())
-			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
+			Expect(secrets.Info(mesh_proto.EgressProxyType, core_model.MetaToResourceKey(newZoneEgress().Meta))).To(BeNil())
 		})
-
-		It("when cert is expiring", func() {
-			// given
-			now = now.Add(48*time.Minute + 1*time.Millisecond) // 4/5 of 60 minutes
-
-			// when
-			_, _, err := secrets.Get(newDataplane(), newMesh())
-
-			// then
-			Expect(err).ToNot(HaveOccurred())
-			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
-		})
-
-		It("when cert was cleaned up", func() {
-			// given
-			secrets.Cleanup(core_model.MetaToResourceKey(newDataplane().Meta))
-
-			// when
-			_, _, err := secrets.Get(newDataplane(), newMesh())
-
-			// then
-			Expect(err).ToNot(HaveOccurred())
-			Expect(test_metrics.FindMetric(metrics, "cert_generation").GetCounter().GetValue()).To(Equal(2.0))
-		})
-	})
-
-	It("should cleanup certs", func() {
-		// given
-		_, _, err := secrets.Get(newDataplane(), newMesh())
-		Expect(err).ToNot(HaveOccurred())
-
-		// when
-		secrets.Cleanup(core_model.MetaToResourceKey(newDataplane().Meta))
-
-		// then
-		Expect(secrets.Info(core_model.MetaToResourceKey(newDataplane().Meta))).To(BeNil())
 	})
 })

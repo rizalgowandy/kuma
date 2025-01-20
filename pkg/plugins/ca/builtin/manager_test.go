@@ -6,14 +6,17 @@ import (
 	"encoding/pem"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core"
 	core_ca "github.com/kumahq/kuma/pkg/core/ca"
+	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	"github.com/kumahq/kuma/pkg/core/resources/manager"
+	"github.com/kumahq/kuma/pkg/core/resources/model"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/core/secrets/cipher"
 	secret_manager "github.com/kumahq/kuma/pkg/core/secrets/manager"
@@ -25,9 +28,9 @@ import (
 )
 
 var _ = Describe("Builtin CA Manager", func() {
-
 	var secretManager manager.ResourceManager
 	var caManager core_ca.Manager
+	var mesh *core_mesh.MeshResource
 
 	now := time.Now()
 
@@ -35,8 +38,14 @@ var _ = Describe("Builtin CA Manager", func() {
 		core.Now = func() time.Time {
 			return now
 		}
-		secretManager = secret_manager.NewSecretManager(store.NewSecretStore(memory.NewStore()), cipher.None(), nil)
+		memoryStore := memory.NewStore()
+		rm := manager.NewResourceManager(memoryStore)
+		secretManager = secret_manager.NewSecretManager(store.NewSecretStore(memoryStore), cipher.None(), nil, false)
 		caManager = builtin.NewBuiltinCaManager(secretManager)
+		mesh = core_mesh.NewMeshResource()
+		// Since mesh is the owner of secrets we can't operate on secrets without having the mesh in the store
+		err := rm.Create(context.Background(), mesh, core_store.CreateByKey(model.DefaultMesh, model.NoMesh))
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -46,7 +55,6 @@ var _ = Describe("Builtin CA Manager", func() {
 	Context("EnsureBackends", func() {
 		It("should create a CA", func() {
 			// given
-			mesh := "default"
 			backends := []*mesh_proto.CertificateAuthorityBackend{{
 				Name: "builtin-1",
 				Type: "builtin",
@@ -84,7 +92,6 @@ var _ = Describe("Builtin CA Manager", func() {
 
 		It("should create a configured CA", func() {
 			// given
-			mesh := "default"
 			backends := []*mesh_proto.CertificateAuthorityBackend{{
 				Name: "builtin-1",
 				Type: "builtin",
@@ -114,7 +121,6 @@ var _ = Describe("Builtin CA Manager", func() {
 
 		It("should ensure first backend and then second", func() {
 			// given
-			mesh := "default"
 			backends := []*mesh_proto.CertificateAuthorityBackend{{
 				Name: "builtin-1",
 				Type: "builtin",
@@ -147,10 +153,66 @@ var _ = Describe("Builtin CA Manager", func() {
 		})
 	})
 
+	Context("ValidateBackend", func() {
+		It("should validate backend", func() {
+			// given
+			mesh := "default"
+			backend := &mesh_proto.CertificateAuthorityBackend{
+				Name: "builtin-1",
+				Type: "builtin",
+			}
+
+			// when
+			err := caManager.ValidateBackend(context.Background(), mesh, backend)
+
+			// then
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("should fail validation when name too long", func() {
+			// given
+			mesh := "default"
+			backend := &mesh_proto.CertificateAuthorityBackend{
+				Name: "backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long.backend-long",
+				Type: "builtin",
+			}
+
+			// when
+			verr := caManager.ValidateBackend(context.Background(), mesh, backend)
+
+			// then
+			actual, err := yaml.Marshal(verr)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(actual).To(MatchYAML(`
+              violations:
+                - field: mtls.backends.name
+                  message: 'Backend name is too long. Max length: 255'`))
+		})
+
+		It("should fail validation when backend name contains uppercase letters", func() {
+			// given
+			mesh := "default"
+			backend := &mesh_proto.CertificateAuthorityBackend{
+				Name: "builtinCA",
+				Type: "builtin",
+			}
+
+			// when
+			verr := caManager.ValidateBackend(context.Background(), mesh, backend)
+
+			// then
+			actual, err := yaml.Marshal(verr)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(actual).To(MatchYAML(`
+              violations:
+                - field: mtls.backends.name
+                  message: '"builtinCA" name must be valid dns name'`))
+		})
+	})
+
 	Context("GetRootCert", func() {
 		It("should retrieve created certs", func() {
 			// given
-			mesh := "default"
 			backend := &mesh_proto.CertificateAuthorityBackend{
 				Name: "builtin-1",
 				Type: "builtin",
@@ -159,7 +221,7 @@ var _ = Describe("Builtin CA Manager", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// when
-			certs, err := caManager.GetRootCert(context.Background(), mesh, backend)
+			certs, err := caManager.GetRootCert(context.Background(), mesh.GetMeta().GetName(), backend)
 
 			// then
 			Expect(err).ToNot(HaveOccurred())
@@ -186,7 +248,6 @@ var _ = Describe("Builtin CA Manager", func() {
 	Context("GenerateDataplaneCert", func() {
 		It("should generate dataplane certs", func() {
 			// given
-			mesh := "default"
 			backend := &mesh_proto.CertificateAuthorityBackend{
 				Name: "builtin-1",
 				Type: "builtin",
@@ -209,7 +270,7 @@ var _ = Describe("Builtin CA Manager", func() {
 					"v1": true,
 				},
 			}
-			pair, err := caManager.GenerateDataplaneCert(context.Background(), mesh, backend, tags)
+			pair, err := caManager.GenerateDataplaneCert(context.Background(), mesh.GetMeta().GetName(), backend, tags)
 
 			// then
 			Expect(err).ToNot(HaveOccurred())

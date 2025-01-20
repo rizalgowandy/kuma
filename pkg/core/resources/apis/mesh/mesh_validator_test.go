@@ -1,10 +1,9 @@
 package mesh
 
 import (
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
@@ -15,9 +14,24 @@ var _ = Describe("Mesh", func() {
 		expected string
 	}
 	Describe("Validate()", func() {
-		It("should pass validation", func() {
-			// given
-			spec := `
+		DescribeTable("should pass validation",
+			func(given testCase) {
+				// given
+				mesh := NewMeshResource()
+
+				// when
+				err := util_proto.FromYAML([]byte(given.mesh), mesh.Spec)
+				// then
+				Expect(err).ToNot(HaveOccurred())
+
+				// when
+				err = mesh.Validate()
+
+				// then
+				Expect(err).ToNot(HaveOccurred())
+			},
+			Entry("multiple ca backends of the same name and tls prometheus config", testCase{
+				mesh: `
             mtls:
               enabledBackend: builtin-1
               backends:
@@ -70,20 +84,112 @@ var _ = Describe("Mesh", func() {
                 conf:
                   port: 5670
                   path: /metrics
-`
-			mesh := NewMeshResource()
-
-			// when
-			err := util_proto.FromYAML([]byte(spec), mesh.Spec)
-			// then
-			Expect(err).ToNot(HaveOccurred())
-
-			// when
-			err = mesh.Validate()
-
-			// then
-			Expect(err).ToNot(HaveOccurred())
-		})
+                  envoy:
+                    filterRegex: ^server[0-9]+
+                    usedOnly: true
+                  aggregate:
+                  - name: application
+                    port: 1234
+                    path: "/stats"
+                  - name: sidecar
+                    port: 12345
+                    path: "/stats/sidecar"
+                  tls:
+                    mode: providedTLS
+            constraints:
+              dataplaneProxy:
+                requirements:
+                - tags:
+                    k8s.kuma.io/namespace: ns-1
+                    kuma.io/zone: east
+                restrictions:
+                - tags:
+                    k8s.kuma.io/namespace: ns-1
+                    kuma.io/zone: west
+            routing:
+              zoneEgress: true`,
+				expected: "",
+			}),
+			Entry("multiple ca backends of the same name", testCase{
+				mesh: `
+            mtls:
+              enabledBackend: builtin-1
+              backends:
+              - name: builtin-1
+                type: builtin
+                dpCert:
+                  rotation:
+                    expiration: 2y
+            logging:
+              backends:
+              - name: file-1
+                type: file
+                conf:
+                  path: /path/to/file
+              - name: file-2
+                format: '%START_TIME% %KUMA_SOURCE_SERVICE%'
+                type: file
+                conf:
+                  path: /path/to/file2
+              - name: tcp-1
+                type: tcp
+                conf:
+                  address: kibana:1234
+              - name: tcp-2
+                format: '%START_TIME% %KUMA_DESTINATION_SERVICE%'
+                type: tcp
+                conf:
+                  address: kibana:1234
+              defaultBackend: tcp-1
+            tracing:
+              backends:
+              - name: zipkin-us
+                sampling: 80.0
+                type: zipkin
+                conf:
+                  url: http://zipkin.local:9411/v2/spans
+                  traceId128bit: true
+                  apiVersion: httpProto
+                  sharedSpanContext: true
+              - name: zipkin-eu
+                type: zipkin
+                conf:
+                  url: http://zipkin.local:9411/v2/spans
+              defaultBackend: zipkin-us
+            metrics:
+              enabledBackend: prom-1
+              backends:
+              - name: prom-1
+                type: prometheus
+                conf:
+                  skipMTLS: false
+                  port: 5670
+                  path: /metrics
+                  envoy:
+                    filterRegex: ^server[0-9]+
+                    usedOnly: true
+                  aggregate:
+                  - name: application
+                    port: 1234
+                    path: "/stats"
+                  - name: sidecar
+                    port: 12345
+                    path: "/stats/sidecar"
+            constraints:
+              dataplaneProxy:
+                requirements:
+                - tags:
+                    k8s.kuma.io/namespace: ns-1
+                    kuma.io/zone: east
+                restrictions:
+                - tags:
+                    k8s.kuma.io/namespace: ns-1
+                    kuma.io/zone: west
+            routing:
+              zoneEgress: true`,
+				expected: "",
+			}),
+		)
 
 		DescribeTable("should validate fields",
 			func(given testCase) {
@@ -220,21 +326,6 @@ var _ = Describe("Mesh", func() {
                 violations:
                 - field: logging.backends[0].config.path
                   message: cannot be empty`,
-			}),
-			Entry("invalid access log format", testCase{
-				mesh: `
-                logging:
-                  backends:
-                  - name: backend-1
-                    format: "%START_TIME% %sent_bytes%"
-                    type: file
-                    conf:
-                      path: /var/logs
-                  defaultBackend: backend-1`,
-				expected: `
-                violations:
-                - field: logging.backends[0].format
-                  message: 'format string is not valid: expected a command operator to start at position 14, instead got: "%sent_bytes%"'`,
 			}),
 			Entry("default backend has to be set to one of the backends", testCase{
 				mesh: `
@@ -410,6 +501,50 @@ var _ = Describe("Mesh", func() {
                 - field: metrics.backends[0].type
                   message: 'unknown backend type. Available backends: "prometheus"'`,
 			}),
+			Entry("constraints dataplaneProxy with invalid tags", testCase{
+				mesh: `
+                constraints:
+                  dataplaneProxy:
+                    requirements:
+                    - {}
+                    - tags:
+                        '': ''
+                    - tags:
+                        '!@#$': '!@#$'
+                    restrictions:
+                    - {}
+                    - tags:
+                        '': ''
+                    - tags:
+                        '!@#$': '!@#$'
+`,
+				expected: `
+                violations:
+                - field: constraints.dataplaneProxy.requirements[0].tags
+                  message: must have at least one tag
+                - field: constraints.dataplaneProxy.requirements[1].tags
+                  message: tag name must be non-empty
+                - field: constraints.dataplaneProxy.requirements[1].tags[""]
+                  message: tag value must be non-empty
+                - field: constraints.dataplaneProxy.requirements[2].tags["!@#$"]
+                  message: tag name must consist of alphanumeric characters, dots, dashes, slashes
+                    and underscores
+                - field: constraints.dataplaneProxy.requirements[2].tags["!@#$"]
+                  message: tag value must consist of alphanumeric characters, dots, dashes, slashes
+                    and underscores or be "*"
+                - field: constraints.dataplaneProxy.restrictions[0].tags
+                  message: must have at least one tag
+                - field: constraints.dataplaneProxy.restrictions[1].tags
+                  message: tag name must be non-empty
+                - field: constraints.dataplaneProxy.restrictions[1].tags[""]
+                  message: tag value must be non-empty
+                - field: constraints.dataplaneProxy.restrictions[2].tags["!@#$"]
+                  message: tag name must consist of alphanumeric characters, dots, dashes, slashes
+                    and underscores
+                - field: constraints.dataplaneProxy.restrictions[2].tags["!@#$"]
+                  message: tag value must consist of alphanumeric characters, dots, dashes, slashes
+                    and underscores or be "*"`,
+			}),
 			Entry("multiple errors", testCase{
 				mesh: `
                 mtls:
@@ -443,6 +578,145 @@ var _ = Describe("Mesh", func() {
                   message: '"tcp-1" name is already used for another backend'
                 - field: logging.defaultBackend
                   message: has to be set to one of the logging backend in mesh`,
+			}),
+			Entry("zoneEgress enabled but mtls not defined", testCase{
+				mesh: `
+                routing:
+                  zoneEgress: true`,
+				expected: `
+                violations:
+                - field: mtls
+                  message: has to be set when zoneEgress enabled`,
+			}),
+			Entry("zoneEgress enabled but multiple ca backends of the same name", testCase{
+				mesh: `
+                mtls:
+                  enabledBackend: backend-1
+                  backends:
+                  - name: backend-1
+                    type: builtin
+                  - name: backend-1
+                    type: builtin
+                routing:
+                  zoneEgress: true`,
+				expected: `
+                violations:
+                - field: mtls.backends
+                  message: cannot have more than 1 backends
+                - field: mtls.backends[1].name
+                  message: '"backend-1" name is already used for another backend'`,
+			}),
+			Entry("zoneEgress and mTLS enabled but no enabledBackend provided", testCase{
+				mesh: `
+                mtls:
+                  backends:
+                  - name: backend-1
+                    type: builtin
+                routing:
+                  zoneEgress: true`,
+				expected: `
+                violations:
+                - field: mtls
+                  message: has to be set when zoneEgress enabled`,
+			}),
+			Entry("metrics aggregate configuration contains duplicate entries", testCase{
+				mesh: `
+                metrics:
+                  backends:
+                  - name: backend-1
+                    type: prometheus
+                    conf:
+                      aggregate:
+                      - name: app
+                        path: "/stats/"
+                        port: 123
+                      - name: app
+                        path: "/stats" 
+                      - name: sidecar
+                        port: 12345
+                      - name: sidecar  
+                  - name: backend-2
+                    type: prometheus
+                    conf:
+                      aggregate:
+                      - name: app
+                        path: "/stats/"
+                        port: 123
+                      - name: app
+                        path: "/stats" 
+                `,
+				expected: `
+                violations:
+                - field: metrics.backends[0].conf.aggregate[1].name
+                  message: 'duplicate entry: app, values have to be unique'
+                - field: metrics.backends[0].conf.aggregate[3].name
+                  message: 'duplicate entry: sidecar, values have to be unique'
+                - field: metrics.backends[1].conf.aggregate[1].name
+                  message: 'duplicate entry: app, values have to be unique'`,
+			}),
+			Entry("metrics contains skipMTLS and tls configuration", testCase{
+				mesh: `
+                metrics:
+                  backends:
+                  - name: backend-1
+                    type: prometheus
+                    conf:
+                      skipMTLS: true
+                      tls:
+                        mode: providedTLS
+                `,
+				expected: `
+                violations:
+                - field: metrics.backends[0].conf
+                  message: 'skipMTLS and tls configuration cannot be defined together'`,
+			}),
+			Entry("metrics contains skipMTLS with different value and tls configuration", testCase{
+				mesh: `
+                metrics:
+                  backends:
+                  - name: backend-1
+                    type: prometheus
+                    conf:
+                      skipMTLS: false
+                      tls:
+                        mode: providedTLS
+                `,
+				expected: `
+                violations:
+                - field: metrics.backends[0].conf
+                  message: 'skipMTLS and tls configuration cannot be defined together'`,
+			}),
+			Entry("metrics contains not skipMTLS and disabled", testCase{
+				mesh: `
+                metrics:
+                  backends:
+                  - name: backend-1
+                    type: prometheus
+                    conf:
+                      skipMTLS: false
+                      tls:
+                        mode: disabled
+                `,
+				expected: `
+                violations:
+                - field: metrics.backends[0].conf
+                  message: 'skipMTLS and tls configuration cannot be defined together'`,
+			}),
+			Entry("metrics contains skipMTLS and activeMTLSBackend", testCase{
+				mesh: `
+                metrics:
+                  backends:
+                  - name: backend-1
+                    type: prometheus
+                    conf:
+                      skipMTLS: true
+                      tls:
+                        mode: activeMTLSBackend
+                `,
+				expected: `
+                violations:
+                - field: metrics.backends[0].conf
+                  message: 'skipMTLS and tls configuration cannot be defined together'`,
 			}),
 		)
 	})

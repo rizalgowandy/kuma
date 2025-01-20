@@ -10,14 +10,14 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/httpfs"
 	"github.com/pkg/errors"
 
-	"github.com/kumahq/kuma/app/kumactl/pkg/install/data"
 	postgres_cfg "github.com/kumahq/kuma/pkg/config/plugins/resources/postgres"
 	core_plugins "github.com/kumahq/kuma/pkg/core/plugins"
 	common_postgres "github.com/kumahq/kuma/pkg/plugins/common/postgres"
 	"github.com/kumahq/kuma/pkg/plugins/resources/postgres/migrations"
+	"github.com/kumahq/kuma/pkg/util/data"
 )
 
-func migrateDb(cfg postgres_cfg.PostgresStoreConfig) (core_plugins.DbVersion, error) {
+func MigrateDb(cfg postgres_cfg.PostgresStoreConfig) (core_plugins.DbVersion, error) {
 	m, err := newMigrate(cfg)
 	if err != nil {
 		return 0, err
@@ -70,7 +70,7 @@ func newMigrate(cfg postgres_cfg.PostgresStoreConfig) (*migrate.Migrate, error) 
 	return m, nil
 }
 
-func isDbMigrated(cfg postgres_cfg.PostgresStoreConfig) (bool, error) {
+func IsDbMigrated(cfg postgres_cfg.PostgresStoreConfig) (bool, error) {
 	m, err := newMigrate(cfg)
 	if err != nil {
 		return false, err

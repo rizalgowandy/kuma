@@ -3,7 +3,7 @@ package resources
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 
 	error_types "github.com/kumahq/kuma/pkg/core/rest/errors/types"
@@ -16,14 +16,14 @@ func doRequest(client util_http.Client, ctx context.Context, req *http.Request) 
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}
 	if resp.StatusCode/100 >= 4 {
 		kumaErr := error_types.Error{}
 		if err := json.Unmarshal(b, &kumaErr); err == nil {
-			if kumaErr.Title != "" && kumaErr.Details != "" {
+			if kumaErr.Title != "" {
 				return resp.StatusCode, b, &kumaErr
 			}
 		}

@@ -2,24 +2,26 @@ package server_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
-	"github.com/emicklei/go-restful"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	"github.com/emicklei/go-restful/v3"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/pkg/errors"
 
+	"github.com/kumahq/kuma/pkg/core/tokens"
 	"github.com/kumahq/kuma/pkg/tokens/builtin/access"
 	"github.com/kumahq/kuma/pkg/tokens/builtin/issuer"
 	"github.com/kumahq/kuma/pkg/tokens/builtin/server"
 	"github.com/kumahq/kuma/pkg/tokens/builtin/server/types"
-	"github.com/kumahq/kuma/pkg/tokens/builtin/zoneingress"
+	"github.com/kumahq/kuma/pkg/tokens/builtin/zone"
+	zone_access "github.com/kumahq/kuma/pkg/tokens/builtin/zone/access"
 )
 
 type staticTokenIssuer struct {
@@ -28,34 +30,30 @@ type staticTokenIssuer struct {
 
 var _ issuer.DataplaneTokenIssuer = &staticTokenIssuer{}
 
-func (s *staticTokenIssuer) Generate(identity issuer.DataplaneIdentity) (issuer.Token, error) {
+func (s *staticTokenIssuer) Generate(context.Context, issuer.DataplaneIdentity, time.Duration) (tokens.Token, error) {
 	return s.resp, nil
 }
 
-func (s *staticTokenIssuer) Validate(token issuer.Token, meshName string) (issuer.DataplaneIdentity, error) {
-	return issuer.DataplaneIdentity{}, errors.New("not implemented")
-}
+type zoneStaticTokenIssuer struct{}
 
-type zoneIngressStaticTokenIssuer struct {
-}
+var _ zone.TokenIssuer = &zoneStaticTokenIssuer{}
 
-var _ zoneingress.TokenIssuer = &zoneIngressStaticTokenIssuer{}
-
-func (z *zoneIngressStaticTokenIssuer) Generate(identity zoneingress.Identity) (zoneingress.Token, error) {
+func (z *zoneStaticTokenIssuer) Generate(ctx context.Context, identity zone.Identity, validFor time.Duration) (zone.Token, error) {
 	return fmt.Sprintf("token-for-%s", identity.Zone), nil
 }
 
-func (z *zoneIngressStaticTokenIssuer) Validate(token zoneingress.Token) (zoneingress.Identity, error) {
-	return zoneingress.Identity{}, errors.New("not implemented")
-}
-
 var _ = Describe("Dataplane Token Webservice", func() {
-
 	const credentials = "test"
 	var url string
 
 	BeforeEach(func() {
-		ws := server.NewWebservice(&staticTokenIssuer{credentials}, &zoneIngressStaticTokenIssuer{}, &access.NoopDpTokenAccess{})
+		ws := server.NewWebservice(
+			"/tokens",
+			&staticTokenIssuer{credentials},
+			&zoneStaticTokenIssuer{},
+			&access.NoopDpTokenAccess{},
+			&zone_access.NoopZoneTokenAccess{},
+		)
 
 		container := restful.NewContainer()
 		container.Add(ws)
@@ -64,7 +62,7 @@ var _ = Describe("Dataplane Token Webservice", func() {
 
 		// wait for the server
 		Eventually(func() error {
-			_, err := http.DefaultClient.Get(fmt.Sprintf("%s/tokens", srv.URL))
+			_, err := http.DefaultClient.Get(fmt.Sprintf("%s/tokens/dataplane", srv.URL))
 			return err
 		}).ShouldNot(HaveOccurred())
 	})
@@ -79,7 +77,7 @@ var _ = Describe("Dataplane Token Webservice", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// when
-		req, err := http.NewRequest("POST", fmt.Sprintf("%s/tokens", url), bytes.NewReader(reqBytes))
+		req, err := http.NewRequest("POST", fmt.Sprintf("%s/tokens/dataplane", url), bytes.NewReader(reqBytes))
 		Expect(err).ToNot(HaveOccurred())
 		req.Header.Add("content-type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
@@ -89,7 +87,7 @@ var _ = Describe("Dataplane Token Webservice", func() {
 		Expect(resp.StatusCode).To(Equal(200))
 
 		// when
-		respBody, err := ioutil.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
 
 		// then
 		Expect(err).ToNot(HaveOccurred())
@@ -99,7 +97,7 @@ var _ = Describe("Dataplane Token Webservice", func() {
 	DescribeTable("should return bad request on invalid json",
 		func(json string) {
 			// given
-			req, err := http.NewRequest("POST", fmt.Sprintf("%s/tokens", url), strings.NewReader(json))
+			req, err := http.NewRequest("POST", fmt.Sprintf("%s/tokens/dataplane", url), strings.NewReader(json))
 			Expect(err).ToNot(HaveOccurred())
 			req.Header.Add("content-type", "application/json")
 

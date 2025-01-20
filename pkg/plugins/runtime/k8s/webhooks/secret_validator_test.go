@@ -4,26 +4,27 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ghodss/yaml"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	admissionv1 "k8s.io/api/admission/v1"
 	kube_core "k8s.io/api/core/v1"
 	kube_meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kube_client "sigs.k8s.io/controller-runtime/pkg/client"
 	kube_admission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/yaml"
 
+	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
+	config_core "github.com/kumahq/kuma/pkg/config/core"
 	secrets_manager "github.com/kumahq/kuma/pkg/core/secrets/manager"
 	core_validators "github.com/kumahq/kuma/pkg/core/validators"
 	"github.com/kumahq/kuma/pkg/plugins/runtime/k8s/webhooks"
 )
 
 var _ = Describe("ServiceValidator", func() {
-
 	type testCase struct {
-		request  string
-		expected string
+		request      string
+		unsafeDelete bool
+		expected     string
 	}
 
 	BeforeEach(func() {
@@ -52,6 +53,22 @@ var _ = Describe("ServiceValidator", func() {
 		}
 		err = k8sClient.Create(context.Background(), secret)
 		Expect(err).ToNot(HaveOccurred())
+
+		secret = &kube_core.Secret{
+			ObjectMeta: kube_meta.ObjectMeta{
+				Name:      "synced-secret",
+				Namespace: "default",
+				Labels: map[string]string{
+					mesh_proto.ResourceOriginLabel: string(mesh_proto.GlobalResourceOrigin),
+				},
+			},
+			Data: map[string][]byte{
+				"value": []byte("dGVzdAo="),
+			},
+			Type: "system.kuma.io/secret",
+		}
+		err = k8sClient.Create(context.Background(), secret)
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -63,9 +80,11 @@ var _ = Describe("ServiceValidator", func() {
 		func(given testCase) {
 			// given
 			validator := &webhooks.SecretValidator{
-				Decoder:   decoder,
-				Client:    k8sClient,
-				Validator: &testSecretValidator{},
+				Decoder:      decoder,
+				Client:       k8sClient,
+				Validator:    &testSecretValidator{},
+				UnsafeDelete: given.unsafeDelete,
+				CpMode:       config_core.Zone,
 			}
 			admissionReview := admissionv1.AdmissionReview{}
 			err := yaml.Unmarshal([]byte(given.request), &admissionReview)
@@ -455,7 +474,7 @@ var _ = Describe("ServiceValidator", func() {
               status: Failure
             uid: ""`,
 		}),
-		Entry("should not allow deleting secret in use", testCase{
+		Entry("should allow deleting secret in use", testCase{
 			request: `
             apiVersion: admission.k8s.io/v1
             kind: AdmissionReview
@@ -476,11 +495,54 @@ var _ = Describe("ServiceValidator", func() {
               metadata: {}
             uid: ""`,
 		}),
+		Entry("should allow deleting secret in use with unsafe delete", testCase{
+			unsafeDelete: true,
+			request: `
+            apiVersion: admission.k8s.io/v1
+            kind: AdmissionReview
+            request:
+              uid: 12345
+              kind:
+                group: ""
+                kind: Secret
+                version: v1
+              name: secret-in-use
+              namespace: default
+              operation: DELETE
+`,
+			expected: `
+            allowed: true
+            status:
+              code: 200
+              metadata: {}
+            uid: ""`,
+		}),
+		Entry("should allow deleting synced secret", testCase{
+			request: `
+            apiVersion: admission.k8s.io/v1
+            kind: AdmissionReview
+            request:
+              uid: 12345
+              kind:
+                group: ""
+                kind: Secret
+                version: v1
+              name: synced-secret
+              namespace: default
+              operation: DELETE
+`,
+			expected: `
+            allowed: true
+            status:
+              code: 200
+              message: ignore. It's synced resource.
+              metadata: {}
+            uid: ""`,
+		}),
 	)
 })
 
-type testSecretValidator struct {
-}
+type testSecretValidator struct{}
 
 func (t *testSecretValidator) ValidateDelete(ctx context.Context, secretName string, secretMesh string) error {
 	var verr core_validators.ValidationError

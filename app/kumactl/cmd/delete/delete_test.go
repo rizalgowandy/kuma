@@ -5,20 +5,20 @@ import (
 	"context"
 	"path/filepath"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
 	"github.com/kumahq/kuma/app/kumactl/cmd"
 	kumactl_cmd "github.com/kumahq/kuma/app/kumactl/pkg/cmd"
+	"github.com/kumahq/kuma/app/kumactl/pkg/resources"
+	"github.com/kumahq/kuma/app/kumactl/pkg/test"
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	"github.com/kumahq/kuma/pkg/core/resources/apis/system"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	memory_resources "github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
-	"github.com/kumahq/kuma/pkg/util/test"
 )
 
 var _ = Describe("kumactl delete ", func() {
@@ -31,7 +31,9 @@ var _ = Describe("kumactl delete ", func() {
 		BeforeEach(func() {
 			// setup
 			rootCtx = kumactl_cmd.DefaultRootContext()
-			rootCtx.Runtime.NewAPIServerClient = test.GetMockNewAPIServerClient()
+			rootCtx.Runtime.NewAPIServerClient = func(client util_http.Client) resources.ApiServerClient {
+				return resources.NewStaticApiServiceClient(test.DummyIndexResponse)
+			}
 			rootCtx.Runtime.NewResourceStore = func(util_http.Client) core_store.ResourceStore {
 				return store
 			}
@@ -53,7 +55,8 @@ var _ = Describe("kumactl delete ", func() {
 			// given
 			rootCmd.SetArgs([]string{
 				"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-				"delete"})
+				"delete",
+			})
 
 			// when
 			err := rootCmd.Execute()
@@ -70,7 +73,8 @@ var _ = Describe("kumactl delete ", func() {
 			// given
 			rootCmd.SetArgs([]string{
 				"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-				"delete", "some-type", "some-name"})
+				"delete", "some-type", "some-name",
+			})
 
 			// when
 			err := rootCmd.Execute()
@@ -84,7 +88,6 @@ var _ = Describe("kumactl delete ", func() {
 		})
 
 		Describe("kumactl delete TYPE NAME", func() {
-
 			type testCase struct {
 				typ             string // TYPE
 				name            string // NAME
@@ -111,7 +114,8 @@ var _ = Describe("kumactl delete ", func() {
 					// given
 					rootCmd.SetArgs([]string{
 						"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-						"delete", given.typ, given.name, "--mesh", "demo"})
+						"delete", given.typ, given.name, "--mesh", "demo",
+					})
 
 					// when
 					err := rootCmd.Execute()
@@ -240,7 +244,8 @@ var _ = Describe("kumactl delete ", func() {
 					// given
 					rootCmd.SetArgs([]string{
 						"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-						"delete", given.typ, given.name})
+						"delete", given.typ, given.name,
+					})
 
 					// when
 					err = rootCmd.Execute()
@@ -281,7 +286,8 @@ var _ = Describe("kumactl delete ", func() {
 					// given
 					rootCmd.SetArgs([]string{
 						"--config-file", filepath.Join("..", "testdata", "sample-kumactl.config.yaml"),
-						"delete", given.typ, given.name})
+						"delete", given.typ, given.name,
+					})
 
 					// when
 					err := rootCmd.Execute()

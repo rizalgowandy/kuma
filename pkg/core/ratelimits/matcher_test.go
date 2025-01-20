@@ -4,13 +4,12 @@ import (
 	"context"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	. "github.com/kumahq/kuma/pkg/core/ratelimits"
-	"github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
+	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
 	core_manager "github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_model "github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
@@ -22,8 +21,8 @@ import (
 )
 
 var _ = Describe("Match", func() {
-	dataplaneWithInboundsFunc := func(inbounds []*mesh_proto.Dataplane_Networking_Inbound) *mesh.DataplaneResource {
-		return &mesh.DataplaneResource{
+	dataplaneWithInboundsFunc := func(inbounds []*mesh_proto.Dataplane_Networking_Inbound) *core_mesh.DataplaneResource {
+		return &core_mesh.DataplaneResource{
 			Meta: &model.ResourceMeta{
 				Mesh: "default",
 				Name: "dp1",
@@ -36,8 +35,8 @@ var _ = Describe("Match", func() {
 		}
 	}
 
-	dataplaneWithOutboundsFunc := func(outbounds []*mesh_proto.Dataplane_Networking_Outbound) *mesh.DataplaneResource {
-		return &mesh.DataplaneResource{
+	dataplaneWithOutboundsFunc := func(outbounds []*mesh_proto.Dataplane_Networking_Outbound) *core_mesh.DataplaneResource {
+		return &core_mesh.DataplaneResource{
 			Meta: &model.ResourceMeta{
 				Mesh: "default",
 				Name: "dp1",
@@ -50,8 +49,8 @@ var _ = Describe("Match", func() {
 		}
 	}
 
-	policyWithDestinationsFunc := func(name string, creationTime time.Time, sources, destinations []*mesh_proto.Selector) *mesh.RateLimitResource {
-		return &mesh.RateLimitResource{
+	policyWithDestinationsFunc := func(name string, creationTime time.Time, sources, destinations []*mesh_proto.Selector) *core_mesh.RateLimitResource {
+		return &core_mesh.RateLimitResource{
 			Meta: &model.ResourceMeta{
 				Name:         name,
 				CreationTime: creationTime,
@@ -70,8 +69,8 @@ var _ = Describe("Match", func() {
 	}
 
 	type testCase struct {
-		dataplane *mesh.DataplaneResource
-		policies  []*mesh.RateLimitResource
+		dataplane *core_mesh.DataplaneResource
+		policies  []*core_mesh.RateLimitResource
 		expected  core_xds.RateLimitsMap
 	}
 
@@ -80,7 +79,7 @@ var _ = Describe("Match", func() {
 			manager := core_manager.NewResourceManager(memory.NewStore())
 			matcher := RateLimitMatcher{ResourceManager: manager}
 
-			mesh := mesh.NewMeshResource()
+			mesh := core_mesh.NewMeshResource()
 			err := manager.Create(context.Background(), mesh, store.CreateByKey(core_model.DefaultMesh, core_model.NoMesh))
 			Expect(err).ToNot(HaveOccurred())
 
@@ -93,9 +92,9 @@ var _ = Describe("Match", func() {
 			Expect(err).ToNot(HaveOccurred())
 			inboundMatched := allMatched.Inbound
 			for key := range inboundMatched {
-				Expect(len(inboundMatched[key])).To(Equal(len(given.expected.Inbound[key])))
+				Expect(inboundMatched[key]).To(HaveLen(len(given.expected.Inbound[key])))
 				for i, matched := range inboundMatched[key] {
-					Expect(matched).To(MatchProto(given.expected.Inbound[key][i]))
+					Expect(matched.Spec).To(MatchProto(given.expected.Inbound[key][i].Spec))
 				}
 			}
 			outboundMatched := allMatched.Outbound
@@ -106,7 +105,8 @@ var _ = Describe("Match", func() {
 		Entry("1 inbound dataplane, 2 policies", testCase{
 			dataplane: dataplaneWithInboundsFunc([]*mesh_proto.Dataplane_Networking_Inbound{
 				{
-					ServicePort: 8080,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8080,
 					Tags: map[string]string{
 						"kuma.io/service":  "web",
 						"version":          "0.1",
@@ -115,7 +115,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl1", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -154,9 +154,9 @@ var _ = Describe("Match", func() {
 			expected: core_xds.RateLimitsMap{
 				Inbound: core_xds.InboundRateLimitsMap{
 					mesh_proto.InboundInterface{
-						WorkloadIP:   "127.0.0.1",
+						WorkloadIP:   "1.2.3.4",
 						WorkloadPort: 8080,
-					}: []*mesh_proto.RateLimit{
+					}: []*core_mesh.RateLimitResource{
 						policyWithDestinationsFunc("rl2", time.Unix(1, 0),
 							[]*mesh_proto.Selector{
 								{
@@ -173,8 +173,11 @@ var _ = Describe("Match", func() {
 										"kuma.io/protocol": "http",
 									},
 								},
-							}).Spec,
-					}}}}),
+							}),
+					},
+				},
+			},
+		}),
 
 		Entry("1 outbound dataplane, 2 policies", testCase{
 			dataplane: dataplaneWithOutboundsFunc([]*mesh_proto.Dataplane_Networking_Outbound{
@@ -188,7 +191,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl1", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -245,14 +248,15 @@ var _ = Describe("Match", func() {
 									"kuma.io/protocol": "http",
 								},
 							},
-						}).Spec,
+						}),
 				},
 			},
 		}),
 		Entry("should apply policy only to the first inbound", testCase{
 			dataplane: dataplaneWithInboundsFunc([]*mesh_proto.Dataplane_Networking_Inbound{
 				{
-					ServicePort: 8080,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8080,
 					Tags: map[string]string{
 						"kuma.io/service":  "web",
 						"version":          "0.1",
@@ -261,7 +265,8 @@ var _ = Describe("Match", func() {
 					},
 				},
 				{
-					ServicePort: 8081,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8081,
 					Tags: map[string]string{
 						"kuma.io/service":  "web-api",
 						"version":          "0.1.2",
@@ -270,7 +275,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl1", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -292,25 +297,26 @@ var _ = Describe("Match", func() {
 			expected: core_xds.RateLimitsMap{
 				Inbound: core_xds.InboundRateLimitsMap{
 					mesh_proto.InboundInterface{
-						WorkloadIP:   "127.0.0.1",
+						WorkloadIP:   "1.2.3.4",
 						WorkloadPort: 8081,
-					}: []*mesh_proto.RateLimit{policyWithDestinationsFunc("rl1", time.Unix(1, 0),
-						[]*mesh_proto.Selector{
-							{
-								Match: map[string]string{
-									"kuma.io/service":  "*",
-									"kuma.io/protocol": "http",
+					}: []*core_mesh.RateLimitResource{
+						policyWithDestinationsFunc("rl1", time.Unix(1, 0),
+							[]*mesh_proto.Selector{
+								{
+									Match: map[string]string{
+										"kuma.io/service":  "*",
+										"kuma.io/protocol": "http",
+									},
 								},
 							},
-						},
-						[]*mesh_proto.Selector{
-							{
-								Match: map[string]string{
-									"kuma.io/service":  "web-api",
-									"kuma.io/protocol": "http",
+							[]*mesh_proto.Selector{
+								{
+									Match: map[string]string{
+										"kuma.io/service":  "web-api",
+										"kuma.io/protocol": "http",
+									},
 								},
-							},
-						}).Spec,
+							}),
 					},
 				},
 			},
@@ -336,7 +342,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl1", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -376,7 +382,7 @@ var _ = Describe("Match", func() {
 									"kuma.io/protocol": "http",
 								},
 							},
-						}).Spec,
+						}),
 				},
 			},
 		}),
@@ -384,7 +390,8 @@ var _ = Describe("Match", func() {
 		Entry("match 2 policies on inbound", testCase{
 			dataplane: dataplaneWithInboundsFunc([]*mesh_proto.Dataplane_Networking_Inbound{
 				{
-					ServicePort: 8080,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8080,
 					Tags: map[string]string{
 						"kuma.io/service":  "backend",
 						"version":          "0.1",
@@ -393,7 +400,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl2", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -430,9 +437,9 @@ var _ = Describe("Match", func() {
 			expected: core_xds.RateLimitsMap{
 				Inbound: core_xds.InboundRateLimitsMap{
 					mesh_proto.InboundInterface{
-						WorkloadIP:   "127.0.0.1",
+						WorkloadIP:   "1.2.3.4",
 						WorkloadPort: 8080,
-					}: []*mesh_proto.RateLimit{
+					}: []*core_mesh.RateLimitResource{
 						policyWithDestinationsFunc("rl2", time.Unix(1, 0),
 							[]*mesh_proto.Selector{
 								{
@@ -448,7 +455,7 @@ var _ = Describe("Match", func() {
 										"kuma.io/protocol": "http",
 									},
 								},
-							}).Spec,
+							}),
 						policyWithDestinationsFunc("rl2", time.Unix(1, 0),
 							[]*mesh_proto.Selector{
 								{
@@ -464,8 +471,11 @@ var _ = Describe("Match", func() {
 										"kuma.io/protocol": "http",
 									},
 								},
-							}).Spec,
-					}}}}),
+							}),
+					},
+				},
+			},
+		}),
 
 		Entry("match 2 policies on outbound", testCase{
 			dataplane: dataplaneWithOutboundsFunc([]*mesh_proto.Dataplane_Networking_Outbound{
@@ -479,7 +489,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl2", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -533,7 +543,7 @@ var _ = Describe("Match", func() {
 									"kuma.io/protocol": "http",
 								},
 							},
-						}).Spec,
+						}),
 				},
 			},
 		}),
@@ -541,7 +551,8 @@ var _ = Describe("Match", func() {
 		Entry("match and sort 3 policies inbound", testCase{
 			dataplane: dataplaneWithInboundsFunc([]*mesh_proto.Dataplane_Networking_Inbound{
 				{
-					ServicePort: 8080,
+					ServiceAddress: "1.2.3.4",
+					ServicePort:    8080,
 					Tags: map[string]string{
 						"kuma.io/service":  "backend",
 						"version":          "0.1",
@@ -550,7 +561,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl1", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -609,9 +620,9 @@ var _ = Describe("Match", func() {
 			expected: core_xds.RateLimitsMap{
 				Inbound: core_xds.InboundRateLimitsMap{
 					mesh_proto.InboundInterface{
-						WorkloadIP:   "127.0.0.1",
+						WorkloadIP:   "1.2.3.4",
 						WorkloadPort: 8080,
-					}: []*mesh_proto.RateLimit{
+					}: []*core_mesh.RateLimitResource{
 						policyWithDestinationsFunc("rl3", time.Unix(1, 0),
 							[]*mesh_proto.Selector{
 								{
@@ -628,7 +639,7 @@ var _ = Describe("Match", func() {
 										"kuma.io/protocol": "http",
 									},
 								},
-							}).Spec,
+							}),
 						policyWithDestinationsFunc("rl2", time.Unix(1, 0),
 							[]*mesh_proto.Selector{
 								{
@@ -644,7 +655,7 @@ var _ = Describe("Match", func() {
 										"kuma.io/protocol": "http",
 									},
 								},
-							}).Spec,
+							}),
 						policyWithDestinationsFunc("rl2", time.Unix(1, 0),
 							[]*mesh_proto.Selector{
 								{
@@ -660,7 +671,7 @@ var _ = Describe("Match", func() {
 										"kuma.io/protocol": "http",
 									},
 								},
-							}).Spec,
+							}),
 						policyWithDestinationsFunc("rl1", time.Unix(1, 0),
 							[]*mesh_proto.Selector{
 								{
@@ -676,8 +687,11 @@ var _ = Describe("Match", func() {
 										"kuma.io/protocol": "http",
 									},
 								},
-							}).Spec,
-					}}}}),
+							}),
+					},
+				},
+			},
+		}),
 
 		Entry("match and sort 3 policies outbound", testCase{
 			dataplane: dataplaneWithOutboundsFunc([]*mesh_proto.Dataplane_Networking_Outbound{
@@ -691,7 +705,7 @@ var _ = Describe("Match", func() {
 					},
 				},
 			}),
-			policies: []*mesh.RateLimitResource{
+			policies: []*core_mesh.RateLimitResource{
 				policyWithDestinationsFunc("rl1", time.Unix(1, 0),
 					[]*mesh_proto.Selector{
 						{
@@ -768,7 +782,7 @@ var _ = Describe("Match", func() {
 									"kuma.io/protocol": "http",
 								},
 							},
-						}).Spec,
+						}),
 				},
 			},
 		},

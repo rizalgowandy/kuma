@@ -1,8 +1,7 @@
 package listeners_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
@@ -26,7 +25,7 @@ var _ = Describe("HttpConnectionManager Configurers", func() {
 				}, given.opts...)
 
 				// when
-				chain, err := NewFilterChainBuilder(envoy.APIV3).
+				chain, err := NewFilterChainBuilder(envoy.APIV3, envoy.AnonymousResource).
 					Configure(opts...).
 					Build()
 				// then
@@ -48,6 +47,8 @@ var _ = Describe("HttpConnectionManager Configurers", func() {
               '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
               httpFilters:
               - name: envoy.filters.http.router
+                typedConfig:
+                  '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
               serverName: test-server
               statPrefix: test`,
 			}),
@@ -61,8 +62,11 @@ var _ = Describe("HttpConnectionManager Configurers", func() {
               '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
               httpFilters:
               - name: envoy.filters.http.router
+                typedConfig:
+                  '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
               mergeSlashes: true
               normalizePath: true
+              pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
               statPrefix: test`,
 			}),
 
@@ -75,6 +79,8 @@ var _ = Describe("HttpConnectionManager Configurers", func() {
               '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
               httpFilters:
               - name: envoy.filters.http.router
+                typedConfig:
+                  '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
               statPrefix: test
               stripAnyHostPort: true`,
 			}),

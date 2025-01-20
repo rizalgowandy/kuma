@@ -7,8 +7,7 @@ import (
 
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	"github.com/golang/protobuf/jsonpb"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/prometheus/common/config"
 
@@ -18,10 +17,11 @@ import (
 	"github.com/kumahq/kuma/pkg/core/runtime"
 	"github.com/kumahq/kuma/pkg/core/runtime/component"
 	"github.com/kumahq/kuma/pkg/mads/server"
-	mads_v1_client "github.com/kumahq/kuma/pkg/mads/v1/client"
 	"github.com/kumahq/kuma/pkg/metrics"
 	"github.com/kumahq/kuma/pkg/plugins/resources/memory"
 	"github.com/kumahq/kuma/pkg/test"
+	util_proto "github.com/kumahq/kuma/pkg/util/proto"
+	"github.com/kumahq/kuma/pkg/xds/cache/mesh"
 )
 
 type testRuntime struct {
@@ -30,6 +30,7 @@ type testRuntime struct {
 	config     kuma_cp.Config
 	components []component.Component
 	metrics    metrics.Metrics
+	meshCache  *mesh.Cache
 }
 
 func (t *testRuntime) ReadOnlyResourceManager() manager.ReadOnlyResourceManager {
@@ -49,8 +50,11 @@ func (t *testRuntime) Metrics() metrics.Metrics {
 	return t.metrics
 }
 
-var _ = Describe("MADS Server", func() {
+func (t *testRuntime) MeshCache() *mesh.Cache {
+	return t.meshCache
+}
 
+var _ = Describe("MADS Server", func() {
 	var rt *testRuntime
 	var stopCh chan struct{}
 	var errCh chan error
@@ -90,24 +94,6 @@ var _ = Describe("MADS Server", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 
-	It("should serve GRPC requests", func() {
-		client, err := mads_v1_client.New(fmt.Sprintf("grpc://127.0.0.1:%d", port))
-		Expect(err).ToNot(HaveOccurred())
-
-		var stream *mads_v1_client.Stream
-		Eventually(func() bool {
-			stream, err = client.StartStream()
-			return err == nil
-		}, "10s", "100ms").Should(BeTrue())
-
-		err = stream.RequestAssignments("client-1")
-		Expect(err).ToNot(HaveOccurred())
-
-		assignments, err := stream.WaitForAssignments()
-		Expect(err).ToNot(HaveOccurred())
-		Expect(assignments).To(HaveLen(0))
-	})
-
 	It("should serve HTTP/1.1 requests", func() {
 		rt, err := config.NewRoundTripperFromConfig(config.HTTPClientConfig{TLSConfig: config.TLSConfig{InsecureSkipVerify: true}}, "mads", config.WithHTTP2Disabled())
 		Expect(err).ToNot(HaveOccurred())
@@ -124,24 +110,22 @@ var _ = Describe("MADS Server", func() {
 			},
 		}
 
-		reqbuf := new(bytes.Buffer)
-		marshaller := &jsonpb.Marshaler{}
-		err = marshaller.Marshal(reqbuf, req)
+		reqBytes, err := util_proto.ToJSON(req)
 		Expect(err).ToNot(HaveOccurred())
 
-		request, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/v3/discovery:monitoringassignments", port), reqbuf)
+		request, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/v3/discovery:monitoringassignments", port), bytes.NewReader(reqBytes))
 		Expect(err).ToNot(HaveOccurred())
 
 		request.Header.Add("Content-Type", "application/json")
 		request.Header.Add("Accept", "application/json")
 
-		Eventually(func() bool {
+		Eventually(func(g Gomega) {
 			response, err := client.Do(request)
-			ok := err == nil && response.StatusCode == 200
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(response).To(HaveHTTPStatus(200))
 			if response != nil {
-				Expect(response.Body.Close()).To(Succeed())
+				g.Expect(response.Body.Close()).To(Succeed())
 			}
-			return ok
-		}, "10s", "100ms").Should(BeTrue())
+		}, "10s", "100ms").Should(Succeed())
 	})
 })

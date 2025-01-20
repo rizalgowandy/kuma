@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,6 +12,7 @@ import (
 	kuma_cp "github.com/kumahq/kuma/pkg/config/app/kuma-cp"
 	config_core "github.com/kumahq/kuma/pkg/config/core"
 	"github.com/kumahq/kuma/pkg/core/bootstrap"
+	meshservice_generate "github.com/kumahq/kuma/pkg/core/resources/apis/meshservice/generate"
 	"github.com/kumahq/kuma/pkg/defaults"
 	"github.com/kumahq/kuma/pkg/diagnostics"
 	"github.com/kumahq/kuma/pkg/dns"
@@ -20,6 +20,8 @@ import (
 	"github.com/kumahq/kuma/pkg/gc"
 	"github.com/kumahq/kuma/pkg/hds"
 	"github.com/kumahq/kuma/pkg/insights"
+	"github.com/kumahq/kuma/pkg/intercp"
+	"github.com/kumahq/kuma/pkg/ipam"
 	kds_global "github.com/kumahq/kuma/pkg/kds/global"
 	kds_zone "github.com/kumahq/kuma/pkg/kds/zone"
 	mads_server "github.com/kumahq/kuma/pkg/mads/server"
@@ -27,13 +29,12 @@ import (
 	"github.com/kumahq/kuma/pkg/util/os"
 	kuma_version "github.com/kumahq/kuma/pkg/version"
 	"github.com/kumahq/kuma/pkg/xds"
+	"github.com/kumahq/kuma/pkg/zone"
 )
 
-var (
-	runLog = controlPlaneLog.WithName("run")
-)
+var runLog = controlPlaneLog.WithName("run")
 
-const gracefullyShutdownDuration = 3 * time.Second
+const gracefulShutdownDuration = 3 * time.Second
 
 // This is the open file limit below which the control plane may not
 // reasonably have enough descriptors to accept all its clients.
@@ -54,104 +55,68 @@ func newRunCmdWithOpts(opts kuma_cmd.RunCmdOpts) *cobra.Command {
 				runLog.Error(err, "could not load the configuration")
 				return err
 			}
-			ctx := opts.SetupSignalHandler()
-			rt, err := bootstrap.Bootstrap(ctx, cfg)
+
+			// nolint:staticcheck
+			if cfg.Mode == config_core.Standalone {
+				runLog.Info(`[WARNING] "standalone" mode is deprecated. Changing it to "zone". Set KUMA_MODE to "zone" as "standalone" will be removed in the future.`)
+				cfg.Mode = config_core.Zone
+			}
+			kuma_cp.PrintDeprecations(&cfg, cmd.OutOrStdout())
+
+			gracefulCtx, ctx, _ := opts.SetupSignalHandler()
+			// this needs to be done before we log the config as bootstrap may change it.
+			rt, err := bootstrap.Bootstrap(gracefulCtx, cfg)
 			if err != nil {
 				runLog.Error(err, "unable to set up Control Plane runtime")
 				return err
 			}
+
 			cfgForDisplay, err := config.ConfigForDisplay(&cfg)
 			if err != nil {
-				runLog.Error(err, "unable to prepare config for display")
-				return err
+				runLog.Error(err, "unable to prepare config for display, log config will be empty")
 			}
-			cfgBytes, err := config.ToJson(cfgForDisplay)
-			if err != nil {
-				runLog.Error(err, "unable to convert config to json")
-				return err
-			}
-			runLog.Info(fmt.Sprintf("Current config %s", cfgBytes))
-			runLog.Info(fmt.Sprintf("Running in mode `%s`", cfg.Mode))
-
+			runLog.Info("starting Control Plane", "version", kuma_version.Build.Version, "mode", cfg.Mode, "config", cfgForDisplay)
 			if err := os.RaiseFileLimit(); err != nil {
 				runLog.Error(err, "unable to raise the open file limit")
 			}
 
 			if limit, _ := os.CurrentFileLimit(); limit < minOpenFileLimit {
 				runLog.Info("for better performance, raise the open file limit",
-					"minimim-open-files", minOpenFileLimit)
+					"minimum-open-files", minOpenFileLimit)
 			}
 
-			switch cfg.Mode {
-			case config_core.Standalone:
-				if err := mads_server.SetupServer(rt); err != nil {
-					runLog.Error(err, "unable to set up Monitoring Assignment server")
-					return err
-				}
-				if err := dns.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up DNS")
-					return err
-				}
-				if err := xds.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up XDS")
-					return err
-				}
-				if err := hds.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up HDS")
-					return err
-				}
-				if err := dp_server.SetupServer(rt); err != nil {
-					runLog.Error(err, "unable to set up DP Server")
-					return err
-				}
-				if err := insights.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up Insights resyncer")
-					return err
-				}
-				if err := defaults.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up Defaults")
-					return err
-				}
-			case config_core.Zone:
-				if err := mads_server.SetupServer(rt); err != nil {
-					runLog.Error(err, "unable to set up Monitoring Assignment server")
-					return err
-				}
-				if err := kds_zone.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up KDS Zone")
-					return err
-				}
-				if err := dns.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up DNS")
-					return err
-				}
-				if err := xds.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up XDS")
-					return err
-				}
-				if err := hds.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up HDS")
-					return err
-				}
-				if err := dp_server.SetupServer(rt); err != nil {
-					runLog.Error(err, "unable to set up DP Server")
-					return err
-				}
-			case config_core.Global:
-				if err := kds_global.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up KDS Global")
-					return err
-				}
-				if err := insights.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up Insights resyncer")
-					return err
-				}
-				if err := defaults.Setup(rt); err != nil {
-					runLog.Error(err, "unable to set up Defaults")
-					return err
-				}
+			if err := mads_server.SetupServer(rt); err != nil {
+				runLog.Error(err, "unable to set up Monitoring Assignment server")
+				return err
 			}
-
+			if err := xds.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up XDS")
+				return err
+			}
+			if err := hds.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up HDS")
+				return err
+			}
+			if err := dp_server.SetupServer(rt); err != nil {
+				runLog.Error(err, "unable to set up DP Server")
+				return err
+			}
+			if err := insights.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up Insights resyncer")
+				return err
+			}
+			if err := defaults.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up Defaults")
+				return err
+			}
+			if err := kds_zone.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up Zone KDS")
+				return err
+			}
+			if err := kds_global.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up Global KDS")
+				return err
+			}
 			if err := clusterid.Setup(rt); err != nil {
 				runLog.Error(err, "unable to set up clusterID")
 				return err
@@ -172,16 +137,40 @@ func newRunCmdWithOpts(opts kuma_cmd.RunCmdOpts) *cobra.Command {
 				runLog.Error(err, "unable to set up GC")
 				return err
 			}
+			if err := intercp.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up Control Plane Intercommunication")
+				return err
+			}
+			if err := ipam.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up IPAM")
+				return err
+			}
+			if err := meshservice_generate.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up MeshService generator")
+				return err
+			}
+			if err := zone.Setup(rt); err != nil {
+				runLog.Error(err, "unable to set up ZoneIngress available services")
+				return err
+			}
+			if err := dns.SetupHostnameGenerator(rt); err != nil {
+				runLog.Error(err, "unable to set up hostname generator")
+				return err
+			}
 
-			runLog.Info("starting Control Plane", "version", kuma_version.Build.Version)
-			if err := rt.Start(ctx.Done()); err != nil {
+			runLog.Info("starting Control Plane runtime")
+			if err := rt.Start(gracefulCtx.Done()); err != nil {
 				runLog.Error(err, "problem running Control Plane")
 				return err
 			}
 
-			runLog.Info("Stop signal received. Waiting 3 seconds for components to stop gracefully...")
-			time.Sleep(gracefullyShutdownDuration)
-			runLog.Info("Stopping Control Plane")
+			runLog.Info("stopping without error, waiting for all components to stop", "gracefulShutdownDuration", gracefulShutdownDuration)
+			select {
+			case <-ctx.Done():
+				runLog.Info("all components have stopped")
+			case <-time.After(gracefulShutdownDuration):
+				runLog.Info("forcefully stopped")
+			}
 			return nil
 		},
 	}

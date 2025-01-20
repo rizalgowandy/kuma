@@ -2,8 +2,7 @@ package v3_test
 
 import (
 	envoy_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -14,7 +13,6 @@ import (
 )
 
 var _ = Describe("Virtual Host modifications", func() {
-
 	type testCase struct {
 		routeCfgs     []string
 		modifications []string
@@ -76,7 +74,8 @@ var _ = Describe("Virtual Host modifications", func() {
                         name: outbound:backend
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 virtualHost:
                    operation: add
                    value: |
@@ -151,7 +150,8 @@ var _ = Describe("Virtual Host modifications", func() {
                 trafficDirection: INBOUND
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 virtualHost:
                    operation: remove
                    match:
@@ -209,7 +209,8 @@ var _ = Describe("Virtual Host modifications", func() {
                 trafficDirection: INBOUND
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 virtualHost:
                    operation: patch
                    match:
@@ -283,7 +284,8 @@ var _ = Describe("Virtual Host modifications", func() {
                 trafficDirection: INBOUND
 `,
 			},
-			modifications: []string{`
+			modifications: []string{
+				`
                 virtualHost:
                    operation: patch
                    match:

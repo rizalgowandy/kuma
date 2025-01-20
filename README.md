@@ -1,15 +1,31 @@
 [![][kuma-logo]][kuma-url]
 
-[![CircleCI](https://circleci.com/gh/kumahq/kuma/tree/release-1.4.svg?style=svg&circle-token=e3f6c5429ee47ca0eb4bd2542e4b8801a7856373)](https://circleci.com/gh/kumahq/kuma/tree/release-1.4)
+**Builds**
+
+![GitHub Actions master](https://github.com/kumahq/kuma/actions/workflows/build-test-distribute.yaml/badge.svg?branch=master)
+
+**Code quality**
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/kumahq/kuma)](https://goreportcard.com/report/github.com/kumahq/kuma)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/5576/badge)](https://www.bestpractices.dev/projects/5576)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/kumahq/kuma/badge)](https://securityscorecards.dev/viewer/?uri=github.com/kumahq/kuma)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/kumahq/kuma/blob/master/LICENSE)
+[![CLOMonitor](https://img.shields.io/endpoint?url=https://clomonitor.io/api/projects/cncf/kuma/badge)](https://clomonitor.io/projects/cncf/kuma)
+
+**Releases**
+
+[![Docker hub](https://img.shields.io/docker/pulls/kumahq/kuma-cp)](https://hub.docker.com/u/kumahq)
 [![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/kuma)](https://artifacthub.io/packages/search?repo=kuma)
-[![Slack](https://chat.kuma.io/badge.svg)](https://chat.kuma.io/)
+[![Package Hosting By: Cloudsmith](https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith)](https://cloudsmith.io/~kong/repos/kuma-binaries-release/packages)
+
+**Social**
+
+[![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack)](https://join.slack.com/t/kuma-mesh/shared_invite/zt-1rcll3y6t-DkV_CAItZUoy0IvCwQ~jlQ)
 [![Twitter](https://img.shields.io/twitter/follow/KumaMesh.svg?style=social&label=Follow)](https://twitter.com/intent/follow?screen_name=KumaMesh)
 
 Kuma is a modern Envoy-based service mesh that can run on every cloud, in a single or multi-zone capacity, across both Kubernetes and VMs. Thanks to its broad universal workload support, combined with native support for Envoy as its data plane proxy technology (but with no Envoy expertise required), Kuma provides modern L4-L7 service connectivity, discovery, security, observability, routing and more across any service on any platform, databases included.
 
-Easy to use, with built-in service mesh policies for security, traffic control, discovery, observability and more, Kuma ships with an advanced multi-zone and multi-mesh support that automatically enables cross-zone communication across different clusters and clouds, and automatically propagates service mesh policies across the infrastructure. Kuma is currently being adopted by enterprise organization around the world to support distributed service meshes across the application teams, on both Kubernetes and VMs. 
+Easy to use, with built-in service mesh policies for security, traffic control, discovery, observability and more, Kuma ships with an advanced multi-zone and multi-mesh support that automatically enables cross-zone communication across different clusters and clouds, and automatically propagates service mesh policies across the infrastructure. Kuma is currently being adopted by enterprise organizations around the world to support distributed service meshes across the application teams, on both Kubernetes and VMs. 
 
 Originally created and donated by Kong, Kuma is today CNCF (Cloud Native Computing Foundation) Sandbox project and therefore available with the same openness and neutrality as every other CNCF project. Kuma has been engineered to be both powerful yet simple to use, reducing the complexity of running a service mesh across every organization with very unique capabilities like multi-zone support, multi-mesh support, and a gradual and intuitive learning curve.
 
@@ -19,12 +35,19 @@ Built by Envoy contributors at Kong 🦍.
 
 [![][kuma-gui]][kuma-url]
 
-**Need help?** In your journey with Kuma you can get in touch with the broader community via the official [Slack chat](https://kuma.io/community).
+## Get Started 
 
-[Installation](https://kuma.io/install) |
-[Documentation](https://kuma.io/docs) |
-[Community + Slack Chat](https://kuma.io/community) |
-[Blog](https://konghq.com/blog)
+- [Installation](https://kuma.io/install)
+- [Documentation](https://kuma.io/docs)
+
+## Get Involved
+
+- [Join the Kuma Slack](https://join.slack.com/t/kuma-mesh/shared_invite/zt-1wi2o3uok-x0KmKJiSzjQy7NgNkC8IAA) or the #kuma channel in the [CNCF Slack](https://slack.cncf.io/) exists but is not actively in use. 
+- Attend a [Community Call](https://docs.google.com/document/d/1HgnK3wJIEg8uFlivdrhrPZYWTpElWWu3mhFDXj-bMWQ/edit?usp=sharing) monthly on the second Wednesday. [Add to Calendar](https://calendar.google.com/calendar/u/0/r/eventedit/copy/YzdmZmxtY2FuNmljMTM3cTZqZDZ2ZzNlZjNfMjAyMjAyMDlUMTYzMDAwWiBrb25naHEuY29tXzFtYTk2c3NkZ2dmaDlmcnJjczk3ZXB1MzhvQGc/dGFyeW4uam9uZXNAa29uZ2hxLmNvbQ?scp=ALL&sf=true)
+- Follow us on [Twitter](https://twitter.com/kumamesh)
+- Read the [blog](https://kuma.io/blog/)
+
+**Need help?** In your journey with Kuma you can get in touch with the broader community via the official [community channels](https://kuma.io/community).
 
 ## Summary
 
@@ -41,7 +64,7 @@ Built with enterprise use-cases in mind, Kuma is a universal service mesh that s
 
 Unlike other service mesh solutions, Kuma innovates the service mesh ecosystem by providing ease of use, native support for both Kubernetes and VMs on both the control plane and the data plane, multi-mesh support that can cross every boundary including Kubernetes namespaces, out of the box multi-zone and multi-cluster support with automatic policy synchronization and connectivity, zero-trust, observability and compliance in one-click, support for custom workload attributes that can be leveraged to accelerate PCI and GDPR compliance, and much more.
 
-Below an example of using Kuma's attributes to route all traffic generated by any PCI-compliant service in Switzerland, to only be routed within the Swiss region:
+Below is an example of using Kuma's attributes to route all traffic generated by any PCI-compliant service in Switzerland, to only be routed within the Swiss region:
 
 ```yaml
 apiVersion: kuma.io/v1alpha1
@@ -110,6 +133,11 @@ You can use Kuma for modern greenfield applications built on containers as well 
 
 Kuma also provides an easy to use `kumactl` CLI client for every environment, and an official GUI that can be accessed by the browser.
 
+## Roadmap
+
+Kuma releases a minor version on a 10-week release cycle.
+The roadmap is tracked using milestones: https://github.com/kumahq/kuma/milestones
+
 ## Development
 
 Kuma is under active development and production-ready.
@@ -120,23 +148,12 @@ See [Developer Guide](DEVELOPER.md) for further details.
 
 If you are implementing Kuma in a mission-critical environment and require enterprise support and features, please visit [Enterprise](https://kuma.io/enterprise/) to explore the available offerings.
 
-## License
+## Package Hosting
 
-```
-Copyright 2021 the Kuma Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-   http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-```
+Package repository hosting is graciously provided by [Cloudsmith](https://cloudsmith.com).
+Cloudsmith is the only fully hosted, cloud-native, universal package management solution, that
+enables your organization to create, store and share packages in any format, to any place, with total
+confidence.
 
 [kuma-url]: https://kuma.io/
 [kuma-logo]: https://kuma-public-assets.s3.amazonaws.com/kuma-logo-v2.png

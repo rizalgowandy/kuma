@@ -3,7 +3,7 @@ package generate_test
 import (
 	"bytes"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	kumactl_cmd "github.com/kumahq/kuma/app/kumactl/cmd"
@@ -11,7 +11,6 @@ import (
 )
 
 var _ = Describe("Generate Signing Key", func() {
-
 	It("should generate signing key", func() {
 		// setup
 		ctx := cmd.DefaultRootContext()

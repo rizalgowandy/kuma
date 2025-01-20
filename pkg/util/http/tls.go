@@ -3,21 +3,23 @@ package http
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
 	"net/http"
+	"os"
 
 	"github.com/pkg/errors"
 )
 
 func ConfigureMTLS(httpClient *http.Client, caCert string, clientCert string, clientKey string) error {
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{},
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 	}
 
 	if caCert == "" {
 		transport.TLSClientConfig.InsecureSkipVerify = true
 	} else {
-		certBytes, err := ioutil.ReadFile(caCert)
+		certBytes, err := os.ReadFile(caCert)
 		if err != nil {
 			return errors.Wrap(err, "could not read CA cert")
 		}

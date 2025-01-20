@@ -4,18 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io/ioutil"
+	"io"
+	"maps"
 	"net/http"
 	"strconv"
 
 	"github.com/pkg/errors"
 
+	api_server_types "github.com/kumahq/kuma/pkg/api-server/types"
+	"github.com/kumahq/kuma/pkg/core"
 	"github.com/kumahq/kuma/pkg/core/resources/model"
 	"github.com/kumahq/kuma/pkg/core/resources/model/rest"
+	rest_v1alpha1 "github.com/kumahq/kuma/pkg/core/resources/model/rest/v1alpha1"
 	"github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/core/rest/errors/types"
 	util_http "github.com/kumahq/kuma/pkg/util/http"
 )
+
+var log = core.Log.WithName("store-remote")
 
 func NewStore(client util_http.Client, api rest.Api) store.ResourceStore {
 	return &remoteStore{
@@ -33,10 +39,11 @@ type remoteStore struct {
 
 func (s *remoteStore) Create(ctx context.Context, res model.Resource, fs ...store.CreateOptionsFunc) error {
 	opts := store.NewCreateOptions(fs...)
-	meta := rest.ResourceMeta{
-		Type: string(res.Descriptor().Name),
-		Name: opts.Name,
-		Mesh: opts.Mesh,
+	meta := rest_v1alpha1.ResourceMeta{
+		Type:   string(res.Descriptor().Name),
+		Name:   opts.Name,
+		Mesh:   opts.Mesh,
+		Labels: maps.Clone(opts.Labels),
 	}
 	if err := s.upsert(ctx, res, meta); err != nil {
 		return err
@@ -45,10 +52,12 @@ func (s *remoteStore) Create(ctx context.Context, res model.Resource, fs ...stor
 }
 
 func (s *remoteStore) Update(ctx context.Context, res model.Resource, fs ...store.UpdateOptionsFunc) error {
-	meta := rest.ResourceMeta{
-		Type: string(res.Descriptor().Name),
-		Name: res.GetMeta().GetName(),
-		Mesh: res.GetMeta().GetMesh(),
+	opts := store.NewUpdateOptions(fs...)
+	meta := rest_v1alpha1.ResourceMeta{
+		Type:   string(res.Descriptor().Name),
+		Name:   res.GetMeta().GetName(),
+		Mesh:   res.GetMeta().GetMesh(),
+		Labels: maps.Clone(opts.Labels),
 	}
 	if err := s.upsert(ctx, res, meta); err != nil {
 		return err
@@ -56,16 +65,18 @@ func (s *remoteStore) Update(ctx context.Context, res model.Resource, fs ...stor
 	return nil
 }
 
-func (s *remoteStore) upsert(ctx context.Context, res model.Resource, meta rest.ResourceMeta) error {
+func (s *remoteStore) upsert(ctx context.Context, res model.Resource, meta rest_v1alpha1.ResourceMeta) error {
 	resourceApi, err := s.api.GetResourceApi(res.Descriptor().Name)
 	if err != nil {
 		return errors.Wrapf(err, "failed to construct URI to update a %q", res.Descriptor().Name)
 	}
-	restRes := rest.Resource{
-		Meta: meta,
-		Spec: res.GetSpec(),
+	resCopy := res.Descriptor().NewObject()
+	resCopy.SetMeta(meta)
+	if err := resCopy.SetSpec(res.GetSpec()); err != nil {
+		return err
 	}
-	b, err := json.Marshal(&restRes)
+	restRes := rest.From.Resource(resCopy)
+	b, err := json.Marshal(restRes)
 	if err != nil {
 		return err
 	}
@@ -78,18 +89,27 @@ func (s *remoteStore) upsert(ctx context.Context, res model.Resource, meta rest.
 	if err != nil {
 		return err
 	}
-	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
-		if statusCode == http.StatusMethodNotAllowed {
-			return errors.Errorf("%s", string(b))
-		} else {
-			return errors.Errorf("(%d): %s", statusCode, string(b))
+
+	switch statusCode {
+	case http.StatusOK, http.StatusCreated:
+		if len(b) == 0 {
+			break
 		}
+		resp := api_server_types.CreateOrUpdateSuccessResponse{}
+		if err := json.Unmarshal(b, &resp); err != nil {
+			return err
+		}
+		if len(resp.Warnings) > 0 {
+			// todo(lobkovilya): there must be a better way to pass warnings back to the store's caller
+			ctx.Value(WarningsCallback).(func([]string))(resp.Warnings)
+		}
+	case http.StatusMethodNotAllowed:
+		return errors.Errorf("%s", string(b))
+	default:
+		return errors.Errorf("(%d): %s", statusCode, string(b))
 	}
-	res.SetMeta(remoteMeta{
-		Name:    meta.Name,
-		Mesh:    meta.Mesh,
-		Version: "",
-	})
+
+	res.SetMeta(meta)
 	return nil
 }
 
@@ -131,16 +151,26 @@ func (s *remoteStore) Get(ctx context.Context, res model.Resource, fs ...store.G
 		return err
 	}
 	statusCode, b, err := s.doRequest(ctx, req)
+	if statusCode == 404 {
+		return store.ErrorResourceNotFound(res.Descriptor().Name, opts.Name, opts.Mesh)
+	}
 	if err != nil {
-		if statusCode == 404 {
-			return store.ErrorResourceNotFound(res.Descriptor().Name, opts.Name, opts.Mesh)
-		}
 		return err
 	}
 	if statusCode != 200 {
 		return errors.Errorf("(%d): %s", statusCode, string(b))
 	}
-	return Unmarshal(b, res)
+	restRes, err := rest.JSON.Unmarshal(b, res.Descriptor())
+	if err != nil {
+		return err
+	}
+	res.SetMeta(restRes.GetMeta())
+	if res.Descriptor().HasStatus {
+		if err := res.SetStatus(restRes.GetStatus()); err != nil {
+			return err
+		}
+	}
+	return res.SetSpec(restRes.GetSpec())
 }
 
 func (s *remoteStore) List(ctx context.Context, rs model.ResourceList, fs ...store.ListOptionsFunc) error {
@@ -162,6 +192,7 @@ func (s *remoteStore) List(ctx context.Context, rs model.ResourceList, fs ...sto
 	}
 	req.URL.RawQuery = query.Encode()
 
+	log.V(1).Info("doing request to control-plane", "method", req.Method, "url", req.URL.String())
 	statusCode, b, err := s.doRequest(ctx, req)
 	if err != nil {
 		return err
@@ -169,7 +200,7 @@ func (s *remoteStore) List(ctx context.Context, rs model.ResourceList, fs ...sto
 	if statusCode != http.StatusOK {
 		return errors.Errorf("(%d): %s", statusCode, string(b))
 	}
-	return UnmarshalList(b, rs)
+	return rest.JSON.UnmarshalListToCore(b, rs)
 }
 
 // execute a request. Returns status code, body, error
@@ -180,17 +211,21 @@ func (s *remoteStore) doRequest(ctx context.Context, req *http.Request) (int, []
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}
 	if resp.StatusCode/100 >= 4 {
 		kumaErr := types.Error{}
 		if err := json.Unmarshal(b, &kumaErr); err == nil {
-			if kumaErr.Title != "" && kumaErr.Details != "" {
+			if kumaErr.Title != "" {
 				return resp.StatusCode, b, &kumaErr
 			}
 		}
 	}
 	return resp.StatusCode, b, nil
 }
+
+type contextKey string
+
+var WarningsCallback = contextKey("warningsCallback")

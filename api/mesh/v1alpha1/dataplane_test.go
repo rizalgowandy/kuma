@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	. "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -13,7 +12,6 @@ import (
 )
 
 var _ = Describe("Dataplane", func() {
-
 	It("should be possible to unmarshal from YAML", func() {
 		// given
 		input := `
@@ -29,9 +27,11 @@ var _ = Describe("Dataplane", func() {
               env: production
           outbound:
           - port: 30000
-            service: postgres
+            tags:
+              kuma.io/service: postgres
           - port: 50000
-            service: redis.default.svc
+            tags:
+              kuma.io/service: redis.default.svc
 `
 		// when
 		dataplane := &Dataplane{}
@@ -49,13 +49,12 @@ var _ = Describe("Dataplane", func() {
 		Expect(dataplane.Networking.Inbound[0].Tags).To(HaveKeyWithValue("env", "production"))
 		Expect(dataplane.Networking.Outbound).To(HaveLen(2))
 		Expect(dataplane.Networking.Outbound[0].Port).To(Equal(uint32(30000)))
-		Expect(dataplane.Networking.Outbound[0].Service).To(Equal("postgres"))
+		Expect(dataplane.Networking.Outbound[0].GetService()).To(Equal("postgres"))
 		Expect(dataplane.Networking.Outbound[1].Port).To(Equal(uint32(50000)))
-		Expect(dataplane.Networking.Outbound[1].Service).To(Equal("redis.default.svc"))
+		Expect(dataplane.Networking.Outbound[1].GetService()).To(Equal("redis.default.svc"))
 	})
 
 	Describe("json.Marshal()", func() {
-
 		type testCase struct {
 			input    string
 			expected string
@@ -87,8 +86,9 @@ var _ = Describe("Dataplane", func() {
 				input: `
                 networking:
                   outbound:
-                  - service: backend
-                    port: 40001
+                  - port: 40001
+                    tags:
+                      kuma.io/service: backend
                   inbound:
                   - tags:
                       kuma.io/service: backend
@@ -109,7 +109,9 @@ var _ = Describe("Dataplane", func() {
     "outbound": [
       {
         "port": 40001,
-        "service": "backend"
+        "tags": {
+          "kuma.io/service": "backend"
+        }
       }
     ]
   }
@@ -119,8 +121,9 @@ var _ = Describe("Dataplane", func() {
 				input: `
                 networking:
                   outbound:
-                  - service: backend
-                    port: 40001
+                  - port: 40001
+                    tags:
+                      kuma.io/service: backend
                   gateway:
                     tags:
                       kuma.io/service: gateway
@@ -137,7 +140,9 @@ var _ = Describe("Dataplane", func() {
     "outbound": [
       {
         "port": 40001,
-        "service": "backend"
+        "tags": {
+          "kuma.io/service": "backend"
+        }
       }
     ]
   }

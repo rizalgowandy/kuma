@@ -15,6 +15,8 @@ import (
 	util_proto "github.com/kumahq/kuma/pkg/util/proto"
 )
 
+var log = core.Log.WithName("xds").WithName("health-check-configurer")
+
 type HealthCheckConfigurer struct {
 	HealthCheck *core_mesh.HealthCheckResource
 	Protocol    core_mesh.Protocol
@@ -34,12 +36,16 @@ func mapHttpHeaders(
 ) []*envoy_core.HeaderValueOption {
 	var envoyHeaders []*envoy_core.HeaderValueOption
 	for _, header := range headers {
+		appendAction := envoy_core.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD
+		if header.Append.Value {
+			appendAction = envoy_core.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD
+		}
 		envoyHeaders = append(envoyHeaders, &envoy_core.HeaderValueOption{
 			Header: &envoy_core.HeaderValue{
 				Key:   header.Header.Key,
 				Value: header.Header.Value,
 			},
-			Append: header.Append,
+			AppendAction: appendAction,
 		})
 	}
 	return envoyHeaders
@@ -124,7 +130,7 @@ func failTrafficOnPanic(cluster *envoy_cluster.Cluster, value *wrapperspb.BoolVa
 	if cluster.CommonLbConfig.GetLocalityWeightedLbConfig() != nil {
 		// used load balancing type doesn't support 'fail_traffic_on_panic', right now we don't use
 		// 'locality_weighted_lb_config' in Kuma, locality aware load balancing is implemented based on priority levels
-		core.Log.WithName("health-check-configurer").Error(
+		log.Error(
 			errors.New("unable to set 'fail_traffic_on_panic' for 'locality_weighted_lb_config' load balancer"),
 			"unable to configure 'fail_traffic_on_panic', parameter is ignored")
 		return

@@ -1,7 +1,7 @@
 package clusters_test
 
 import (
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	core_mesh "github.com/kumahq/kuma/pkg/core/resources/apis/mesh"
@@ -11,7 +11,6 @@ import (
 )
 
 var _ = Describe("PassThroughClusterConfigurer", func() {
-
 	It("should generate proper Envoy config", func() {
 		// given
 		clusterName := "test:cluster"
@@ -23,9 +22,9 @@ var _ = Describe("PassThroughClusterConfigurer", func() {
         type: ORIGINAL_DST`
 
 		// when
-		cluster, err := clusters.NewClusterBuilder(envoy.APIV3).
-			Configure(clusters.PassThroughCluster(clusterName)).
-			Configure(clusters.Timeout(core_mesh.ProtocolTCP, DefaultTimeout())).
+		cluster, err := clusters.NewClusterBuilder(envoy.APIV3, clusterName).
+			Configure(clusters.PassThroughCluster()).
+			Configure(clusters.Timeout(DefaultTimeout(), core_mesh.ProtocolTCP)).
 			Build()
 
 		// then

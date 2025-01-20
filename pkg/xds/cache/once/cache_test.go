@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	core_metrics "github.com/kumahq/kuma/pkg/metrics"
@@ -23,7 +23,7 @@ var _ = Describe("OnceCache", func() {
 
 	BeforeEach(func() {
 		var err error
-		metrics, err = core_metrics.NewMetrics("Standalone")
+		metrics, err = core_metrics.NewMetrics("Zone")
 		Expect(err).ToNot(HaveOccurred())
 
 		cache, err = once.New(expiration, "cache", metrics)

@@ -18,6 +18,18 @@ func (u User) Authenticated() User {
 	return u
 }
 
+func (u User) IsPartOf(usernames map[string]bool, groups map[string]bool) bool {
+	if _, ok := usernames[u.Name]; ok {
+		return true
+	}
+	for _, group := range u.Groups {
+		if groups[group] {
+			return true
+		}
+	}
+	return false
+}
+
 // Admin is a static user that can be used when authn mechanism does not authenticate to specific user,
 // but authenticate to admin without giving credential (ex. authenticate as localhost, authenticate via legacy client certs).
 var Admin = User{
@@ -28,4 +40,11 @@ var Admin = User{
 var Anonymous = User{
 	Name:   "mesh-system:anonymous",
 	Groups: []string{"mesh-system:unauthenticated"},
+}
+
+// ControlPlane is a static user that is used whenever the control plane itself executes operations.
+// For example: update of DataplaneInsight, creation of default resources etc.
+var ControlPlane = User{
+	Name:   "mesh-system:control-plane",
+	Groups: []string{},
 }

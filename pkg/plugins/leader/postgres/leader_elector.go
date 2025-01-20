@@ -3,11 +3,11 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"cirello.io/pglock"
+	"github.com/pkg/errors"
 
 	"github.com/kumahq/kuma/pkg/core"
 	"github.com/kumahq/kuma/pkg/core/runtime/component"
@@ -47,6 +47,7 @@ func (p *postgresLeaderElector) Start(stop <-chan struct{}) {
 		cancelFn()
 	}()
 
+	retries := 0
 	for {
 		log.Info("waiting for lock")
 		err := p.lockClient.Do(ctx, kumaLockName, func(ctx context.Context, lock *pglock.Lock) error {
@@ -57,8 +58,17 @@ func (p *postgresLeaderElector) Start(stop <-chan struct{}) {
 		})
 		// in case of error (ex. connection to postgres is dropped) we want to retry the lock with some backoff
 		// returning error here would shut down the CP
+		// according to https://github.com/cirello-io/pglock/blob/d0d1ce72df710b5da6bdc27f9c44d9ae7bf1d3a2/errors.go#L86
+		// ErrNotAcquired could be normal lock contestation
 		if err != nil {
-			log.Error(err, "error waiting for lock")
+			if retries >= 3 {
+				log.Error(err, "error waiting for lock", "retries", retries)
+			} else {
+				log.V(1).Info("error waiting for lock", "err", err, "retries", retries)
+			}
+			retries += 1
+		} else {
+			retries = 0
 		}
 
 		if util_channels.IsClosed(stop) {
@@ -99,13 +109,21 @@ func (p *postgresLeaderElector) IsLeader() bool {
 	return atomic.LoadInt32(&(p.leader)) == 1
 }
 
-type KumaPqLockLogger struct {
+type KumaPqLockLogger struct{}
+
+func (k *KumaPqLockLogger) Error(msg string, args ...interface{}) {
+	if len(args) > 0 {
+		err, ok := args[0].(error)
+		if ok {
+			if !errors.Is(err, context.Canceled) {
+				log.Error(err, fmt.Sprintf(msg, args...))
+			}
+		}
+	} else {
+		log.Error(nil, fmt.Sprintf(msg, args...))
+	}
 }
 
-func (k *KumaPqLockLogger) Println(msgParts ...interface{}) {
-	stringParts := make([]string, len(msgParts))
-	for i, msgPart := range msgParts {
-		stringParts[i] = fmt.Sprint(msgPart)
-	}
-	log.Info(strings.Join(stringParts, " "))
+func (k *KumaPqLockLogger) Debug(msg string, args ...interface{}) {
+	log.V(1).Info(fmt.Sprintf(msg, args...))
 }

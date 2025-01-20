@@ -1,8 +1,7 @@
 package xds_test
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -43,17 +42,51 @@ var _ = Describe("DataplaneMetadataFromXdsMetadata", func() {
 							StringValue: "8000",
 						},
 					},
-					"dataplane.dns.empty.port": {
+					"dataplane.readinessReporter.port": {
 						Kind: &structpb.Value_StringValue{
-							StringValue: "8001",
+							StringValue: "9300",
+						},
+					},
+					"dataplane.appProbeProxy.enabled": {
+						Kind: &structpb.Value_StringValue{
+							StringValue: "true",
+						},
+					},
+					"systemCaPath": {
+						Kind: &structpb.Value_StringValue{
+							StringValue: "/etc/certs/cert.pem",
 						},
 					},
 				},
 			},
 			expected: xds.DataplaneMetadata{
-				AdminPort:    1234,
-				DNSPort:      8000,
-				EmptyDNSPort: 8001,
+				AdminPort:            1234,
+				DNSPort:              8000,
+				SystemCaPath:         "/etc/certs/cert.pem",
+				ReadinessPort:        9300,
+				AppProbeProxyEnabled: true,
+			},
+		}),
+		Entry("should ignore dependencies version provided through metadata if version is not set at all", testCase{
+			node: &structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					"dynamicMetadata": {
+						Kind: &structpb.Value_StructValue{
+							StructValue: &structpb.Struct{
+								Fields: map[string]*structpb.Value{
+									"version.dependencies.coredns": {
+										Kind: &structpb.Value_StringValue{
+											StringValue: "8000",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: xds.DataplaneMetadata{
+				DynamicMetadata: map[string]string{},
 			},
 		}),
 	)
@@ -87,6 +120,18 @@ var _ = Describe("DataplaneMetadataFromXdsMetadata", func() {
 		metadata := xds.DataplaneMetadataFromXdsMetadata(node)
 
 		// then
-		Expect(metadata.Version).To(matchers.MatchProto(version))
+		// We don't want to validate KumaDpVersion.KumaCpCompatible
+		// as compatibility checks are currently checked in insights
+		// ref: https://github.com/kumahq/kuma/issues/4203
+		Expect(metadata.GetVersion().GetEnvoy()).
+			To(matchers.MatchProto(version.GetEnvoy()))
+		Expect(metadata.GetVersion().GetKumaDp().GetVersion()).
+			To(Equal(version.GetKumaDp().GetVersion()))
+		Expect(metadata.GetVersion().GetKumaDp().GetBuildDate()).
+			To(Equal(version.GetKumaDp().GetBuildDate()))
+		Expect(metadata.GetVersion().GetKumaDp().GetGitCommit()).
+			To(Equal(version.GetKumaDp().GetGitCommit()))
+		Expect(metadata.GetVersion().GetKumaDp().GetGitTag()).
+			To(Equal(version.GetKumaDp().GetGitTag()))
 	})
 })

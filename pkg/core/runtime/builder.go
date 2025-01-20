@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/emicklei/go-restful/v3"
 	"github.com/pkg/errors"
 
 	"github.com/kumahq/kuma/pkg/api-server/authn"
@@ -15,77 +16,93 @@ import (
 	config_manager "github.com/kumahq/kuma/pkg/core/config/manager"
 	"github.com/kumahq/kuma/pkg/core/datasource"
 	"github.com/kumahq/kuma/pkg/core/dns/lookup"
-	core_managers "github.com/kumahq/kuma/pkg/core/managers/apis/mesh"
 	core_manager "github.com/kumahq/kuma/pkg/core/resources/manager"
 	core_store "github.com/kumahq/kuma/pkg/core/resources/store"
 	"github.com/kumahq/kuma/pkg/core/runtime/component"
 	"github.com/kumahq/kuma/pkg/core/secrets/store"
-	"github.com/kumahq/kuma/pkg/dns/resolver"
 	dp_server "github.com/kumahq/kuma/pkg/dp-server/server"
 	"github.com/kumahq/kuma/pkg/envoy/admin"
 	"github.com/kumahq/kuma/pkg/events"
+	"github.com/kumahq/kuma/pkg/insights/globalinsight"
+	"github.com/kumahq/kuma/pkg/intercp/client"
 	kds_context "github.com/kumahq/kuma/pkg/kds/context"
 	"github.com/kumahq/kuma/pkg/metrics"
-	xds_hooks "github.com/kumahq/kuma/pkg/xds/hooks"
+	"github.com/kumahq/kuma/pkg/multitenant"
+	"github.com/kumahq/kuma/pkg/plugins/resources/postgres/config"
+	"github.com/kumahq/kuma/pkg/tokens/builtin"
+	"github.com/kumahq/kuma/pkg/xds/cache/mesh"
+	xds_runtime "github.com/kumahq/kuma/pkg/xds/runtime"
 	"github.com/kumahq/kuma/pkg/xds/secrets"
 )
 
 // BuilderContext provides access to Builder's interim state.
 type BuilderContext interface {
 	ComponentManager() component.Manager
-	ResourceStore() core_store.ResourceStore
+	ResourceStore() core_store.CustomizableResourceStore
+	Transactions() core_store.Transactions
 	SecretStore() store.SecretStore
 	ConfigStore() core_store.ResourceStore
 	ResourceManager() core_manager.CustomizableResourceManager
 	Config() kuma_cp.Config
 	DataSourceLoader() datasource.Loader
 	Extensions() context.Context
-	DNSResolver() resolver.DNSResolver
 	ConfigManager() config_manager.ConfigManager
 	LeaderInfo() component.LeaderInfo
 	Metrics() metrics.Metrics
-	EventReaderFactory() events.ListenerFactory
+	EventBus() events.EventBus
 	APIManager() api_server.APIManager
-	XDSHooks() *xds_hooks.Hooks
 	CAProvider() secrets.CaProvider
 	DpServer() *dp_server.DpServer
-	MeshValidator() core_managers.MeshValidator
+	ResourceValidators() ResourceValidators
 	KDSContext() *kds_context.Context
 	APIServerAuthenticator() authn.Authenticator
 	Access() Access
+	TokenIssuers() builtin.TokenIssuers
+	MeshCache() *mesh.Cache
+	InterCPClientPool() *client.Pool
+	PgxConfigCustomizationFn() config.PgxConfigCustomization
+	Tenants() multitenant.Tenants
 }
 
 var _ BuilderContext = &Builder{}
 
 // Builder represents a multi-step initialization process.
 type Builder struct {
-	cfg      kuma_cp.Config
-	cm       component.Manager
-	rs       core_store.ResourceStore
-	ss       store.SecretStore
-	cs       core_store.ResourceStore
-	rm       core_manager.CustomizableResourceManager
-	rom      core_manager.ReadOnlyResourceManager
-	cam      core_ca.Managers
-	dsl      datasource.Loader
-	ext      context.Context
-	dns      resolver.DNSResolver
-	configm  config_manager.ConfigManager
-	leadInfo component.LeaderInfo
-	lif      lookup.LookupIPFunc
-	eac      admin.EnvoyAdminClient
-	metrics  metrics.Metrics
-	erf      events.ListenerFactory
-	apim     api_server.APIManager
-	xdsh     *xds_hooks.Hooks
-	cap      secrets.CaProvider
-	dps      *dp_server.DpServer
-	kdsctx   *kds_context.Context
-	mv       core_managers.MeshValidator
-	au       authn.Authenticator
-	acc      Access
-	appCtx   context.Context
-	*runtimeInfo
+	cfg            kuma_cp.Config
+	cm             component.Manager
+	rs             core_store.CustomizableResourceStore
+	ss             store.SecretStore
+	cs             core_store.ResourceStore
+	txs            core_store.Transactions
+	rm             core_manager.CustomizableResourceManager
+	rom            core_manager.ReadOnlyResourceManager
+	gis            globalinsight.GlobalInsightService
+	cam            core_ca.Managers
+	dsl            datasource.Loader
+	ext            context.Context
+	configm        config_manager.ConfigManager
+	leadInfo       component.LeaderInfo
+	lif            lookup.LookupIPFunc
+	eac            admin.EnvoyAdminClient
+	metrics        metrics.Metrics
+	erf            events.EventBus
+	apim           api_server.APIManager
+	xds            xds_runtime.XDSRuntimeContext
+	cap            secrets.CaProvider
+	dps            *dp_server.DpServer
+	kdsctx         *kds_context.Context
+	rv             ResourceValidators
+	au             authn.Authenticator
+	acc            Access
+	appCtx         context.Context
+	extraReportsFn ExtraReportsFn
+	tokenIssuers   builtin.TokenIssuers
+	meshCache      *mesh.Cache
+	interCpPool    *client.Pool
+	RuntimeInfo
+	pgxConfigCustomizationFn config.PgxConfigCustomization
+	tenants                  multitenant.Tenants
+	apiWebServiceCustomize   []func(*restful.WebService) error
 }
 
 func BuilderFor(appCtx context.Context, cfg kuma_cp.Config) (*Builder, error) {
@@ -95,13 +112,11 @@ func BuilderFor(appCtx context.Context, cfg kuma_cp.Config) (*Builder, error) {
 	}
 	suffix := core.NewUUID()[0:4]
 	return &Builder{
-		cfg: cfg,
-		ext: context.Background(),
-		cam: core_ca.Managers{},
-		runtimeInfo: &runtimeInfo{
-			instanceId: fmt.Sprintf("%s-%s", hostname, suffix),
-		},
-		appCtx: appCtx,
+		cfg:         cfg,
+		ext:         context.Background(),
+		cam:         core_ca.Managers{},
+		RuntimeInfo: NewRuntimeInfo(fmt.Sprintf("%s-%s", hostname, suffix), cfg.Mode),
+		appCtx:      appCtx,
 	}, nil
 }
 
@@ -110,8 +125,13 @@ func (b *Builder) WithComponentManager(cm component.Manager) *Builder {
 	return b
 }
 
-func (b *Builder) WithResourceStore(rs core_store.ResourceStore) *Builder {
+func (b *Builder) WithResourceStore(rs core_store.CustomizableResourceStore) *Builder {
 	b.rs = rs
+	return b
+}
+
+func (b *Builder) WithTransactions(txs core_store.Transactions) *Builder {
+	b.txs = txs
 	return b
 }
 
@@ -122,6 +142,11 @@ func (b *Builder) WithSecretStore(ss store.SecretStore) *Builder {
 
 func (b *Builder) WithConfigStore(cs core_store.ResourceStore) *Builder {
 	b.cs = cs
+	return b
+}
+
+func (b *Builder) WithGlobalInsightService(gis globalinsight.GlobalInsightService) *Builder {
+	b.gis = gis
 	return b
 }
 
@@ -160,11 +185,6 @@ func (b *Builder) WithExtension(key interface{}, value interface{}) *Builder {
 	return b
 }
 
-func (b *Builder) WithDNSResolver(dns resolver.DNSResolver) *Builder {
-	b.dns = dns
-	return b
-}
-
 func (b *Builder) WithConfigManager(configm config_manager.ConfigManager) *Builder {
 	b.configm = configm
 	return b
@@ -190,18 +210,13 @@ func (b *Builder) WithMetrics(metrics metrics.Metrics) *Builder {
 	return b
 }
 
-func (b *Builder) WithEventReaderFactory(erf events.ListenerFactory) *Builder {
+func (b *Builder) WithEventBus(erf events.EventBus) *Builder {
 	b.erf = erf
 	return b
 }
 
 func (b *Builder) WithAPIManager(apim api_server.APIManager) *Builder {
 	b.apim = apim
-	return b
-}
-
-func (b *Builder) WithXDSHooks(xdsh *xds_hooks.Hooks) *Builder {
-	b.xdsh = xdsh
 	return b
 }
 
@@ -215,13 +230,18 @@ func (b *Builder) WithDpServer(dps *dp_server.DpServer) *Builder {
 	return b
 }
 
-func (b *Builder) WithMeshValidator(mv core_managers.MeshValidator) *Builder {
-	b.mv = mv
+func (b *Builder) WithResourceValidators(rv ResourceValidators) *Builder {
+	b.rv = rv
 	return b
 }
 
 func (b *Builder) WithKDSContext(kdsctx *kds_context.Context) *Builder {
 	b.kdsctx = kdsctx
+	return b
+}
+
+func (b *Builder) WithXDS(xds xds_runtime.XDSRuntimeContext) *Builder {
+	b.xds = xds
 	return b
 }
 
@@ -235,12 +255,50 @@ func (b *Builder) WithAccess(acc Access) *Builder {
 	return b
 }
 
+func (b *Builder) WithExtraReportsFn(fn ExtraReportsFn) *Builder {
+	b.extraReportsFn = fn
+	return b
+}
+
+func (b *Builder) WithTokenIssuers(tokenIssuers builtin.TokenIssuers) *Builder {
+	b.tokenIssuers = tokenIssuers
+	return b
+}
+
+func (b *Builder) WithMeshCache(meshCache *mesh.Cache) *Builder {
+	b.meshCache = meshCache
+	return b
+}
+
+func (b *Builder) WithInterCPClientPool(interCpPool *client.Pool) *Builder {
+	b.interCpPool = interCpPool
+	return b
+}
+
+func (b *Builder) WithMultitenancy(tenants multitenant.Tenants) *Builder {
+	b.tenants = tenants
+	return b
+}
+
+func (b *Builder) WithPgxConfigCustomizationFn(pgxConfigCustomizationFn config.PgxConfigCustomization) *Builder {
+	b.pgxConfigCustomizationFn = pgxConfigCustomizationFn
+	return b
+}
+
+func (b *Builder) WithAPIWebServiceCustomize(customize func(*restful.WebService) error) *Builder {
+	b.apiWebServiceCustomize = append(b.apiWebServiceCustomize, customize)
+	return b
+}
+
 func (b *Builder) Build() (Runtime, error) {
 	if b.cm == nil {
 		return nil, errors.Errorf("ComponentManager has not been configured")
 	}
 	if b.rs == nil {
 		return nil, errors.Errorf("ResourceStore has not been configured")
+	}
+	if b.txs == nil {
+		return nil, errors.Errorf("Transactions has not been configured")
 	}
 	if b.rm == nil {
 		return nil, errors.Errorf("ResourceManager has not been configured")
@@ -253,9 +311,6 @@ func (b *Builder) Build() (Runtime, error) {
 	}
 	if b.ext == nil {
 		return nil, errors.Errorf("Extensions have been misconfigured")
-	}
-	if b.dns == nil {
-		return nil, errors.Errorf("DNS has been misconfigured")
 	}
 	if b.leadInfo == nil {
 		return nil, errors.Errorf("LeaderInfo has not been configured")
@@ -275,8 +330,8 @@ func (b *Builder) Build() (Runtime, error) {
 	if b.apim == nil {
 		return nil, errors.Errorf("APIManager has not been configured")
 	}
-	if b.xdsh == nil {
-		return nil, errors.Errorf("XDSHooks has not been configured")
+	if b.xds == (xds_runtime.XDSRuntimeContext{}) {
+		return nil, errors.New("xds is not configured")
 	}
 	if b.cap == nil {
 		return nil, errors.Errorf("CAProvider has not been configured")
@@ -287,8 +342,8 @@ func (b *Builder) Build() (Runtime, error) {
 	if b.kdsctx == nil {
 		return nil, errors.Errorf("KDSContext has not been configured")
 	}
-	if b.mv == nil {
-		return nil, errors.Errorf("MeshValidator has not been configured")
+	if b.rv == (ResourceValidators{}) {
+		return nil, errors.Errorf("ResourceValidators have not been configured")
 	}
 	if b.au == nil {
 		return nil, errors.Errorf("API Server Authenticator has not been configured")
@@ -296,33 +351,56 @@ func (b *Builder) Build() (Runtime, error) {
 	if b.acc == (Access{}) {
 		return nil, errors.Errorf("Access has not been configured")
 	}
+	if b.tokenIssuers == (builtin.TokenIssuers{}) {
+		return nil, errors.Errorf("TokenIssuers has not been configured")
+	}
+	if b.meshCache == nil {
+		return nil, errors.Errorf("MeshCache has not been configured")
+	}
+	if b.interCpPool == nil {
+		return nil, errors.Errorf("InterCP client pool has not been configured")
+	}
+	if b.pgxConfigCustomizationFn == nil {
+		return nil, errors.Errorf("PgxConfigCustomizationFn has not been configured")
+	}
+	if b.tenants == nil {
+		return nil, errors.Errorf("Tenants has not been configured")
+	}
 	return &runtime{
-		RuntimeInfo: b.runtimeInfo,
+		RuntimeInfo: b.RuntimeInfo,
 		RuntimeContext: &runtimeContext{
-			cfg:      b.cfg,
-			rm:       b.rm,
-			rom:      b.rom,
-			rs:       b.rs,
-			ss:       b.ss,
-			cam:      b.cam,
-			dsl:      b.dsl,
-			ext:      b.ext,
-			dns:      b.dns,
-			configm:  b.configm,
-			leadInfo: b.leadInfo,
-			lif:      b.lif,
-			eac:      b.eac,
-			metrics:  b.metrics,
-			erf:      b.erf,
-			apim:     b.apim,
-			xdsh:     b.xdsh,
-			cap:      b.cap,
-			dps:      b.dps,
-			kdsctx:   b.kdsctx,
-			mv:       b.mv,
-			au:       b.au,
-			acc:      b.acc,
-			appCtx:   b.appCtx,
+			cfg:                      b.cfg,
+			rm:                       b.rm,
+			rom:                      b.rom,
+			rs:                       b.rs,
+			txs:                      b.txs,
+			ss:                       b.ss,
+			cam:                      b.cam,
+			gis:                      b.gis,
+			dsl:                      b.dsl,
+			ext:                      b.ext,
+			configm:                  b.configm,
+			leadInfo:                 b.leadInfo,
+			lif:                      b.lif,
+			eac:                      b.eac,
+			metrics:                  b.metrics,
+			erf:                      b.erf,
+			apim:                     b.apim,
+			xds:                      b.xds,
+			cap:                      b.cap,
+			dps:                      b.dps,
+			kdsctx:                   b.kdsctx,
+			rv:                       b.rv,
+			au:                       b.au,
+			acc:                      b.acc,
+			appCtx:                   b.appCtx,
+			extraReportsFn:           b.extraReportsFn,
+			tokenIssuers:             b.tokenIssuers,
+			meshCache:                b.meshCache,
+			interCpPool:              b.interCpPool,
+			pgxConfigCustomizationFn: b.pgxConfigCustomizationFn,
+			tenants:                  b.tenants,
+			apiWebServiceCustomize:   b.apiWebServiceCustomize,
 		},
 		Manager: b.cm,
 	}, nil
@@ -331,75 +409,135 @@ func (b *Builder) Build() (Runtime, error) {
 func (b *Builder) ComponentManager() component.Manager {
 	return b.cm
 }
-func (b *Builder) ResourceStore() core_store.ResourceStore {
+
+func (b *Builder) ResourceStore() core_store.CustomizableResourceStore {
 	return b.rs
 }
+
+func (b *Builder) Transactions() core_store.Transactions {
+	return b.txs
+}
+
 func (b *Builder) SecretStore() store.SecretStore {
 	return b.ss
 }
+
 func (b *Builder) ConfigStore() core_store.ResourceStore {
 	return b.cs
 }
+
+func (b *Builder) GlobalInsightService() globalinsight.GlobalInsightService {
+	return b.gis
+}
+
 func (b *Builder) ResourceManager() core_manager.CustomizableResourceManager {
 	return b.rm
 }
+
 func (b *Builder) ReadOnlyResourceManager() core_manager.ReadOnlyResourceManager {
 	return b.rom
 }
+
 func (b *Builder) CaManagers() core_ca.Managers {
 	return b.cam
 }
+
 func (b *Builder) Config() kuma_cp.Config {
 	return b.cfg
 }
+
 func (b *Builder) DataSourceLoader() datasource.Loader {
 	return b.dsl
 }
+
 func (b *Builder) Extensions() context.Context {
 	return b.ext
 }
-func (b *Builder) DNSResolver() resolver.DNSResolver {
-	return b.dns
-}
+
 func (b *Builder) ConfigManager() config_manager.ConfigManager {
 	return b.configm
 }
+
 func (b *Builder) LeaderInfo() component.LeaderInfo {
 	return b.leadInfo
 }
+
 func (b *Builder) LookupIP() lookup.LookupIPFunc {
 	return b.lif
 }
+
 func (b *Builder) Metrics() metrics.Metrics {
 	return b.metrics
 }
-func (b *Builder) EventReaderFactory() events.ListenerFactory {
+
+func (b *Builder) EventBus() events.EventBus {
 	return b.erf
 }
+
 func (b *Builder) APIManager() api_server.APIManager {
 	return b.apim
 }
-func (b *Builder) XDSHooks() *xds_hooks.Hooks {
-	return b.xdsh
-}
+
 func (b *Builder) CAProvider() secrets.CaProvider {
 	return b.cap
 }
+
 func (b *Builder) DpServer() *dp_server.DpServer {
 	return b.dps
 }
+
 func (b *Builder) KDSContext() *kds_context.Context {
 	return b.kdsctx
 }
-func (b *Builder) MeshValidator() core_managers.MeshValidator {
-	return b.mv
+
+func (b *Builder) ResourceValidators() ResourceValidators {
+	return b.rv
 }
+
 func (b *Builder) APIServerAuthenticator() authn.Authenticator {
 	return b.au
 }
+
 func (b *Builder) Access() Access {
 	return b.acc
 }
+
 func (b *Builder) AppCtx() context.Context {
 	return b.appCtx
+}
+
+func (b *Builder) ExtraReportsFn() ExtraReportsFn {
+	return b.extraReportsFn
+}
+
+func (b *Builder) TokenIssuers() builtin.TokenIssuers {
+	return b.tokenIssuers
+}
+
+func (b *Builder) EnvoyAdminClient() admin.EnvoyAdminClient {
+	return b.eac
+}
+
+func (b *Builder) MeshCache() *mesh.Cache {
+	return b.meshCache
+}
+
+func (b *Builder) InterCPClientPool() *client.Pool {
+	return b.interCpPool
+}
+
+func (b *Builder) XDS() xds_runtime.XDSRuntimeContext {
+	return b.xds
+}
+
+func (b *Builder) PgxConfigCustomizationFn() config.PgxConfigCustomization {
+	return b.pgxConfigCustomizationFn
+}
+
+func (b *Builder) Tenants() multitenant.Tenants {
+	return b.tenants
+}
+
+func (b *Builder) APIWebServiceCustomize() []func(*restful.WebService) error {
+	return b.apiWebServiceCustomize
 }

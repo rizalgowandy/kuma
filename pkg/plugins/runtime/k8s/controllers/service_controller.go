@@ -37,6 +37,10 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req kube_ctrl.Request
 		return kube_ctrl.Result{}, errors.Wrapf(err, "unable to fetch Service %s", req.NamespacedName.Name)
 	}
 
+	if svc.GetAnnotations()[metadata.KumaGatewayAnnotation] == metadata.AnnotationBuiltin {
+		return kube_ctrl.Result{}, nil
+	}
+
 	namespace := &kube_core.Namespace{}
 	if err := r.Get(ctx, kube_types.NamespacedName{Name: svc.GetNamespace()}, namespace); err != nil {
 		if kube_apierrs.IsNotFound(err) {
@@ -45,12 +49,21 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req kube_ctrl.Request
 		return kube_ctrl.Result{}, errors.Wrapf(err, "unable to fetch Service %s", req.NamespacedName.Name)
 	}
 
-	injected, _, err := metadata.Annotations(namespace.Annotations).GetEnabled(metadata.KumaSidecarInjectionAnnotation)
+	injectedLabel, _, err := metadata.Annotations(namespace.Labels).GetEnabled(metadata.KumaSidecarInjectionAnnotation)
 	if err != nil {
-		return kube_ctrl.Result{}, errors.Wrapf(err, "unable to check sidecar injection annotation on namespace %s", namespace.Name)
+		return kube_ctrl.Result{}, errors.Wrapf(err, "unable to check sidecar injection label on namespace %s", namespace.Name)
 	}
-	if !injected {
+	if !injectedLabel {
 		log.V(1).Info(req.NamespacedName.String() + "is not part of the mesh")
+		return kube_ctrl.Result{}, nil
+	}
+
+	if svc.Spec.Type == kube_core.ServiceTypeExternalName {
+		log.V(1).Info(
+			"ignoring Service because it is of an unsupported type",
+			"name", req.NamespacedName.String(),
+			"type", kube_core.ServiceTypeExternalName,
+		)
 		return kube_ctrl.Result{}, nil
 	}
 
@@ -59,7 +72,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req kube_ctrl.Request
 	if annotations == nil {
 		annotations = metadata.Annotations{}
 	}
-	ignored, _, err := annotations.GetBool(metadata.KumaIgnoreAnnotation)
+	ignored, _, err := annotations.GetEnabled(metadata.KumaIgnoreAnnotation)
 	if err != nil {
 		return kube_ctrl.Result{}, errors.Wrapf(err, "unable to retrieve %s annotation for %s", metadata.KumaIgnoreAnnotation, svc.Name)
 	}
@@ -67,6 +80,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req kube_ctrl.Request
 		return kube_ctrl.Result{}, nil
 	}
 	annotations[metadata.IngressServiceUpstream] = metadata.AnnotationTrue
+	annotations[metadata.NginxIngressServiceUpstream] = metadata.AnnotationTrue
 	svc.Annotations = annotations
 
 	if err = r.Update(ctx, svc); err != nil {
@@ -78,6 +92,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req kube_ctrl.Request
 
 func (r *ServiceReconciler) SetupWithManager(mgr kube_ctrl.Manager) error {
 	return kube_ctrl.NewControllerManagedBy(mgr).
+		Named("kuma-service-controller").
 		For(&kube_core.Service{}, builder.WithPredicates(serviceEvents)).
 		Complete(r)
 }

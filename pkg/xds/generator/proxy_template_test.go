@@ -1,11 +1,11 @@
 package generator_test
 
 import (
-	"io/ioutil"
+	"context"
+	"os"
 	"path/filepath"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
@@ -18,6 +18,7 @@ import (
 	xds_context "github.com/kumahq/kuma/pkg/xds/context"
 	envoy_common "github.com/kumahq/kuma/pkg/xds/envoy"
 	"github.com/kumahq/kuma/pkg/xds/generator"
+	modifications "github.com/kumahq/kuma/pkg/xds/generator/modifications/v3"
 )
 
 var _ = Describe("ProxyTemplateGenerator", func() {
@@ -25,7 +26,7 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 		type testCase struct {
 			proxy    *model.Proxy
 			template *mesh_proto.ProxyTemplate
-			err      interface{}
+			err      string
 		}
 
 		DescribeTable("Avoid producing invalid Envoy xDS resources",
@@ -34,7 +35,7 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 				gen := &generator.ProxyTemplateGenerator{
 					ProxyTemplate: given.template,
 				}
-				ctx := xds_context.Context{
+				xdsCtx := xds_context.Context{
 					ControlPlane: &xds_context.ControlPlaneContext{
 						Secrets: &xds.TestSecrets{},
 					},
@@ -49,7 +50,7 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 				}
 
 				// when
-				rs, err := gen.Generate(ctx, given.proxy)
+				rs, err := gen.Generate(context.Background(), xdsCtx, given.proxy)
 
 				// then
 				Expect(err).To(HaveOccurred())
@@ -81,7 +82,8 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 							},
 						},
 					},
-					APIVersion: envoy_common.APIV3,
+					SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+					APIVersion:     envoy_common.APIV3,
 				},
 				template: &mesh_proto.ProxyTemplate{
 					Conf: &mesh_proto.ProxyTemplate_Conf{
@@ -101,7 +103,6 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 	})
 
 	Context("Happy case", func() {
-
 		type testCase struct {
 			dataplane         string
 			proxyTemplateFile string
@@ -112,7 +113,7 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 			func(given testCase) {
 				// setup
 				proxyTemplate := mesh_proto.ProxyTemplate{}
-				ptBytes, err := ioutil.ReadFile(filepath.Join("testdata", "template-proxy", given.proxyTemplateFile))
+				ptBytes, err := os.ReadFile(filepath.Join("testdata", "template-proxy", given.proxyTemplateFile))
 				Expect(err).ToNot(HaveOccurred())
 				Expect(util_proto.FromYAML(ptBytes, &proxyTemplate)).To(Succeed())
 				gen := &generator.ProxyTemplateGenerator{
@@ -120,7 +121,7 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 				}
 
 				// given
-				ctx := xds_context.Context{
+				xdsCtx := xds_context.Context{
 					ControlPlane: &xds_context.ControlPlaneContext{
 						Secrets: &xds.TestSecrets{},
 					},
@@ -156,23 +157,21 @@ var _ = Describe("ProxyTemplateGenerator", func() {
 						},
 						Spec: dataplane,
 					},
-					APIVersion: envoy_common.APIV3,
-					Metadata:   &model.DataplaneMetadata{},
+					SecretsTracker: envoy_common.NewSecretsTracker("demo", []string{"demo"}),
+					APIVersion:     envoy_common.APIV3,
+					Metadata:       &model.DataplaneMetadata{},
 				}
 
 				// when
-				rs, err := gen.Generate(ctx, proxy)
-
-				// then
+				rs, err := gen.Generate(context.Background(), xdsCtx, proxy)
+				Expect(err).ToNot(HaveOccurred())
+				err = modifications.Apply(rs, proxyTemplate.GetConf().GetModifications())
 				Expect(err).ToNot(HaveOccurred())
 
-				// when
+				// then
 				resp, err := rs.List().ToDeltaDiscoveryResponse()
-				// then
 				Expect(err).ToNot(HaveOccurred())
-				// when
 				actual, err := util_proto.ToYAML(resp)
-				// then
 				Expect(err).ToNot(HaveOccurred())
 
 				// and output matches golden files
@@ -184,10 +183,13 @@ var _ = Describe("ProxyTemplateGenerator", func() {
                   transparentProxying:
                     redirectPortOutbound: 15001
                     redirectPortInbound: 15006
+                    ipFamilyMode: IPv4
                   address: 192.168.0.1
                   inbound:
                     - port: 80
                       servicePort: 8080
+                      tags:
+                        kuma.io/service: backend
 `,
 				proxyTemplateFile: "1-proxy-template.input.yaml",
 				expected:          "1-envoy-config.golden.yaml",
@@ -198,15 +200,17 @@ var _ = Describe("ProxyTemplateGenerator", func() {
                   transparentProxying:
                     redirectPortOutbound: 15001
                     redirectPortInbound: 15006
+                    ipFamilyMode: IPv4
                   address: 192.168.0.1
                   inbound:
                     - port: 80
                       servicePort: 8080
+                      tags:
+                        kuma.io/service: backend
 `,
 				proxyTemplateFile: "2-proxy-template.input.yaml",
 				expected:          "2-envoy-config.golden.yaml",
 			}),
 		)
-
 	})
 })
